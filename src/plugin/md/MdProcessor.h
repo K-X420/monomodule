@@ -136,6 +136,11 @@ private:
     // 0x20C930) does when a knob of such a track moves, and the MID trig (0x209914). Writes to other parameters go
     // through m_ctlFifo to the message thread (setValueNotifyingHost); MIDI goes into the block's MIDI output.
     int trackParam(int t, int p) const;   // 0..127 by the MD's numbering (see trackParamId)
+    int midValue(int t, int p) const { return juce::jlimit(0, 127, trackParam(t, p) + m_lfoOffset[size_t(t)][size_t(p)]); }
+    void midStream(int pos);              // after each pass: MID values that moved (knob or LFO) -> MIDI
+    std::array<std::array<int16_t, 24>, kTracks> m_lfoOffset{};   // per MID parameter: the LFOs' part (0..127 scale)
+    std::array<std::array<int16_t, 24>, kTracks> m_midSent{};     // the value last sent (-1 = not yet: no send)
+    std::array<int, kTracks> m_midMachine{};
     void controlMachines(int n);
     void midTrig(int t, int pos);
     void midSend(int pos, uint8_t a, uint8_t b, int c = -1);
@@ -156,6 +161,7 @@ private:
     std::array<int, 16> m_midLastPb{}, m_midLastMw{}, m_midLastPc{};   // per channel, as the OS remembers what it sent
     juce::MidiBuffer m_midiOut;
     int64_t m_clock = 0;   // host samples since prepare
+    int m_blockLen = 1;    // the current host block (MIDI positions stay inside it)
     void parameterChanged(const juce::String& id, float newValue) override;
     void handleAsyncUpdate() override;
 

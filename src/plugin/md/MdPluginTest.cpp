@@ -173,6 +173,28 @@ int main(int argc, char** argv)
         check(find([](const juce::MidiMessage& m) { return m.isController() && m.getControllerNumber() == 74 && m.getControllerValue() == 100; }) >= 0, "CC1V turn sends CC 74 = 100");
         check(find([](const juce::MidiMessage& m) { return m.isController() && m.getControllerNumber() == 1 && m.getControllerValue() == 33; }) >= 0, "MW turn sends CC 1");
         check(find([](const juce::MidiMessage& m) { return m.isPitchWheel() && m.getPitchWheelValue() == 80 * 128; }) >= 0, "PB turn sends pitch bend");
+        // LFO -> MIDI: T1's LFO on its own CC1V (CC 74), then on NOTE; depth 0 stops the stream
+        set(lfoId(0, 0), 0); set(lfoId(0, 1), 9); set(lfoId(0, 2), 0); set(lfoId(0, 3), 0); set(lfoId(0, 4), 0);
+        set(lfoId(0, 5), 110); set(lfoId(0, 7), 0); set(fxId(0, 1), 64); set(lfoId(0, 6), 127);
+        run(10); out.clear(); clock = 0;
+        run(100);   // 1 s
+        int ccs = 0, lo = 127, hi = 0, last = -1;
+        for (const auto& m : out)
+            if (m.isController() && m.getControllerNumber() == 74) { ++ccs; lo = std::min(lo, m.getControllerValue()); hi = std::max(hi, m.getControllerValue()); last = int(m.getTimeStamp()); }
+        check(ccs > 20 && hi - lo > 40, "LFO on CC1V streams CC 74: " + juce::String(ccs) + " messages over 1 s, " + juce::String(lo) + ".." + juce::String(hi));
+        check(last > 40000, "the stream runs through the second (last at " + juce::String(last) + ")");
+        set(lfoId(0, 1), 0);   // the LFO onto NOTE: four trigs a quarter second apart
+        juce::StringArray notes;
+        for (int k = 0; k < 4; ++k) {
+            out.clear(); clock = 0;
+            run(25, {36});
+            for (const auto& m : out) if (m.isNoteOn()) { notes.addIfNotAlreadyThere(juce::String(m.getNoteNumber())); break; }
+        }
+        check(notes.size() > 1, "LFO on NOTE: the trigs play " + notes.joinIntoString(" "));
+        set(lfoId(0, 1), 9); set(lfoId(0, 6), 0); run(20); out.clear(); clock = 0;
+        run(30);
+        check(std::none_of(out.begin(), out.end(), [](const juce::MidiMessage& m) { return m.isController() && m.getControllerNumber() == 74; }), "LFO depth 0: no more CC 74");
+        set(lfoId(0, 1), 0);
         // CTR-AL (T2): SYN1 64 -> 70 moves T5 / T6 SYN1 by +6, not the MID or CTR tracks
         set(knobId(1, 0), 64); set(knobId(4, 0), 40); set(knobId(5, 0), 125); run(3);
         const int mid0 = get(knobId(0, 0));

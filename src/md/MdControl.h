@@ -49,6 +49,7 @@ public:
     void lfoTrig(int track);                             // what a trig does to the track's LFO
     bool tick(bool lfoUpdate);
     uint16_t liveParam(int track, int k) const;          // raw word, 0..0x3FFF
+    uint16_t baseParam(int track, int k) const;          // the slewed word before the LFOs (live - base = the LFO's part)
     uint16_t liveLevel(int track) const;
 
     // Developer aid: the instruction at pc (MainOS / SRAM addresses), Musashi's 68020 syntax. Returns its length.

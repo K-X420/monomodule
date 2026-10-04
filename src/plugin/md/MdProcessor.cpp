@@ -135,6 +135,9 @@ void MdProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
     m_midiOut.ensureSize(4096);
     m_clock = 0;
     m_ctlStarted = false;
+    for (auto& s : m_midSent) s.fill(-1);
+    for (auto& o : m_lfoOffset) o.fill(0);
+    m_midMachine.fill(-1);
 }
 
 bool MdProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
@@ -167,7 +170,9 @@ void MdProcessor::refreshParameters()
         e.level = val(tr.mix[13]);
         for (int k = 0; k < 5; ++k) e.lfoConfig[size_t(k)] = val(tr.lfo[k]);
         e.route = juce::jlimit(0, kNumRoutes - 1, int(std::lround(tr.route->load())));
-        if (isMidMachine(e.machine) || isCtrMachine(e.machine)) {   // no voice; the LFO (MID, CTR-RE..DX) still runs
+        if (isMidMachine(e.machine)) {   // no voice; the parameters stay (the OS's LFOs move them: midStream)
+            e.machine = 0; e.level = 0;
+        } else if (isCtrMachine(e.machine)) {   // no voice; the LFO (CTR-RE..DX) still runs
             const bool lfo = e.machine != kCtrAll && e.machine != kCtr8p;
             const auto keep = p;
             p.fill(0);
@@ -201,6 +206,14 @@ void MdProcessor::runPass()
     m_engine->setInput(m_inBlock.data());
     m_engine->setDirect(m_directMask.load());
     m_engine->render();
+    for (int t = 0; t < kTracks; ++t) {
+        if (!isMidMachine(machineIdOf(t))) continue;
+        for (int p = 0; p < 24; ++p) {
+            const int d = int(m_engine->cpu().liveParam(t, p)) - int(m_engine->cpu().baseParam(t, p));
+            m_lfoOffset[size_t(t)][size_t(p)] = int16_t(d >= 0 ? (d + 64) >> 7 : -((-d + 64) >> 7));
+        }
+    }
+    midStream(int(double(m_fifoLen) * m_hostRate / kEngineRate));
     for (int t = 0; t < kTracks; ++t) {
         float pk = m_activity[size_t(t)].load() * 0.97f;
         for (auto v : m_engine->voiceBlock()[size_t(t)]) pk = std::max(pk, std::abs(float(v)) * (1.0f / 8388608.0f));
@@ -248,7 +261,7 @@ void MdProcessor::queueSet(int target, int p, int value, bool mirror)
 void MdProcessor::midSend(int pos, uint8_t a, uint8_t b, int c)
 {
     const uint8_t bytes[3] = {a, b, uint8_t(juce::jlimit(0, 127, c))};
-    m_midiOut.addEvent(bytes, c < 0 ? 2 : 3, juce::jmax(0, pos));
+    m_midiOut.addEvent(bytes, c < 0 ? 2 : 3, juce::jlimit(0, juce::jmax(0, m_blockLen - 1), pos));
 }
 
 // The MID trig (MainOS 0x209914) on channel n of MID-n: the track's sounding notes end; PCHG (if set and not the program
@@ -261,10 +274,10 @@ void MdProcessor::midTrig(int t, int pos)
     auto& notes = m_midNotes[size_t(t)];
     for (const auto& nt : notes) midSend(pos, uint8_t(0x80 | ch), nt.note, 0);
     notes.clear();
-    const int pc = trackParam(t, 20);
+    const int pc = midValue(t, 20);
     if (pc > 0 && pc - 1 != m_midLastPc[size_t(ch)]) { midSend(pos, uint8_t(0xC0 | ch), uint8_t(pc - 1)); m_midLastPc[size_t(ch)] = pc - 1; }
-    const int note = trackParam(t, 0), len = trackParam(t, 3);
-    const int vel = juce::jmax(1, trackParam(t, 4));
+    const int note = midValue(t, 0), len = midValue(t, 3);   // the LFOs count (added after the knob, as the OS does)
+    const int vel = juce::jmax(1, midValue(t, 4));
     double bpm = m_hostBpm.load();
     if (bpm < 20.0 || bpm > 400.0) bpm = 120.0;
     const int ticks = len > 0 ? 3 + 3 * len : 4;
@@ -275,13 +288,40 @@ void MdProcessor::midTrig(int t, int pos)
     };
     play(note);
     for (int k : {1, 2}) {
-        const int n = trackParam(t, k);
+        const int n = midValue(t, k);
         if (n != 64) play(juce::jlimit(0, 127, note + n - 64));
     }
-    const int pb = trackParam(t, 5), mw = trackParam(t, 6), at = trackParam(t, 7);
+    const int pb = midValue(t, 5), mw = midValue(t, 6), at = midValue(t, 7);
     if (pb != m_midLastPb[size_t(ch)]) { midSend(pos, uint8_t(0xE0 | ch), 0, pb); m_midLastPb[size_t(ch)] = pb; }
     if (mw != m_midLastMw[size_t(ch)]) { midSend(pos, uint8_t(0xB0 | ch), 1, mw); m_midLastMw[size_t(ch)] = mw; }
     if (at != 0) midSend(pos, uint8_t(0xD0 | ch), uint8_t(at));
+}
+
+// After each pass, every MID track's continuous values, knob plus LFO ("LFOs applied to MIDI machines are always added
+// after all locks and slides", OS 1.33): PB, MW, AT and the six CC values go out when they change, at the pass's place
+// in the host block. A machine change or a load settles them without sending. (PCHG and the CC numbers are not
+// streamed: they send on a turn only, in controlMachines.)
+void MdProcessor::midStream(int pos)
+{
+    const bool quiet = !m_ctlStarted || m_clock < m_ctlQuietUntil;
+    for (int t = 0; t < kTracks; ++t) {
+        const int id = machineIdOf(t);
+        if (!isMidMachine(id)) { m_midMachine[size_t(t)] = id; continue; }
+        const bool settle = quiet || id != m_midMachine[size_t(t)];
+        m_midMachine[size_t(t)] = id;
+        const int ch = id - 96;
+        for (int p : {5, 6, 7, 9, 11, 13, 15, 17, 19}) {
+            const int v = midValue(t, p);
+            auto& sent = m_midSent[size_t(t)][size_t(p)];
+            if (settle || sent < 0) { sent = int16_t(v); continue; }
+            if (v == sent) continue;
+            sent = int16_t(v);
+            if (p == 5) { midSend(pos, uint8_t(0xE0 | ch), 0, v); m_midLastPb[size_t(ch)] = v; }
+            else if (p == 6) { midSend(pos, uint8_t(0xB0 | ch), 1, v); m_midLastMw[size_t(ch)] = v; }
+            else if (p == 7) midSend(pos, uint8_t(0xD0 | ch), uint8_t(v));
+            else if (const int cc = trackParam(t, p - 1); cc > 0) midSend(pos, uint8_t(0xB0 | ch), uint8_t(cc == 1 ? 0 : cc), v);
+        }
+    }
 }
 
 // Once per host block: every parameter of a CTR / MID track (and the master effects) against the value last seen. A
@@ -334,13 +374,8 @@ void MdProcessor::controlMachines(int n)
             m_ctlSeen[size_t(t)][size_t(p)] = int16_t(now);
             if (isMidMachine(id)) {
                 const int ch = id - 96;
-                if (p == 5) { midSend(0, uint8_t(0xE0 | ch), 0, now); m_midLastPb[size_t(ch)] = now; }
-                else if (p == 6) { midSend(0, uint8_t(0xB0 | ch), 1, now); m_midLastMw[size_t(ch)] = now; }
-                else if (p == 7) midSend(0, uint8_t(0xD0 | ch), uint8_t(now));
-                else if (p >= 9 && p <= 19 && (p & 1)) {
-                    const int cc = trackParam(t, p - 1);
-                    if (cc > 0) midSend(0, uint8_t(0xB0 | ch), uint8_t(cc == 1 ? 0 : cc), now);
-                } else if (p == 20 && now > 0) { midSend(0, uint8_t(0xC0 | ch), uint8_t(now - 1)); m_midLastPc[size_t(ch)] = now - 1; }
+                if (p == 20 && now > 0) { midSend(0, uint8_t(0xC0 | ch), uint8_t(now - 1)); m_midLastPc[size_t(ch)] = now - 1; }
+                // PB MW AT and the CC values go out from midStream (knob + LFO)
             } else if (const int fx = ctrMasterFx(id); fx >= 0) {
                 if (p < 8) queueSet(kTracks + fx, p, now, true);
             } else if (id == kCtrAll) {
@@ -403,6 +438,7 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
 {
     juce::ScopedNoDenormals noDenormals;
     const int n = buffer.getNumSamples();
+    m_blockLen = n;
     // side-chain input -> engine-rate FIFO (before the shared buffer is cleared for output)
     if (getBusCount(true) > 0 && getBus(true, 0)->isEnabled() && !m_inFifo[0].empty()) {
         auto in = getBusBuffer(buffer, true, 0);

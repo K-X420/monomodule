@@ -211,6 +211,12 @@ uint16_t ControlCpu::liveParam(int track, int k) const
     return uint16_t((p[0] << 8) | p[1]);
 }
 
+uint16_t ControlCpu::baseParam(int track, int k) const
+{
+    const uint8_t* p = sram(kBase + 2 * uint32_t(24 * track + k));
+    return uint16_t((p[0] << 8) | p[1]);
+}
+
 uint16_t ControlCpu::liveLevel(int track) const
 {
     const uint8_t* p = sram(kLevelLive + 2 * uint32_t(track));
