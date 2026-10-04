@@ -52,6 +52,7 @@ public:
     void setActive(int t, bool on) { if (m_active[size_t(t)] != on) { m_active[size_t(t)] = on; repaint(); } }
     void paint(juce::Graphics&) override;
     void mouseDown(const juce::MouseEvent&) override;
+    int trackAt(juce::Point<int> local) const { for (int t = 0; t < kTracks; ++t) if (keyRect(t).contains(local / one::kScale)) return t; return -1; }
 private:
     juce::Rectangle<int> keyRect(int t) const;   // LCD px
     juce::Rectangle<int> lockBox(int t) const { const auto r = keyRect(t); return {r.getX() + 2, r.getBottom() - 10, 8, 8}; }
@@ -105,9 +106,10 @@ public:
     void refresh() { timerCallback(); }   // dev/snapshot: apply pending state without the message loop
     void showMachinePicker() { m_picker.open(m_machineIndex); }   // dev/snapshot
     void showKitList() { openKitList(); }                         // dev/snapshot
-    // .syx files dropped on the editor go into the kit library (a file of one kit is loaded as well)
+    // Dropped on the editor: .syx files go into the library (a file of one kit is loaded as well); a .mdkit from the
+    // Library app loads; a .mdsound lands on the track key it is dropped on, else on the selected track
     bool isInterestedInFileDrag(const juce::StringArray& files) override;
-    void filesDropped(const juce::StringArray& files, int, int) override;
+    void filesDropped(const juce::StringArray& files, int x, int y) override;
 
 private:
     void timerCallback() override;
@@ -122,6 +124,11 @@ private:
     void loadKit(const KitEntry& e);
     void stepKit(int dir);
     juce::String saveKit(const juce::String& name);
+    void openSoundList();
+    void loadSound(const SoundEntry& e);
+    void stepSound(int dir);
+    juce::String saveSound(const juce::String& name);
+    juce::String soundDisplayName(int t);
     void sampleMenu();
     void setMachine(int index);
     void applySkin(const skin::Skin& s);
@@ -134,7 +141,7 @@ private:
     one::LcdText m_footerVersion, m_footerBy, m_status;
     juce::SharedResourcePointer<MdLibrary> m_lib;
     MdKitStrip m_strip;
-    MdKitDrop m_drop{*m_lib};
+    MdLibraryDrop m_drop{*m_lib};
     MdSaveDialog m_saveDialog;
     one::LcdButton m_osButton{"SELECT OS FILE"};
     one::LevelColumn m_level;

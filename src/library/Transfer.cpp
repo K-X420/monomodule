@@ -1,3 +1,4 @@
+#include <cstring>
 #include "Transfer.h"
 #include "Store.h"
 #include "MidiExport.h"
@@ -93,6 +94,53 @@ juce::File writeKitDragFile(const Kit& kit, const juce::String& baseName)
     const auto f = uniqueDragFile(baseName, kKitFileExtension);
     f.replaceWithText(juce::JSON::toString(kitToTransferJson(kit, baseName)));
     return f;
+}
+
+juce::File writeMdSoundDragFile(const mnm::mdcatalog::Sound& s, const juce::String& baseName)
+{
+    auto* o = new juce::DynamicObject();
+    o->setProperty("type", "mdsound"); o->setProperty("version", 1); o->setProperty("name", baseName);
+    o->setProperty("model", juce::int64(s.model));
+    o->setProperty("params", juce::String::toHexString(s.params, int(sizeof(s.params)), 0));
+    o->setProperty("lfo", juce::String::toHexString(s.lfo, int(sizeof(s.lfo)), 0));
+    o->setProperty("track", s.track);
+    const auto f = uniqueDragFile(baseName, kMdSoundFileExtension);
+    f.replaceWithText(juce::JSON::toString(juce::var(o)));
+    return f;
+}
+
+juce::File writeMdKitDragFile(const mnm::mddump::Kit& kit, const juce::String& baseName)
+{
+    const auto syx = mnm::mddump::encodeKit(kit);
+    auto* o = new juce::DynamicObject();
+    o->setProperty("type", "mdkit"); o->setProperty("version", 1); o->setProperty("name", baseName);
+    o->setProperty("kitSyx", juce::String::toHexString(syx.data(), int(syx.size()), 0));
+    const auto f = uniqueDragFile(baseName, kMdKitFileExtension);
+    f.replaceWithText(juce::JSON::toString(juce::var(o)));
+    return f;
+}
+
+bool readMdTransferFile(const juce::File& file, MdTransferPayload& out)
+{
+    const auto json = juce::JSON::parse(file.loadFileAsString());
+    const auto type = json["type"].toString();
+    auto hex = [](const juce::var& v) { juce::MemoryBlock mb; mb.loadFromHexString(v.toString()); return mb; };
+    MdTransferPayload p;
+    p.name = json["name"].toString();
+    if (type == "mdkit") {
+        const auto mb = hex(json["kitSyx"]);
+        if (!mnm::mddump::decodeKit(static_cast<const uint8_t*>(mb.getData()), mb.getSize(), p.kit)) return false;
+        p.isKit = true;
+    } else if (type == "mdsound") {
+        const auto params = hex(json["params"]), lfo = hex(json["lfo"]);
+        if (params.getSize() != sizeof(p.sound.params) || lfo.getSize() != sizeof(p.sound.lfo)) return false;
+        p.sound.model = uint32_t(juce::int64(json["model"]));
+        std::memcpy(p.sound.params, params.getData(), sizeof(p.sound.params));
+        std::memcpy(p.sound.lfo, lfo.getData(), sizeof(p.sound.lfo));
+        p.sound.track = juce::jlimit(0, 15, int(json["track"]));
+    } else return false;
+    out = p;
+    return true;
 }
 
 juce::File writePatternMidiDragFile(const Dump& dump, const Pattern& pat, int track)

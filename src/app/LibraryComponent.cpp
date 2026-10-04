@@ -177,6 +177,11 @@ LibraryComponent::LibraryComponent(std::unique_ptr<Store> store, bool audio) : m
     m_mdSlotKitView.onTrack = [this](int t) { if (const auto* d = shownMdState()) if (const auto* k = d->kitAt(m_nav.selKit)) { const auto id = MdCatalog::soundHash(mnm::mdcatalog::Sound::fromKit(*k, t)); if (m_mdCatalog.sound(id)) navigateItem("mdsound", juce::String(id)); } };
     m_mdSlotKitView.onPlayKit = [this] { playSlot("kit", m_nav.selKit); };
     m_mdSlotKitView.onPlayTrack = [this](int) { playSlot("kit", m_nav.selKit); };
+    m_mdSlotKitView.onDragKit = [this] { if (const auto* d = shownMdState()) if (const auto* k = d->kitAt(m_nav.selKit)) startFileDrag(mnm::library::writeMdKitDragFile(*k, juce::String(k->name)), &m_mdSlotKitView); };
+    m_mdSlotKitView.onDragTrack = [this](int t) {
+        if (const auto* d = shownMdState()) if (const auto* k = d->kitAt(m_nav.selKit))
+            startFileDrag(mnm::library::writeMdSoundDragFile(mnm::mdcatalog::Sound::fromKit(*k, t), juce::String(k->name) + " T" + juce::String(t + 1)), &m_mdSlotKitView);
+    };
     m_mdKitView.onLink = [this](const juce::var& v) { onLink(v); };
     m_mdKitView.onTrack = [this](int t) { if (const auto* k = m_mdCatalog.kit(m_nav.itemId.toStdString()); k && !k->soundIds[t].empty()) navigateItem("mdsound", juce::String(k->soundIds[t])); };
     m_mdKitView.onPlayKit = [this] { playCatalog("mdkit", m_nav.itemId, -1); };
@@ -1682,7 +1687,10 @@ void LibraryComponent::startFileDrag(const juce::File& f, juce::Component* sourc
 
 void LibraryComponent::dragPreset(const juce::String& id, juce::Component* source)
 {
-    if (m_nav.itemKind.startsWith("md") || isMdProject()) { toast("Dragging Machinedrum sounds into Monomodule MD comes with its library update"); return; }
+    if (const auto* s = m_mdCatalog.sound(id.toStdString())) {   // a Machinedrum sound: .mdsound for Monomodule MD
+        startFileDrag(mnm::library::writeMdSoundDragFile(s->sound, juce::String(s->name) + " " + mdMachineName(s->sound.machine())), source);
+        return;
+    }
     const auto* p = m_catalog.preset(id.toStdString());
     if (!p) return;
     startFileDrag(mnm::library::writeTrackDragFile(Catalog::kitForPreset(*p), 0, juce::String(p->name) + " " + machineDisplayName(p->model)), source);
@@ -1690,7 +1698,10 @@ void LibraryComponent::dragPreset(const juce::String& id, juce::Component* sourc
 
 void LibraryComponent::dragKit(const juce::String& id, juce::Component* source)
 {
-    if (m_nav.itemKind.startsWith("md") || isMdProject()) { toast("Dragging Machinedrum kits into Monomodule MD comes with its library update"); return; }
+    if (const auto* k = m_mdCatalog.kit(id.toStdString())) {   // a Machinedrum kit: .mdkit
+        startFileDrag(mnm::library::writeMdKitDragFile(k->kit, juce::String(k->name)), source);
+        return;
+    }
     const auto* k = m_catalog.kit(id.toStdString());
     if (!k) return;
     Kit kit = k->kit; kit.name = k->name;

@@ -17,6 +17,7 @@ public:
     const mnm::catalog::Catalog& catalog() const { return m_catalog; }
     const std::vector<ProjectInfo>& projects() const { return m_projects; }
     const UserData& user() const { return m_user; }
+    void setFavourite(const juce::String& id, bool on);   // catalog id; saved at once
     const mnm::dump::Dump* state(const juce::String& projectId) const { auto it = m_states.find(projectId); return it == m_states.end() ? nullptr : &it->second; }
     int revision() const { return m_revision; }   // bumps with every rebuild: views compare it
     // Machinedrum projects and the sounds saved from Monomodule MD, in a catalog of their own

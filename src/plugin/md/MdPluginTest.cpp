@@ -2,6 +2,7 @@
 // plugin processor at 48 kHz (resampled from the engine's 44.1 kHz) and writes the stereo result; optionally renders
 // the editor to a PNG.
 #include <cstdio>
+#include <cstring>
 #include <juce_audio_formats/juce_audio_formats.h>
 #include "MdProcessor.h"
 #include "MdEditor.h"
@@ -56,30 +57,45 @@ int main(int argc, char** argv)
         set(machineId(2), float(machineIndexOf(16)));
         std::printf("RAM test: RAM-R1 records the kicks of bar 1, RAM-P1 plays them in bar 2\n");
     }
-    if (const char* syx = std::getenv("MD_LIB_IMPORT")) {   // the kit library: import, load the first kit, save it as a new kit
+    if (const char* syx = std::getenv("MD_LIB_IMPORT")) {   // the shared library: import, load a kit, a sound, save both
         juce::SharedResourcePointer<MdLibrary> lib;
         juce::String id;
         const auto r = lib->importSyx(juce::File(juce::String(syx)), &id);
-        const auto again = lib->importSyx(juce::File(juce::String(syx)));   // the same file twice is one dump
+        juce::String again;
+        const auto r2 = lib->importSyx(juce::File(juce::String(syx)), &again);   // the same file twice is one project
         const auto kits = lib->kits();
-        std::printf("library %s: import %s, again %s, %zu kits\n", lib->root().getFullPathName().toRawUTF8(),
-                    r.wasOk() ? "ok" : r.getErrorMessage().toRawUTF8(), again.wasOk() ? "ok" : "failed", kits.size());
+        std::printf("library %s: import %s, again %s (%s), %zu kits, %zu sounds\n", lib->model().projects().empty() ? "?" : "ok",
+                    r.wasOk() ? "ok" : r.getErrorMessage().toRawUTF8(), r2.wasOk() ? "ok" : "failed", again == id ? "same project" : "ANOTHER PROJECT",
+                    kits.size(), lib->sounds(-1).size());
         proc.setTrackLocked(15, true);   // LOCK: track 16 keeps its machine through the kit load
         const auto lockedBefore = proc.machineIdOf(15);
         for (const auto& k : kits) if (k.sourceId == id) {
-            LibraryKit lk;
-            const bool ok = lib->load(k.key, lk);
-            const int emptied = proc.loadLibraryKit(k.key, lk, k.name);
+            mnm::mddump::Kit kit;
+            const bool ok = lib->loadKit(k.key, kit);
+            const int emptied = proc.loadMdKit(k.key, kit, k.name);
             std::printf("locked track 16: machine %d before, %d after the load (%s)\n", lockedBefore, proc.machineIdOf(15), lockedBefore == proc.machineIdOf(15) ? "kept" : "CHANGED");
-            std::printf("loaded %s '%s' (%s, %d emptied), modified=%d\n", k.key.toRawUTF8(), k.name.toRawUTF8(), ok ? "ok" : "FAILED", emptied, int(proc.kitModified()));
+            std::printf("loaded '%s' (%s, %d emptied), modified=%d; the capture re-encodes to the kit: %s\n", k.name.toRawUTF8(), ok ? "ok" : "FAILED", emptied, int(proc.kitModified()),
+                        [&] {
+                auto c = proc.captureMdKit();
+                for (int t = 0; t < 15; ++t) {
+                    for (int i = 0; i < 24; ++i) if (c.params[t][i] != kit.params[t][i]) { std::printf("  T%d param %d: %d vs %d\n", t + 1, i, c.params[t][i], kit.params[t][i]); return "NO"; }
+                    for (int i = 0; i < 36; ++i) if (c.lfos[t][i] != kit.lfos[t][i]) { std::printf("  T%d lfo byte %d: %d vs %d\n", t + 1, i, c.lfos[t][i], kit.lfos[t][i]); return "NO"; }
+                    if (c.levels[t] != kit.levels[t]) { std::printf("  T%d level\n", t + 1); return "NO"; }
+                }
+                return "yes"; }());
             if (auto* p = proc.apvts.getParameter(knobId(0, 0))) p->setValueNotifyingHost(p->getValue() > 0.5f ? 0.1f : 0.9f);
-            std::printf("after a knob turn modified=%d\n", int(proc.kitModified()));
-            juce::String key;
-            const auto s = lib->saveKit("MY " + k.name, proc.captureKit(), k.key, &key);
-            proc.setLoadedKit(key, "MY " + k.name);
-            LibraryKit back;
-            std::printf("saved %s (%s), reload %s, modified=%d\n", key.toRawUTF8(), s.wasOk() ? "ok" : "FAILED",
-                        lib->load(key, back) && back.kit.params == proc.captureKit().kit.params ? "identical" : "DIFFERENT", int(proc.kitModified()));
+            std::printf("after a knob turn: kit modified=%d, T1 sound modified=%d\n", int(proc.kitModified()), int(proc.soundModified(0)));
+            juce::String kitKey, soundKey;
+            const auto s1 = lib->saveKit("MY " + k.name, proc.captureMdKit(), k.key, &kitKey);
+            proc.setLoadedKit(kitKey, "MY " + k.name);
+            const auto s2 = lib->saveSound("MY SOUND", proc.captureSound(0), proc.loadedSoundKey(0), &soundKey);
+            proc.setLoadedSound(0, soundKey, "MY SOUND");
+            mnm::mdcatalog::Sound back;
+            std::printf("saved kit %s, sound %s; the sound reloads: %s; modified=%d/%d\n", s1.wasOk() ? "ok" : "FAILED", s2.wasOk() ? "ok" : "FAILED",
+                        lib->loadSound(soundKey, back) ? "yes" : "NO", int(proc.kitModified()), int(proc.soundModified(0)));
+            // a sound from another kit onto track 2
+            const auto sounds = lib->sounds(-1);
+            if (!sounds.empty()) { mnm::mdcatalog::Sound s; lib->loadSound(sounds.back().key, s); std::printf("sound '%s' onto T2: %s\n", sounds.back().name.toRawUTF8(), proc.loadSound(1, sounds.back().key, s, sounds.back().name) ? "ok" : "machine not available"); }
             kitLoaded = true;
             break;
         }

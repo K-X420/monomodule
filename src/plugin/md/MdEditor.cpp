@@ -3,6 +3,7 @@
 #include "ShnolkLogo.h"
 #include "ParamDisplay.h"
 #include "SharedSettings.h"
+#include "Transfer.h"
 
 namespace mnm::plugin::md {
 
@@ -289,18 +290,31 @@ MdEditor::MdEditor(MdProcessor& p)
                                static_cast<juce::Component*>(&m_strip)})
         addAndMakeVisible(c);
     m_strip.onPart = [this](MdKitStrip::Part part) {
+        const bool wasKits = m_drop.isVisible() && m_drop.showingKits(), wasSounds = m_drop.isVisible() && !m_drop.showingKits();
+        m_drop.setVisible(false);
+        m_strip.setOpen(MdKitStrip::None);
         switch (part) {
-            case MdKitStrip::Prev: m_drop.setVisible(false); stepKit(-1); break;
-            case MdKitStrip::Next: m_drop.setVisible(false); stepKit(1); break;
-            case MdKitStrip::Kit:  if (m_drop.isVisible()) m_drop.close(); else openKitList(); break;
-            case MdKitStrip::Save: m_drop.setVisible(false); m_saveDialog.open(m_proc.kitName().isEmpty() ? juce::String("NEW KIT") : m_proc.kitName()); break;
+            case MdKitStrip::KitPrev:   stepKit(-1); break;
+            case MdKitStrip::KitNext:   stepKit(1); break;
+            case MdKitStrip::Kit:       if (!wasKits) openKitList(); break;
+            case MdKitStrip::KitSave:
+                m_saveDialog.onSave = [this](const juce::String& name) { return saveKit(name); };
+                m_saveDialog.open("SAVE KIT", m_proc.kitName().isEmpty() ? juce::String("NEW KIT") : m_proc.kitName());
+                break;
+            case MdKitStrip::SoundPrev: stepSound(-1); break;
+            case MdKitStrip::SoundNext: stepSound(1); break;
+            case MdKitStrip::Sound:     if (!wasSounds) openSoundList(); break;
+            case MdKitStrip::SoundSave:
+                m_saveDialog.onSave = [this](const juce::String& name) { return saveSound(name); };
+                m_saveDialog.open("SAVE SOUND T" + juce::String(m_track + 1), soundDisplayName(m_track).isEmpty() || soundDisplayName(m_track) == "-" ? juce::String("NEW SOUND") : soundDisplayName(m_track));
+                break;
             case MdKitStrip::None: break;
         }
     };
-    m_drop.onLoad = [this](const KitEntry& e) { loadKit(e); };
+    m_drop.onLoadKit = [this](const KitEntry& e) { loadKit(e); };
+    m_drop.onLoadSound = [this](const SoundEntry& e) { loadSound(e); };
     m_drop.onImport = [this] { importSyx(); };
-    m_drop.onClosed = [this] { m_strip.setOpen(false); };
-    m_saveDialog.onSave = [this](const juce::String& name) { return saveKit(name); };
+    m_drop.onClosed = [this] { m_strip.setOpen(MdKitStrip::None); };
     addChildComponent(m_status);
     addChildComponent(m_osButton);
 
@@ -468,32 +482,59 @@ void MdEditor::importFiles(const juce::Array<juce::File>& files)
 
 bool MdEditor::isInterestedInFileDrag(const juce::StringArray& files)
 {
-    for (const auto& f : files) if (f.endsWithIgnoreCase(".syx")) return true;
+    for (const auto& f : files) if (f.endsWithIgnoreCase(".syx") || mnm::library::isMdTransferFile(f)) return true;
     return false;
 }
 
-void MdEditor::filesDropped(const juce::StringArray& files, int, int)
+void MdEditor::filesDropped(const juce::StringArray& files, int x, int y)
 {
     juce::Array<juce::File> syx;
-    for (const auto& f : files) if (f.endsWithIgnoreCase(".syx")) syx.add(juce::File(f));
-    importFiles(syx);
+    for (const auto& path : files) {
+        const juce::File f(path);
+        if (path.endsWithIgnoreCase(".syx")) { syx.add(f); continue; }
+        mnm::library::MdTransferPayload p;
+        if (!mnm::library::readMdTransferFile(f, p)) continue;
+        if (p.isKit) {
+            const int emptied = m_proc.loadMdKit(juce::String(mnm::mdcatalog::Catalog::kitHash(p.kit)), p.kit, p.name.isNotEmpty() ? p.name.toUpperCase() : juce::String(p.kit.name));
+            if (emptied > 0) juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon, "Load Kit", juce::String(emptied) + " track(s) use MIDI or controller machines, which are not available yet; they were left empty.");
+            selectTrack(m_track);
+        } else {
+            const int over = m_keys.trackAt(m_keys.getLocalPoint(this, juce::Point<int>(x, y)));
+            const int t = over >= 0 ? over : m_track;
+            if (!m_proc.loadSound(t, juce::String(mnm::mdcatalog::Catalog::soundHash(p.sound)), p.sound, p.name.toUpperCase()))
+                juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon, "Load Sound", "This sound uses a machine Monomodule MD does not have yet.");
+            if (t != m_track) selectTrack(t); else bindTrackPages();
+        }
+    }
+    if (!syx.isEmpty()) importFiles(syx);
+    timerCallback();
 }
 
 void MdEditor::openKitList()
 {
     const int maxH = m_out.getBottom() - m_strip.getBottom() - 2;
-    m_drop.open(m_proc.loadedKitKey(), {m_strip.getX(), m_strip.getBottom() + 2}, maxH);
-    m_strip.setOpen(true);
+    const auto part = m_strip.partBounds(MdKitStrip::Kit) + m_strip.getPosition();
+    m_drop.openKits(m_proc.loadedKitKey(), {juce::jmax(0, part.getX()), m_strip.getBottom() + 2}, maxH);
+    m_strip.setOpen(MdKitStrip::Kit);
+}
+
+void MdEditor::openSoundList()
+{
+    const int maxH = m_out.getBottom() - m_strip.getBottom() - 2;
+    const auto part = m_strip.partBounds(MdKitStrip::Sound) + m_strip.getPosition();
+    const int x = juce::jmin(part.getX(), getWidth() - MdLibraryDrop::kLcdW * MdLibraryDrop::kS - 10);
+    m_drop.openSounds(m_proc.machineIdOf(m_track), m_track, m_proc.loadedSoundKey(m_track), {x, m_strip.getBottom() + 2}, maxH);
+    m_strip.setOpen(MdKitStrip::Sound);
 }
 
 void MdEditor::loadKit(const KitEntry& e)
 {
-    LibraryKit lk;
-    if (!m_lib->load(e.key, lk)) {
-        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Load Kit", "The kit " + e.name + " could not be read from the library.");
+    mnm::mddump::Kit kit;
+    if (!m_lib->loadKit(e.key, kit)) {
+        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Load Kit", "The kit " + e.name + " is no longer in the library.");
         return;
     }
-    const int emptied = m_proc.loadLibraryKit(e.key, lk, e.name);
+    const int emptied = m_proc.loadMdKit(e.key, kit, e.name);
     if (emptied > 0)
         juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon, "Load Kit",
             juce::String(emptied) + " track(s) use MIDI or controller machines, which are not available yet; they were left empty.");
@@ -515,11 +556,52 @@ void MdEditor::stepKit(int dir)
 juce::String MdEditor::saveKit(const juce::String& name)
 {
     juce::String key;
-    const auto r = m_lib->saveKit(name, m_proc.captureKit(), m_proc.loadedKitKey(), &key);
+    const auto r = m_lib->saveKit(name, m_proc.captureMdKit(), m_proc.loadedKitKey(), &key);
     if (r.failed()) return r.getErrorMessage();
     m_proc.setLoadedKit(key, name.toUpperCase());
     timerCallback();
     return {};
+}
+
+void MdEditor::loadSound(const SoundEntry& e)
+{
+    mnm::mdcatalog::Sound s;
+    if (!m_lib->loadSound(e.key, s)) return;
+    if (!m_proc.loadSound(m_track, e.key, s, e.name))
+        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon, "Load Sound", "This sound uses a machine Monomodule MD does not have yet.");
+    bindTrackPages();
+    timerCallback();
+}
+
+// previous / next sound of the selected track's machine, wrapping
+void MdEditor::stepSound(int dir)
+{
+    const auto sounds = m_lib->sounds(m_proc.machineIdOf(m_track));
+    if (sounds.empty()) { openSoundList(); return; }
+    int i = -1;
+    for (int k = 0; k < int(sounds.size()); ++k) if (sounds[size_t(k)].key == m_proc.loadedSoundKey(m_track)) i = k;
+    i = i < 0 ? (dir > 0 ? 0 : int(sounds.size()) - 1) : (i + dir + int(sounds.size())) % int(sounds.size());
+    loadSound(sounds[size_t(i)]);
+}
+
+juce::String MdEditor::saveSound(const juce::String& name)
+{
+    juce::String key;
+    const auto r = m_lib->saveSound(name, m_proc.captureSound(m_track), m_proc.loadedSoundKey(m_track), &key);
+    if (r.failed()) return r.getErrorMessage();
+    m_proc.setLoadedSound(m_track, key, name.toUpperCase());
+    timerCallback();
+    return {};
+}
+
+// The selected track's sound: the name it was loaded or saved under, else its catalog name, else "-"
+juce::String MdEditor::soundDisplayName(int t)
+{
+    if (m_proc.machineIdOf(t) == 0) return "-";
+    if (const auto n = m_proc.loadedSoundName(t); n.isNotEmpty()) return n;
+    if (const auto key = m_proc.loadedSoundKey(t); key.isNotEmpty())
+        if (const auto* s = m_lib->model().mdCatalog().sound(key.toStdString())) return juce::String(s->name).toUpperCase();
+    return "-";
 }
 
 void MdEditor::sampleMenu()
@@ -582,7 +664,10 @@ void MdEditor::timerCallback()
         if (m_sample.getButtonText() != text) { m_sample.setButtonText(text); resized(); }
     }
     if (m_sample.isVisible() != rom) { m_sample.setVisible(rom); resized(); }
-    if ((m_tick++ % 5) == 0) m_strip.setKit(m_proc.kitName(), m_proc.kitModified());   // the modified mark: a few times a second
+    if ((m_tick++ % 5) == 0) {   // the modified marks: a few times a second
+        m_strip.setKit(m_proc.kitName(), m_proc.kitModified());
+        m_strip.setSound(m_track, soundDisplayName(m_track), m_proc.soundModified(m_track));
+    }
     m_strip.setVisible(ready);
 }
 

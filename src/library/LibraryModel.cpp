@@ -123,6 +123,13 @@ juce::Result LibraryModel::saveKit(const Kit& kit, const juce::String& name, con
     return r;
 }
 
+void LibraryModel::setFavourite(const juce::String& id, bool on)
+{
+    if (on) m_user.favourites.addIfNotAlreadyThere(id); else m_user.favourites.removeString(id);
+    m_store.saveUser(m_user);
+    refresh(true);
+}
+
 LibraryModel::Slot LibraryModel::projectSlotOfMdSound(const std::string& soundId) const
 {
     if (const auto* s = m_mdCatalog.sound(soundId))

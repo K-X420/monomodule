@@ -1,4 +1,5 @@
 #include "MdProcessor.h"
+#include <cstring>
 #include <cmath>
 #include <juce_audio_formats/juce_audio_formats.h>
 #include "MdEditor.h"
@@ -24,6 +25,9 @@ MdProcessor::MdProcessor()
                          .withOutput("Out E/F", juce::AudioChannelSet::stereo(), false)),
       apvts(*this, nullptr, "PARAMS", createLayout())
 {
+    for (int t = 0; t < kTracks; ++t) {   // an empty kit's bytes: no trig / mute groups, every LFO on its own track
+        m_baseKit.trigGroups[t] = 127; m_baseKit.muteGroups[t] = 127; m_baseKit.lfos[t][0] = uint8_t(t);
+    }
     for (int t = 0; t < kTracks; ++t) {
         auto& tr = m_tracks[size_t(t)];
         tr.machine = apvts.getRawParameterValue(machineId(t));
@@ -435,7 +439,7 @@ void MdProcessor::samplesFromTree(const juce::ValueTree& t)
     pushSamples();
 }
 
-int MdProcessor::applyKit(const mnm::md::Kit& kit, const std::array<int, 16>* routes)
+int MdProcessor::applyKit(const mnm::md::Kit& kit)
 {
     auto set = [&](const juce::String& id, float v) {
         if (auto* p = apvts.getParameter(id)) p->setValueNotifyingHost(p->convertTo0to1(v));
@@ -443,7 +447,7 @@ int MdProcessor::applyKit(const mnm::md::Kit& kit, const std::array<int, 16>* ro
     int emptied = 0;
     for (int t = 0; t < kTracks; ++t) {
         if (m_locked[size_t(t)].load()) continue;   // LOCK: the track keeps its sound
-        const int id = int(kit.machines[size_t(t)]);
+        const int id = int(kit.machines[size_t(t)] & 0xFF);
         int idx = machineIndexOf(id);
         if (kMachines[idx].id != id) { idx = 0; if (id != 0) ++emptied; }
         set(machineId(t), float(idx));
@@ -456,7 +460,6 @@ int MdProcessor::applyKit(const mnm::md::Kit& kit, const std::array<int, 16>* ro
         set(delId(t), float(p[19]));
         set(revId(t), float(p[20]));
         set(levelId(t), float(kit.levels[size_t(t)]));
-        set(routeId(t), float(routes ? juce::jlimit(0, kNumRoutes - 1, (*routes)[size_t(t)]) : kNumRoutes - 1));
         const auto& lfo = kit.lfos[size_t(t)];
         set(lfoId(t, 0), float(juce::jlimit(0, 15, int(lfo[0]))));
         set(lfoId(t, 1), float(juce::jlimit(0, 23, int(lfo[1]))));
@@ -475,38 +478,71 @@ int MdProcessor::applyKit(const mnm::md::Kit& kit, const std::array<int, 16>* ro
     for (auto& f : m_machineChanged) f.store(false);   // the kit's knobs, not the machines' defaults
     m_kitName = juce::String(kit.name);
     m_kitKey.clear();
-    m_kitSnapshot = MdLibrary::kitToJson(captureKit());
+    m_kitSnapshot = mnm::mddump::encodeKit(captureMdKit());
     return emptied;
 }
 
-LibraryKit MdProcessor::captureKit() const
+namespace {
+// The codec's kit (every byte of the message) and the engine's (what the plugin plays)
+mnm::md::Kit engineKit(const mnm::mddump::Kit& k)
 {
-    LibraryKit lk;
-    auto& k = lk.kit;
-    auto val = [this](const juce::String& id) { const auto* v = apvts.getRawParameterValue(id); return v ? int(std::lround(v->load())) : 0; };
-    auto u8 = [&](const juce::String& id) { return uint8_t(juce::jlimit(0, 127, val(id))); };
-    k.name = m_kitName.toStdString();
-    for (int t = 0; t < kTracks; ++t) {
-        k.machines[size_t(t)] = uint32_t(kMachines[juce::jlimit(0, kNumMachines - 1, val(machineId(t)))].id);
-        auto& p = k.params[size_t(t)];
-        for (int i = 0; i < 8; ++i) { p[size_t(i)] = u8(knobId(t, i)); p[size_t(8 + i)] = u8(fxId(t, i)); }
-        p[16] = u8(distId(t)); p[17] = u8(volId(t)); p[18] = u8(panId(t)); p[19] = u8(delId(t)); p[20] = u8(revId(t));
-        p[21] = u8(lfoId(t, 5)); p[22] = u8(lfoId(t, 6)); p[23] = u8(lfoId(t, 7));
-        k.levels[size_t(t)] = u8(levelId(t));
-        auto& l = k.lfos[size_t(t)];
-        l = m_kitLfos[size_t(t)];   // bytes 5.. are the OS's own LFO state, as the last kit had it
-        for (int i = 0; i < 5; ++i) l[size_t(i)] = uint8_t(val(lfoId(t, i)));
-        lk.routes[size_t(t)] = val(routeId(t));
+    mnm::md::Kit e;
+    e.position = k.position;
+    e.name = k.name;
+    for (int t = 0; t < 16; ++t) {
+        std::memcpy(e.params[size_t(t)].data(), k.params[t], 24);
+        std::memcpy(e.lfos[size_t(t)].data(), k.lfos[t], 36);
+        e.levels[size_t(t)] = k.levels[t];
+        e.machines[size_t(t)] = k.models[t];
     }
-    for (int fx = 0; fx < 4; ++fx)
-        for (int i = 0; i < 8; ++i) k.masterFx[size_t(fx)][size_t(i)] = u8(masterFxId(fx, i));
-    return lk;
+    const uint8_t* fx[4] = {k.reverb, k.delay, k.eq, k.dynamics};
+    for (int f = 0; f < 4; ++f) std::memcpy(e.masterFx[size_t(f)].data(), fx[f], 8);
+    return e;
 }
 
-int MdProcessor::loadLibraryKit(const juce::String& key, const LibraryKit& lk, const juce::String& name)
+mnm::mddump::Kit freshKit()   // what an empty kit slot holds: no groups, every LFO on its own track
 {
-    const int emptied = applyKit(lk.kit, &lk.routes);
+    mnm::mddump::Kit k;
+    for (int t = 0; t < 16; ++t) { k.trigGroups[t] = 127; k.muteGroups[t] = 127; k.lfos[t][0] = uint8_t(t); }
+    return k;
+}
+} // namespace
+
+mnm::mddump::Kit MdProcessor::captureMdKit() const
+{
+    auto k = m_baseKit;
+    auto val = [this](const juce::String& id) { const auto* v = apvts.getRawParameterValue(id); return v ? int(std::lround(v->load())) : 0; };
+    auto u8 = [&](const juce::String& id) { return uint8_t(juce::jlimit(0, 127, val(id))); };
+    const auto name = m_kitName.toUpperCase().substring(0, 16);
+    if (juce::String(k.name) != name) {   // the name bytes as the hardware writes them
+        std::memset(k.nameRaw, 0, sizeof(k.nameRaw));
+        std::memcpy(k.nameRaw, name.toRawUTF8(), size_t(name.length()));
+        k.name = name.toStdString();
+    }
+    for (int t = 0; t < kTracks; ++t) {
+        const auto id = uint32_t(kMachines[juce::jlimit(0, kNumMachines - 1, val(machineId(t)))].id);
+        if ((k.models[t] & 0xFF) != id) k.models[t] = id;   // the same machine keeps its flag bits
+        auto* p = k.params[t];
+        for (int i = 0; i < 8; ++i) { p[i] = u8(knobId(t, i)); p[8 + i] = u8(fxId(t, i)); }
+        p[16] = u8(distId(t)); p[17] = u8(volId(t)); p[18] = u8(panId(t)); p[19] = u8(delId(t)); p[20] = u8(revId(t));
+        p[21] = u8(lfoId(t, 5)); p[22] = u8(lfoId(t, 6)); p[23] = u8(lfoId(t, 7));
+        k.levels[t] = u8(levelId(t));
+        std::memcpy(k.lfos[t], m_kitLfos[size_t(t)].data(), 36);   // bytes 5.. are the OS's own LFO state, as the last kit had it
+        for (int i = 0; i < 5; ++i) k.lfos[t][i] = uint8_t(val(lfoId(t, i)));
+    }
+    uint8_t* fx[4] = {k.reverb, k.delay, k.eq, k.dynamics};
+    for (int f = 0; f < 4; ++f)
+        for (int i = 0; i < 8; ++i) fx[f][i] = u8(masterFxId(f, i));
+    return k;
+}
+
+int MdProcessor::loadMdKit(const juce::String& key, const mnm::mddump::Kit& kit, const juce::String& name)
+{
+    m_baseKit = kit;
+    const int emptied = applyKit(engineKit(kit));
     setLoadedKit(key, name);
+    for (int t = 0; t < kTracks; ++t)   // each track's sound is now the kit's
+        if (!m_locked[size_t(t)].load()) setLoadedSound(t, juce::String(mnm::mdcatalog::Catalog::soundHash(mnm::mdcatalog::Sound::fromKit(kit, t))), {});
     return emptied;
 }
 
@@ -514,14 +550,55 @@ void MdProcessor::setLoadedKit(const juce::String& key, const juce::String& name
 {
     m_kitKey = key;
     m_kitName = name;
-    m_kitSnapshot = MdLibrary::kitToJson(captureKit());
+    m_kitSnapshot = mnm::mddump::encodeKit(captureMdKit());
 }
 
 bool MdProcessor::kitModified() const
 {
-    if (m_kitSnapshot.isVoid()) return false;
-    auto now = MdLibrary::kitToJson(captureKit());
-    return juce::JSON::toString(now, true) != juce::JSON::toString(m_kitSnapshot, true);
+    return !m_kitSnapshot.empty() && mnm::mddump::encodeKit(captureMdKit()) != m_kitSnapshot;
+}
+
+mnm::mdcatalog::Sound MdProcessor::captureSound(int t) const
+{
+    return mnm::mdcatalog::Sound::fromKit(captureMdKit(), t);
+}
+
+bool MdProcessor::loadSound(int t, const juce::String& key, const mnm::mdcatalog::Sound& s, const juce::String& name)
+{
+    const int id = s.machine();
+    const int idx = machineIndexOf(id);
+    if (kMachines[idx].id != id) return false;
+    auto set = [&](const juce::String& pid, float v) { if (auto* p = apvts.getParameter(pid)) p->setValueNotifyingHost(p->convertTo0to1(v)); };
+    set(machineId(t), float(idx));
+    for (int k = 0; k < 8; ++k) set(knobId(t, k), float(s.params[k]));
+    for (int k = 0; k < 8; ++k) set(fxId(t, k), float(s.params[8 + k]));
+    set(distId(t), float(s.params[16])); set(volId(t), float(s.params[17])); set(panId(t), float(s.params[18]));
+    set(delId(t), float(s.params[19])); set(revId(t), float(s.params[20]));
+    std::array<uint8_t, 36> lfo{};
+    std::memcpy(lfo.data(), s.lfo, lfo.size());
+    if (s.lfoOnSelf()) lfo[0] = uint8_t(t);   // an LFO on its own track follows the sound
+    set(lfoId(t, 0), float(juce::jlimit(0, 15, int(lfo[0]))));
+    set(lfoId(t, 1), float(juce::jlimit(0, 23, int(lfo[1]))));
+    set(lfoId(t, 2), float(juce::jlimit(0, 7, int(lfo[2]))));
+    set(lfoId(t, 3), float(juce::jlimit(0, 7, int(lfo[3]))));
+    set(lfoId(t, 4), float(juce::jlimit(0, 2, int(lfo[4]))));
+    set(lfoId(t, 5), float(s.params[21])); set(lfoId(t, 6), float(s.params[22])); set(lfoId(t, 7), float(s.params[23]));
+    m_kitLfos[size_t(t)] = lfo;
+    m_kitLfoPending[size_t(t)].store(true);
+    m_machineChanged[size_t(t)].store(false);   // the sound's knobs, not the machine's defaults
+    setLoadedSound(t, key, name);
+    return true;
+}
+
+void MdProcessor::setLoadedSound(int t, const juce::String& key, const juce::String& name)
+{
+    m_sounds[size_t(t)] = {key, name, mnm::mdcatalog::Catalog::soundHash(captureSound(t))};
+}
+
+bool MdProcessor::soundModified(int t) const
+{
+    const auto& s = m_sounds[size_t(t)];
+    return s.key.isNotEmpty() && mnm::mdcatalog::Catalog::soundHash(captureSound(t)) != s.hash;
 }
 
 void MdProcessor::parameterChanged(const juce::String& id, float)
@@ -551,7 +628,14 @@ void MdProcessor::getStateInformation(juce::MemoryBlock& destData)
     juce::String locked;
     for (int t = 0; t < kTracks; ++t) locked << (m_locked[size_t(t)].load() ? "1" : "0");
     state.setProperty("locked", locked, nullptr);
-    state.setProperty("kitSnapshot", m_kitSnapshot.isVoid() ? juce::String() : juce::JSON::toString(m_kitSnapshot, true), nullptr);
+    state.setProperty("kitSnapshot", juce::String::toHexString(m_kitSnapshot.data(), int(m_kitSnapshot.size()), 0), nullptr);
+    const auto base = mnm::mddump::encodeKit(m_baseKit);
+    state.setProperty("baseKit", juce::String::toHexString(base.data(), int(base.size()), 0), nullptr);
+    juce::StringArray soundKeys, soundNames, soundHashes;
+    for (const auto& s : m_sounds) { soundKeys.add(s.key); soundNames.add(s.name); soundHashes.add(juce::String(s.hash)); }
+    state.setProperty("soundKeys", soundKeys.joinIntoString("|"), nullptr);
+    state.setProperty("soundNames", soundNames.joinIntoString("|"), nullptr);
+    state.setProperty("soundHashes", soundHashes.joinIntoString("|"), nullptr);
     state.removeChild(state.getChildWithName("SAMPLES"), nullptr);
     state.appendChild(samplesToTree(), nullptr);
     if (auto xml = state.createXml()) copyXmlToBinary(*xml, destData);
@@ -566,8 +650,19 @@ void MdProcessor::setStateInformation(const void* data, int sizeInBytes)
     m_kitKey = apvts.state.getProperty("kitKey", "").toString();
     const auto locked = apvts.state.getProperty("locked", "").toString();
     for (int t = 0; t < kTracks; ++t) m_locked[size_t(t)].store(locked[t] == '1');
-    const auto snap = apvts.state.getProperty("kitSnapshot", "").toString();
-    m_kitSnapshot = snap.isNotEmpty() ? juce::JSON::parse(snap) : juce::var();
+    auto hexBytes = [this](const char* prop) {
+        juce::MemoryBlock mb;
+        mb.loadFromHexString(apvts.state.getProperty(prop, "").toString());
+        return std::vector<uint8_t>(static_cast<const uint8_t*>(mb.getData()), static_cast<const uint8_t*>(mb.getData()) + mb.getSize());
+    };
+    m_kitSnapshot = hexBytes("kitSnapshot");
+    const auto base = hexBytes("baseKit");
+    if (base.empty() || !mnm::mddump::decodeKit(base.data(), base.size(), m_baseKit)) m_baseKit = freshKit();
+    juce::StringArray soundKeys, soundNames, soundHashes;
+    soundKeys.addTokens(apvts.state.getProperty("soundKeys", "").toString(), "|", "");
+    soundNames.addTokens(apvts.state.getProperty("soundNames", "").toString(), "|", "");
+    soundHashes.addTokens(apvts.state.getProperty("soundHashes", "").toString(), "|", "");
+    for (int t = 0; t < kTracks; ++t) m_sounds[size_t(t)] = {soundKeys[t], soundNames[t], soundHashes[t].toStdString()};
     samplesFromTree(apvts.state.getChildWithName("SAMPLES"));
     for (auto& f : m_machineChanged) f.store(false);   // restored knobs stay as saved
     m_snap = true;

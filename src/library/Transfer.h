@@ -5,6 +5,8 @@
 #pragma once
 #include <juce_core/juce_core.h>
 #include "library/MnmDump.h"
+#include "MdCatalog.h"
+#include "MdDump.h"
 
 namespace mnm::library {
 
@@ -32,5 +34,20 @@ juce::File writeTrackDragFile(const mnm::dump::Kit& kit, int track, const juce::
 juce::File writeKitDragFile(const mnm::dump::Kit& kit, const juce::String& baseName);
 // track = -1: the whole pattern as a multi-track SMF (one MIDI track per Monomachine track with trigs).
 juce::File writePatternMidiDragFile(const mnm::dump::Dump& dump, const mnm::dump::Pattern& pat, int track);
+
+// Machinedrum: a sound (.mdsound: one track's machine, parameters and LFO) or a kit (.mdkit: the kit message itself,
+// lossless), dragged from the Library app onto Monomodule MD.
+constexpr const char* kMdSoundFileExtension = ".mdsound";
+constexpr const char* kMdKitFileExtension = ".mdkit";
+struct MdTransferPayload {
+    bool isKit = false;
+    juce::String name;
+    mnm::mdcatalog::Sound sound;
+    mnm::mddump::Kit kit;
+};
+juce::File writeMdSoundDragFile(const mnm::mdcatalog::Sound& sound, const juce::String& baseName);
+juce::File writeMdKitDragFile(const mnm::mddump::Kit& kit, const juce::String& baseName);
+bool readMdTransferFile(const juce::File& file, MdTransferPayload& out);
+inline bool isMdTransferFile(const juce::String& path) { return path.endsWithIgnoreCase(kMdSoundFileExtension) || path.endsWithIgnoreCase(kMdKitFileExtension); }
 
 } // namespace mnm::library

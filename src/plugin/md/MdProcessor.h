@@ -16,6 +16,8 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "MdParams.h"
 #include "MdLibrary.h"
+#include "MdCatalog.h"
+#include "MdDump.h"
 #include "MdControl.h"
 #include "MdFirmware.h"
 #include "MdKit.h"
@@ -61,14 +63,22 @@ public:
     int machineIdOf(int t) const;
     // Kit loading (message thread): every track's machine and knobs, levels and the master effects. Machines the
     // plugin does not run (ROM/RAM, MIDI, controller, input) become GND---. Returns how many tracks were emptied.
-    int applyKit(const mnm::md::Kit& kit, const std::array<int, 16>* routes = nullptr);
+    int applyKit(const mnm::md::Kit& kit);
     juce::String kitName() const { return m_kitName; }
-    // The kit library (MdLibrary): the current sound as a kit, loading one by key, and which one is loaded
-    LibraryKit captureKit() const;
-    int loadLibraryKit(const juce::String& key, const LibraryKit& kit, const juce::String& name);   // returns emptied tracks
+    // The library (MdLibrary, the shared Monomodule Library): the sound as a Machinedrum kit (what the hardware would
+    // hold: unknown bytes such as trig groups and the LFOs' running state come from the kit last loaded), loading a
+    // kit or one track's sound by catalog id, and which ones are loaded.
+    mnm::mddump::Kit captureMdKit() const;
+    int loadMdKit(const juce::String& key, const mnm::mddump::Kit& kit, const juce::String& name);   // returns emptied tracks
     void setLoadedKit(const juce::String& key, const juce::String& name);   // after a save: the new kit is the loaded one
     juce::String loadedKitKey() const { return m_kitKey; }
     bool kitModified() const;   // the sound differs from the loaded kit
+    mnm::mdcatalog::Sound captureSound(int t) const;
+    bool loadSound(int t, const juce::String& key, const mnm::mdcatalog::Sound& sound, const juce::String& name);   // false: a machine the plugin has not
+    void setLoadedSound(int t, const juce::String& key, const juce::String& name);
+    juce::String loadedSoundKey(int t) const { return m_sounds[size_t(t)].key; }
+    juce::String loadedSoundName(int t) const { return m_sounds[size_t(t)].name; }
+    bool soundModified(int t) const;
     // LOCK: a locked track keeps its sound when a kit is loaded (kept in the plugin state)
     bool trackLocked(int t) const { return m_locked[size_t(t)].load(); }
     void setTrackLocked(int t, bool on) { m_locked[size_t(t)].store(on); }
@@ -115,7 +125,10 @@ private:
     void handleAsyncUpdate() override;
 
     juce::String m_firmwarePath, m_status, m_kitName, m_kitKey;
-    juce::var m_kitSnapshot;   // the loaded kit as captured right after loading (kitModified compares with it)
+    mnm::mddump::Kit m_baseKit;                   // the kit last loaded: the bytes the plugin has no control for
+    std::vector<uint8_t> m_kitSnapshot;           // the loaded kit as captured right after loading (kitModified compares)
+    struct LoadedSound { juce::String key, name; std::string hash; };
+    std::array<LoadedSound, kTracks> m_sounds;
     std::unique_ptr<mnm::md::Firmware> m_fw;
     std::unique_ptr<mnm::md::ControlCpu> m_cpu;
     std::unique_ptr<mnm::md::VoiceEngine> m_voices;
