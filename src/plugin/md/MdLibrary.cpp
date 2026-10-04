@@ -139,14 +139,40 @@ juce::Result MdLibrary::importSyx(const juce::File& syx, juce::String* projectId
     return juce::Result::ok();
 }
 
-juce::Result MdLibrary::saveKit(const juce::String& name, const mnm::mddump::Kit& kit, const juce::String& parentKey, juce::String* keyOut)
+juce::Result MdLibrary::saveKit(const juce::String& name, const mnm::mddump::Kit& kit, const juce::String& parentKey, juce::String* keyOut,
+                                const LibraryModel::Slot& into)
 {
-    return m_model->saveMdKit(kit, name, parentKey, kSavedFrom, {}, keyOut);
+    return m_model->saveMdKit(kit, name, parentKey, kSavedFrom, into, keyOut);
 }
 
-juce::Result MdLibrary::saveSound(const juce::String& name, const mnm::mdcatalog::Sound& sound, const juce::String& parentKey, juce::String* keyOut)
+juce::Result MdLibrary::saveSound(const juce::String& name, const mnm::mdcatalog::Sound& sound, const juce::String& parentKey, juce::String* keyOut,
+                                  const LibraryModel::Slot& into)
 {
-    return m_model->saveMdSound(sound, name, parentKey, kSavedFrom, {}, keyOut);
+    return m_model->saveMdSound(sound, name, parentKey, kSavedFrom, into, keyOut);
+}
+
+LibraryModel::Slot MdLibrary::projectSlotOfKit(const juce::String& key)
+{
+    m_model->refresh();
+    std::string id = key.toStdString();
+    for (int hop = 0; hop < 8 && !id.empty(); ++hop) {
+        if (auto s = m_model->projectSlotOfMdKit(id); s.valid()) return s;
+        const auto* k = m_model->mdCatalog().kit(id);
+        id = k ? k->parentId : std::string();
+    }
+    return {};
+}
+
+LibraryModel::Slot MdLibrary::projectSlotOfSound(const juce::String& key)
+{
+    m_model->refresh();
+    std::string id = key.toStdString();
+    for (int hop = 0; hop < 8 && !id.empty(); ++hop) {
+        if (auto s = m_model->projectSlotOfMdSound(id); s.valid()) return s;
+        const auto* s = m_model->mdCatalog().sound(id);
+        id = s ? s->parentId : std::string();
+    }
+    return {};
 }
 
 } // namespace mnm::plugin::md

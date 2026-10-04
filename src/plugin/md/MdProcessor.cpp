@@ -28,6 +28,13 @@ MdProcessor::MdProcessor()
     for (int t = 0; t < kTracks; ++t) {   // an empty kit's bytes: no trig / mute groups, every LFO on its own track
         m_baseKit.trigGroups[t] = 127; m_baseKit.muteGroups[t] = 127; m_baseKit.lfos[t][0] = uint8_t(t);
     }
+    for (int i = 0; i < kNumMachines; ++i) m_idOfIndex[size_t(i)] = kMachines[i].id;
+    for (int t = 0; t < kTracks; ++t) {
+        m_shadowIdx[size_t(t)] = machineIndexOf(kDefaultKit[t].id);
+        for (int k = 0; k < 8; ++k)
+            if (auto* sp = dynamic_cast<MdSynParam*>(apvts.getParameter(knobId(t, k))))
+                sp->setSources(apvts.getRawParameterValue(machineId(t)), &m_knobInfo, m_idOfIndex.data());
+    }
     for (int t = 0; t < kTracks; ++t) {
         auto& tr = m_tracks[size_t(t)];
         tr.machine = apvts.getRawParameterValue(machineId(t));
@@ -84,6 +91,12 @@ void MdProcessor::loadEngine()
         m_fw = std::move(fw); m_engine = std::move(engine);
         m_snap = true;
         m_status = "OS loaded: " + juce::File(m_firmwarePath).getFileName();
+        for (const auto& m : m_fw->machines) {   // the knob names and defaults the parameters show
+            if (m.id < 0 || m.id > 255) continue;
+            for (int k = 0; k < 8; ++k) { m_knobInfo.labels[size_t(m.id)][size_t(k)] = juce::String(m.labels[size_t(k)]); m_knobInfo.defaults[size_t(m.id)][size_t(k)] = m.defaults[size_t(k)]; }
+            m_knobInfo.known[size_t(m.id)] = true;
+        }
+        triggerAsyncUpdate();   // the hosts re-read the names (on the message thread)
         {   // the UW samples (inline: the engine lock is already held)
             std::array<std::vector<float>, mnm::md::VoiceEngine::kSlots> data;
             std::array<double, mnm::md::VoiceEngine::kSlots> rates{};
@@ -589,16 +602,92 @@ void MdProcessor::parameterChanged(const juce::String& id, float)
         if (id == machineId(t)) { m_machineChanged[size_t(t)].store(true); triggerAsyncUpdate(); }
 }
 
-// A machine change loads that machine's knob defaults, as an assignment does on the hardware
+// A machine change brings back that machine's knob values from the last time the track used it, else its defaults (as
+// an assignment does on the hardware). Kits and sounds bring their own values (their loads clear the change flag).
 void MdProcessor::handleAsyncUpdate()
 {
     for (int t = 0; t < kTracks; ++t) {
-        if (!m_machineChanged[size_t(t)].exchange(false)) continue;
-        const auto* m = machineInfo(machineIdOf(t));
-        if (!m) continue;
-        for (int k = 0; k < 8; ++k)
-            if (auto* p = apvts.getParameter(knobId(t, k))) p->setValueNotifyingHost(p->convertTo0to1(float(m->defaults[size_t(k)])));
+        const int cur = juce::jlimit(0, kNumMachines - 1, int(std::lround(m_tracks[size_t(t)].machine->load())));
+        const bool user = m_machineChanged[size_t(t)].exchange(false);
+        const int old = m_shadowIdx[size_t(t)];
+        if (cur == old) continue;
+        m_shadowIdx[size_t(t)] = cur;
+        if (!user) continue;
+        for (int k = 0; k < 8; ++k) m_shadow[size_t(t)][size_t(old)][size_t(k)] = uint8_t(juce::jlimit(0, 127, int(std::lround(m_tracks[size_t(t)].knobs[k]->load()))));
+        m_visited[size_t(t)][size_t(old)] = true;
+        const auto* m = machineInfo(kMachines[cur].id);
+        for (int k = 0; k < 8; ++k) {
+            const int v = m_visited[size_t(t)][size_t(cur)] ? int(m_shadow[size_t(t)][size_t(cur)][size_t(k)]) : m ? int(m->defaults[size_t(k)]) : -1;
+            if (v >= 0) if (auto* p = apvts.getParameter(knobId(t, k))) p->setValueNotifyingHost(p->convertTo0to1(float(v)));
+        }
     }
+    updateHostDisplay(ChangeDetails().withParameterInfoChanged(true));   // the knobs are named after the machines
+}
+
+juce::ValueTree MdProcessor::shadowsToTree() const
+{
+    juce::ValueTree shadows("SHADOWS");
+    for (int t = 0; t < kTracks; ++t)
+        for (int i = 0; i < kNumMachines; ++i) {
+            if (!m_visited[size_t(t)][size_t(i)] || i == m_shadowIdx[size_t(t)]) continue;   // the current machine's values are the parameters
+            juce::ValueTree s("SHADOW");
+            s.setProperty("track", t + 1, nullptr);
+            s.setProperty("machine", kMachines[i].id, nullptr);
+            juce::StringArray vs;
+            for (int k = 0; k < 8; ++k) vs.add(juce::String(int(m_shadow[size_t(t)][size_t(i)][size_t(k)])));
+            s.setProperty("values", vs.joinIntoString(","), nullptr);
+            shadows.appendChild(s, nullptr);
+        }
+    return shadows;
+}
+
+void MdProcessor::shadowsFromTree(const juce::ValueTree& shadows)
+{
+    for (auto& v : m_visited) v.fill(false);
+    for (int t = 0; t < kTracks; ++t) m_shadowIdx[size_t(t)] = juce::jlimit(0, kNumMachines - 1, int(std::lround(m_tracks[size_t(t)].machine->load())));
+    if (!shadows.isValid()) return;
+    for (auto s : shadows) {
+        const int t = int(s.getProperty("track")) - 1;
+        const int i = machineIndexOf(int(s.getProperty("machine")));
+        juce::StringArray vs;
+        vs.addTokens(s.getProperty("values").toString(), ",", "");
+        if (t < 0 || t >= kTracks || kMachines[i].id != int(s.getProperty("machine")) || vs.size() != 8) continue;
+        for (int k = 0; k < 8; ++k) m_shadow[size_t(t)][size_t(i)][size_t(k)] = uint8_t(juce::jlimit(0, 127, vs[k].getIntValue()));
+        m_visited[size_t(t)][size_t(i)] = true;
+    }
+}
+
+void MdProcessor::initKit()
+{
+    static const juce::StringArray globals{masterId(), velModeId(), accentId()};   // the plugin's own settings stay
+    for (auto* p : getParameters())
+        if (auto* rp = dynamic_cast<juce::RangedAudioParameter*>(p); rp && !globals.contains(rp->getParameterID())) {
+            rp->beginChangeGesture();
+            rp->setValueNotifyingHost(rp->getDefaultValue());
+            rp->endChangeGesture();
+        }
+    for (int t = 0; t < kTracks; ++t) {   // the knob defaults follow the machines just set back
+        for (int k = 0; k < 8; ++k)
+            if (auto* p = apvts.getParameter(knobId(t, k))) p->setValueNotifyingHost(p->getDefaultValue());
+        m_kitLfos[size_t(t)] = {};
+        m_kitLfos[size_t(t)][0] = uint8_t(t);
+        m_kitLfoPending[size_t(t)].store(true);
+        m_sounds[size_t(t)] = {};
+        m_baseKit.trigGroups[t] = 127; m_baseKit.muteGroups[t] = 127;
+    }
+    for (auto& f : m_machineChanged) f.store(false);
+    for (auto& v : m_visited) v.fill(false);
+    for (int t = 0; t < kTracks; ++t) m_shadowIdx[size_t(t)] = juce::jlimit(0, kNumMachines - 1, int(std::lround(m_tracks[size_t(t)].machine->load())));
+    m_baseKit = {};
+    for (int t = 0; t < kTracks; ++t) { m_baseKit.trigGroups[t] = 127; m_baseKit.muteGroups[t] = 127; m_baseKit.lfos[t][0] = uint8_t(t); }
+    m_kitName.clear(); m_kitKey.clear(); m_kitSnapshot.clear();
+    m_snap = true;
+    updateHostDisplay(ChangeDetails().withParameterInfoChanged(true));
+}
+
+void MdProcessor::clearFirmware()
+{
+    setFirmwarePath({}, true);
 }
 
 void MdProcessor::getStateInformation(juce::MemoryBlock& destData)
@@ -620,6 +709,8 @@ void MdProcessor::getStateInformation(juce::MemoryBlock& destData)
     state.setProperty("soundHashes", soundHashes.joinIntoString("|"), nullptr);
     state.removeChild(state.getChildWithName("SAMPLES"), nullptr);
     state.appendChild(samplesToTree(), nullptr);
+    state.removeChild(state.getChildWithName("SHADOWS"), nullptr);
+    state.appendChild(shadowsToTree(), nullptr);
     if (auto xml = state.createXml()) copyXmlToBinary(*xml, destData);
 }
 
@@ -646,6 +737,7 @@ void MdProcessor::setStateInformation(const void* data, int sizeInBytes)
     soundHashes.addTokens(apvts.state.getProperty("soundHashes", "").toString(), "|", "");
     for (int t = 0; t < kTracks; ++t) m_sounds[size_t(t)] = {soundKeys[t], soundNames[t], soundHashes[t].toStdString()};
     samplesFromTree(apvts.state.getChildWithName("SAMPLES"));
+    shadowsFromTree(apvts.state.getChildWithName("SHADOWS"));
     for (auto& f : m_machineChanged) f.store(false);   // restored knobs stay as saved
     m_snap = true;
 }

@@ -4,10 +4,18 @@
 
 namespace mnm::plugin {
 
-// Blocking screen shown until a valid Monomachine OS file has been selected.
+// The OS file a plugin needs (Monomachine by default; Monomodule MD passes the Machinedrum's)
+struct OsRequirement {
+    juce::String device = "Monomachine", osFile = "Elektron_SFX6-60_OS1.32B.syx", zipFile = "Elektron_SFX6-60_OS1.32B.zip";
+    juce::String url;   // empty: kOsDownloadUrl
+    juce::String linkText;   // empty: "elektron.se  -  <zipFile>"
+    bool directDownload = true;   // the link downloads the zip itself (else it opens the device's download page)
+};
+
+// Blocking screen shown until a valid OS file has been selected.
 class MissingOsOverlay : public juce::Component {
 public:
-    explicit MissingOsOverlay(std::function<void()> onSelect);
+    explicit MissingOsOverlay(std::function<void()> onSelect, const OsRequirement& os = {});
     void paint(juce::Graphics&) override;
     void lookAndFeelChanged() override;   // the skin changed: re-tint the labels that carry their own colour
     void resized() override;
@@ -22,7 +30,7 @@ private:
 // Plugin info screen (version + contact), opened from the config menu.
 class AboutOverlay : public juce::Component {
 public:
-    explicit AboutOverlay(const juce::String& pluginTitle);
+    explicit AboutOverlay(const juce::String& pluginTitle, const juce::String& device = "Monomachine");
     void paint(juce::Graphics&) override;
     void lookAndFeelChanged() override;
     void resized() override;

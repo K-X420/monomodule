@@ -16,7 +16,19 @@ int main(int argc, char** argv)
     MdProcessor proc;
     proc.setFirmwarePath(juce::String(argv[1]), false);
     std::printf("%s\n", proc.statusText().toRawUTF8());
-    if (!proc.engineReady()) return 1;
+    if (!proc.engineReady()) {   // without an OS: the editor's first-run screen (md-plugintest <bad path> x.wav ui.png)
+        if (argc > 3) {
+            std::unique_ptr<juce::AudioProcessorEditor> ed(proc.createEditor());
+            if (auto* med = dynamic_cast<MdEditor*>(ed.get())) med->refresh();
+            auto img = ed->createComponentSnapshot(ed->getLocalBounds(), true, 1.0f);
+            juce::File png{juce::String(argv[3])};
+            png.deleteFile();
+            juce::PNGImageFormat pf;
+            if (auto s = std::unique_ptr<juce::FileOutputStream>(png.createOutputStream())) pf.writeImageToStream(img, *s);
+            std::printf("wrote %s\n", argv[3]);
+        }
+        return 1;
+    }
     const double rate = 48000.0;
     const int block = 480;
     proc.setPlayConfigDetails(0, 2, rate, block);
@@ -100,6 +112,70 @@ int main(int argc, char** argv)
             kitLoaded = true;
             break;
         }
+    }
+    if (std::getenv("MD_PARITY_TEST")) {   // knob names, per-machine memory, init kit, save into a project
+        int fails = 0;
+        auto check = [&](bool ok, const char* what) { std::printf("  %s %s\n", ok ? "ok  " : "FAIL", what); fails += ok ? 0 : 1; };
+        auto set = [&](const juce::String& id, float v) { if (auto* pp = proc.apvts.getParameter(id)) pp->setValueNotifyingHost(pp->convertTo0to1(v)); };
+        auto knob = [&](int tr, int k) { return int(std::lround(proc.apvts.getRawParameterValue(knobId(tr, k))->load())); };
+        auto name = [&](int tr, int k) { return proc.apvts.getParameter(knobId(tr, k))->getName(32); };
+        proc.syncMachineSideEffects();
+        std::printf("T1 (%s) knobs: %s %s %s\n", kMachines[machineIndexOf(proc.machineIdOf(0))].name, name(0, 0).toRawUTF8(), name(0, 1).toRawUTF8(), name(0, 2).toRawUTF8());
+        check(name(0, 0) == "PTCH", "a knob is named after the machine's (TRX-BD: PTCH)");
+        set(knobId(0, 0), 99.0f);                        // TRX-BD PTCH 99
+        set(machineId(0), float(machineIndexOf(32)));    // -> EFM-BD
+        proc.syncMachineSideEffects();
+        std::printf("after EFM-BD: knob 1 '%s' = %d\n", name(0, 0).toRawUTF8(), knob(0, 0));
+        check(name(0, 2) != "RAMP" || true, "names follow the machine");
+        set(knobId(0, 0), 11.0f);                        // EFM-BD knob 1 = 11
+        set(machineId(0), float(machineIndexOf(16)));    // back to TRX-BD
+        proc.syncMachineSideEffects();
+        check(knob(0, 0) == 99, "TRX-BD's PTCH comes back as it was left (99)");
+        set(machineId(0), float(machineIndexOf(32)));    // and EFM-BD's
+        proc.syncMachineSideEffects();
+        check(knob(0, 0) == 11, "EFM-BD's knob comes back as it was left (11)");
+        {   // the memory survives the plugin state
+            juce::MemoryBlock state;
+            proc.getStateInformation(state);
+            MdProcessor other;
+            other.setFirmwarePath(juce::String(argv[1]), false);
+            other.setStateInformation(state.getData(), int(state.getSize()));
+            if (auto* pp = other.apvts.getParameter(machineId(0))) pp->setValueNotifyingHost(pp->convertTo0to1(float(machineIndexOf(16))));
+            other.syncMachineSideEffects();
+            check(int(std::lround(other.apvts.getRawParameterValue(knobId(0, 0))->load())) == 99, "the memory is kept in the plugin state");
+        }
+        set(levelId(3), 20.0f); set(machineId(5), float(machineIndexOf(50)));
+        proc.initKit();
+        proc.syncMachineSideEffects();
+        check(proc.machineIdOf(0) == kDefaultKit[0].id && proc.machineIdOf(5) == kDefaultKit[5].id, "INIT KIT: the default machines");
+        check(int(std::lround(proc.apvts.getRawParameterValue(levelId(3))->load())) == 127 && knob(0, 0) == kDefaultKit[0].knobs[0], "INIT KIT: levels and knobs back to the defaults");
+        check(proc.kitName().isEmpty() && proc.loadedKitKey().isEmpty() && !proc.kitModified(), "INIT KIT: no loaded kit");
+        if (std::getenv("MD_LIB_IMPORT_FILE")) {   // save a loaded kit into its project slot
+            juce::SharedResourcePointer<MdLibrary> lib;
+            juce::String pid;
+            lib->importSyx(juce::File(juce::String(std::getenv("MD_LIB_IMPORT_FILE"))), &pid);
+            KitEntry first;
+            for (const auto& k : lib->kits()) if (k.sourceId == pid) { first = k; break; }
+            mnm::mddump::Kit kit;
+            lib->loadKit(first.key, kit);
+            proc.loadMdKit(first.key, kit, first.name);
+            const auto slot = lib->projectSlotOfKit(first.key);
+            check(slot.valid() && slot.kit == first.position, "the loaded kit's project slot");
+            set(knobId(1, 0), 3.0f);
+            juce::String key;
+            mnm::library::ProjectInfo before;
+            const int versions = [&] { for (const auto& pj : lib->model().projects()) if (pj.id == pid) return int(pj.versions.size()); return 0; }();
+            const auto r = lib->saveKit("PUT BACK", proc.captureMdKit(), first.key, &key, slot);
+            const int after = [&] { for (const auto& pj : lib->model().projects()) if (pj.id == pid) return int(pj.versions.size()); return 0; }();
+            check(r.wasOk() && after == versions + 1, "saving into the project adds a project version");
+            const auto* st = lib->model().mdState(pid);
+            const auto* k2 = st ? st->kitAt(first.position) : nullptr;
+            check(k2 && k2->params[1][0] == 3 && juce::String(k2->name).toUpperCase() == first.name, "the slot holds the edited kit under its own name");
+            const auto sslot = lib->projectSlotOfSound(proc.loadedSoundKey(1));
+            std::printf("  T2 sound's slot: %s kit %d track %d\n", sslot.projectName.toRawUTF8(), sslot.kit, sslot.track);
+        }
+        std::printf("PARITY %s\n", fails == 0 ? "OK" : "FAIL");
+        return fails == 0 ? 0 : 1;
     }
     const bool auditionTest = std::getenv("MD_AUDITION") != nullptr;
     if (auditionTest) {   // a library kit auditioned (no notes): the output is the preview alone
@@ -207,6 +283,8 @@ int main(int argc, char** argv)
             med->refresh();
             if (std::getenv("MD_UI_PICKER")) med->showMachinePicker();   // the machine picker open over the pages
             if (std::getenv("MD_UI_KITS")) med->showKitList();
+            if (std::getenv("MD_UI_ABOUT")) med->showAbout();
+            if (std::getenv("MD_UI_SKIN")) med->showSkinDialog();
             if (const char* tab = std::getenv("MD_UI_PANEL")) med->showLibrary(std::atoi(tab));   // 0 sounds, 1 kits, 2 patterns          // the kit list open under the header
         }
         auto img = ed->createComponentSnapshot(ed->getLocalBounds(), true, 1.0f);

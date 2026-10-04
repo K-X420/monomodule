@@ -13,21 +13,22 @@ static juce::Colour panelColour(const juce::Component& c)
 // ---------------------------------------------------------------------------
 // MissingOsOverlay
 
-MissingOsOverlay::MissingOsOverlay(std::function<void()> onSelect)
-    : m_link("elektron.se  -  Elektron_SFX6-60_OS1.32B.zip", juce::URL(kOsDownloadUrl))
+MissingOsOverlay::MissingOsOverlay(std::function<void()> onSelect, const OsRequirement& os)
+    : m_link(os.linkText.isNotEmpty() ? os.linkText : "elektron.se  -  " + os.zipFile, juce::URL(os.url.isNotEmpty() ? os.url : juce::String(kOsDownloadUrl)))
 {
-    m_title.setText("MONOMACHINE OS REQUIRED", juce::dontSendNotification);
+    m_title.setText(os.device.toUpperCase() + " OS REQUIRED", juce::dontSendNotification);
     m_title.setFont(juce::Font(juce::FontOptions(18.0f, juce::Font::bold)));
     m_title.setJustificationType(juce::Justification::centred);
     m_body.setText(
         "This plugin is an emulator: software that behaves exactly like a real\n"
-        "Elektron Monomachine. To make sound, it needs a copy of the Monomachine's\n"
+        "Elektron " + os.device + ". To make sound, it needs a copy of the " + os.device + "'s\n"
         "operating system (its \"OS\" file). That file belongs to Elektron, so it is not\n"
         "included here - but it is a free download from Elektron's own website.\n"
         "\n"
-        "1.  Click the link below. It downloads a file called Elektron_SFX6-60_OS1.32B.zip\n"
-        "2.  Double-click that zip to unpack it\n"
-        "3.  Inside is the OS file itself: Elektron_SFX6-60_OS1.32B.syx\n"
+        + (os.directDownload ? "1.  Click the link below. It downloads a file called " + os.zipFile + "\n"
+                             : "1.  Click the link below and download " + os.zipFile + " from that page\n")
+        + "2.  Double-click that zip to unpack it\n"
+        "3.  Inside is the OS file itself: " + os.osFile + "\n"
         "4.  Click Select OS File below and choose that .syx file\n"
         "\n"
         "You only need to do this once: the Monomodule plugins and app share this setting.",
@@ -80,7 +81,7 @@ void MissingOsOverlay::resized()
 // ---------------------------------------------------------------------------
 // AboutOverlay
 
-AboutOverlay::AboutOverlay(const juce::String& pluginTitle)
+AboutOverlay::AboutOverlay(const juce::String& pluginTitle, const juce::String& device)
     : m_insta("DM @shnolk on Instagram", juce::URL("https://www.instagram.com/shnolk")),
       m_mail("shnolk@halftone.world", juce::URL("mailto:shnolk@halftone.world"))
 {
@@ -91,9 +92,11 @@ AboutOverlay::AboutOverlay(const juce::String& pluginTitle)
     m_version.setJustificationType(juce::Justification::centred);
     lookAndFeelChanged();
     m_body.setText(
-        juce::String(kPluginTagline) + ". It runs the sound engine from the "
-        "Monomachine OS file you supply, so what you hear is what the hardware sounds like.\n\n"
-        + kCredits + "\n\n" + kDisclaimer,
+        (device == "Monomachine" ? juce::String(kPluginTagline) : "A chip-level emulation of the Elektron " + device) + ". It runs the sound engine from the "
+        + device + " OS file you supply, so what you hear is what the hardware sounds like.\n\n"
+        + (device == "Monomachine" ? juce::String(kCredits) : "Built on Monomodule by Shnolk (GNU AGPL v3); the Machinedrum support is not part of Shnolk's release.")
+        + "\n\n" + (device == "Monomachine" ? juce::String(kDisclaimer)
+                     : "Not affiliated with or endorsed by Elektron. " + device + " is a trademark of Elektron Music Machines MAQ AB, named here only to say what this software emulates."),
         juce::dontSendNotification);
     m_body.setJustificationType(juce::Justification::centredTop);
     m_body.setFont(juce::Font(juce::FontOptions(14.0f)));
@@ -103,7 +106,7 @@ AboutOverlay::AboutOverlay(const juce::String& pluginTitle)
     m_mail.setFont(juce::Font(juce::FontOptions(14.0f)), false, juce::Justification::centred);
     m_close.onClick = [this] { setVisible(false); };
     addAndMakeVisible(m_title); addAndMakeVisible(m_version); addAndMakeVisible(m_body);
-    addAndMakeVisible(m_contactLabel); addAndMakeVisible(m_insta); addAndMakeVisible(m_mail);
+    if (device == "Monomachine") { addAndMakeVisible(m_contactLabel); addAndMakeVisible(m_insta); addAndMakeVisible(m_mail); }   // Shnolk's contact is for Shnolk's plugins
     addAndMakeVisible(m_close);
 }
 

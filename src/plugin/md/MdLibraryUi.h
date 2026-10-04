@@ -71,18 +71,20 @@ private:
 
 class MdSaveDialog : public juce::Component {
 public:
-    static constexpr int kS = 2, kLcdW = 220, kLcdH = 70;
+    static constexpr int kS = 2, kLcdW = 240, kLcdH = 88;
     MdSaveDialog() { setWantsKeyboardFocus(true); }
-    void open(const juce::String& title, const juce::String& name);
-    std::function<juce::String(const juce::String& name)> onSave;   // returns an error, empty on success
+    // projectOption: "" = none, else what ticking it does ("PROJECT X, KIT 03 T2"): the item also goes into that slot
+    void open(const juce::String& title, const juce::String& name, const juce::String& projectOption = {});
+    std::function<juce::String(const juce::String& name, bool intoProject)> onSave;   // returns an error, empty on success
     void paint(juce::Graphics&) override;
     void mouseDown(const juce::MouseEvent&) override;
     bool keyPressed(const juce::KeyPress&) override;
 private:
     void save();
     juce::Rectangle<int> box() const { return juce::Rectangle<int>(0, 0, kLcdW * kS, kLcdH * kS).withCentre(getLocalBounds().getCentre()); }
-    juce::String m_title, m_name, m_error;
-    juce::Rectangle<int> m_cancel, m_save;   // LCD px inside the box
+    juce::String m_title, m_name, m_error, m_project;
+    bool m_intoProject = false;
+    juce::Rectangle<int> m_cancel, m_save, m_option;   // LCD px inside the box
 };
 
 } // namespace mnm::plugin::md

@@ -82,6 +82,10 @@ public:
     juce::String loadedSoundKey(int t) const { return m_sounds[size_t(t)].key; }
     juce::String loadedSoundName(int t) const { return m_sounds[size_t(t)].name; }
     bool soundModified(int t) const;
+    // INIT KIT: every track, routing, LFO and master effect back to a fresh instance's; the library refs are cleared
+    void initKit();
+    void syncMachineSideEffects() { handleUpdateNowIfNeeded(); }   // dev tools without a message loop: apply machine changes now
+    void clearFirmware();   // forgets the OS file (here and for every Monomodule MD)
     // Library previews (auditioning a kit or a sound before loading it), mixed into the main output. The renderer and
     // its own emulated Machinedrum exist from the first preview on.
     void previewPlay(const juce::String& key, const std::function<mnm::mdpreview::Spec()>& build);
@@ -158,6 +162,15 @@ private:
     void mixPreview(juce::AudioBuffer<float>& buffer);
     std::array<std::atomic<float>, kTracks> m_activity{};
     std::array<std::atomic<bool>, kTracks> m_machineChanged{};   // message thread: load that machine's defaults
+    // per-machine knob memory (state, not parameters): the eight values of every machine a track has visited, as
+    // Monomodule keeps its SYN values; a machine change brings back that machine's values (else its defaults)
+    std::array<std::array<std::array<uint8_t, 8>, kNumMachines>, kTracks> m_shadow{};
+    std::array<std::array<bool, kNumMachines>, kTracks> m_visited{};
+    std::array<int, kTracks> m_shadowIdx{};
+    juce::ValueTree shadowsToTree() const;
+    void shadowsFromTree(const juce::ValueTree& t);
+    MachineKnobInfo m_knobInfo;
+    std::array<int, kNumMachines> m_idOfIndex{};
 
     // engine-rate (44.1 kHz) output FIFO: the six DAC channels, and their host-rate resamplers
     static constexpr int kDac = mnm::md::MixEngine::kChannels;

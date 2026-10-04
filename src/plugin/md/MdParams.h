@@ -88,6 +88,47 @@ constexpr int kMasterFxDefaults[4][8] = {
 };
 
 inline juce::String tp(int t) { return "t" + juce::String(t + 1); }
+
+// The knob labels and defaults of every machine, from the OS file (empty until one is loaded)
+struct MachineKnobInfo {
+    std::array<std::array<juce::String, 8>, 256> labels;
+    std::array<std::array<uint8_t, 8>, 256> defaults{};
+    std::array<bool, 256> known{};
+};
+
+// One synthesis knob of a track: a raw 0..127 kit byte whose name and default follow the track's machine (read live
+// from the machine parameter), as Monomodule's SYN knobs. Hosts that cache names are told to re-read them when the
+// machine changes (AudioProcessor::updateHostDisplay).
+class MdSynParam : public juce::AudioParameterInt {
+public:
+    MdSynParam(const juce::String& id, int k, int def)
+        : juce::AudioParameterInt(juce::ParameterID{id, 1}, "SYN " + juce::String(k + 1), 0, 127, def), m_k(k), m_default(def) {}
+    void setSources(std::atomic<float>* machineIndex, const MachineKnobInfo* info, const int* idOfIndex)
+    {
+        m_machine = machineIndex; m_info = info; m_idOf = idOfIndex;
+    }
+    juce::String getName(int maximumStringLength) const override
+    {
+        const int id = machineIdNow();
+        const juce::String label = id >= 0 && m_info->known[size_t(id)] ? m_info->labels[size_t(id)][size_t(m_k)] : juce::String();
+        return (label.isNotEmpty() ? label : "SYN " + juce::String(m_k + 1)).substring(0, maximumStringLength);
+    }
+    float getDefaultValue() const override
+    {
+        const int id = machineIdNow();
+        return convertTo0to1(float(id >= 0 && m_info->known[size_t(id)] ? int(m_info->defaults[size_t(id)][size_t(m_k)]) : m_default));
+    }
+private:
+    int machineIdNow() const
+    {
+        if (!m_machine || !m_info || !m_idOf) return -1;
+        return m_idOf[std::max(0, int(std::lround(m_machine->load())))];
+    }
+    int m_k, m_default;
+    std::atomic<float>* m_machine = nullptr;
+    const MachineKnobInfo* m_info = nullptr;
+    const int* m_idOf = nullptr;
+};
 inline juce::String machineId(int t) { return tp(t) + "mach"; }
 inline juce::String knobId(int t, int k) { return tp(t) + "p" + juce::String(k + 1); }
 inline juce::String fxId(int t, int k) { return tp(t) + "fx" + juce::String(k + 1); }
@@ -122,7 +163,7 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
         auto g = std::make_unique<juce::AudioProcessorParameterGroup>(tp(t), "T" + juce::String(t + 1), " ");
         g->addChild(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{machineId(t), 1}, "MACHINE", names, machineIndexOf(kDefaultKit[t].id)));
         for (int k = 0; k < 8; ++k)
-            g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{knobId(t, k), 1}, "SYN " + juce::String(k + 1), 0, 127, kDefaultKit[t].knobs[size_t(k)]));
+            g->addChild(std::make_unique<MdSynParam>(knobId(t, k), k, kDefaultKit[t].knobs[size_t(k)]));
         for (int k = 0; k < 8; ++k)
             g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{fxId(t, k), 1}, kFxLabels[k], 0, 127, kFxDefaults[k]));
         g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{distId(t), 1}, "DIST", 0, 127, 0));

@@ -35,8 +35,14 @@ public:
     bool loadSound(const juce::String& key, mnm::mdcatalog::Sound& out);
     // A .syx with Machinedrum kits becomes a project (the same file twice is one project); projectIdOut names it
     juce::Result importSyx(const juce::File& syx, juce::String* projectIdOut = nullptr);
-    juce::Result saveKit(const juce::String& name, const mnm::mddump::Kit& kit, const juce::String& parentKey, juce::String* keyOut = nullptr);
-    juce::Result saveSound(const juce::String& name, const mnm::mdcatalog::Sound& sound, const juce::String& parentKey, juce::String* keyOut = nullptr);
+    // `into` valid = the item also goes into that project slot, as a new version of the project (LibraryModel)
+    juce::Result saveKit(const juce::String& name, const mnm::mddump::Kit& kit, const juce::String& parentKey, juce::String* keyOut = nullptr,
+                         const mnm::library::LibraryModel::Slot& into = {});
+    juce::Result saveSound(const juce::String& name, const mnm::mdcatalog::Sound& sound, const juce::String& parentKey, juce::String* keyOut = nullptr,
+                           const mnm::library::LibraryModel::Slot& into = {});
+    // The project slot a loaded item came from: its own, or the one of what it was made from (a saved item's parent)
+    mnm::library::LibraryModel::Slot projectSlotOfKit(const juce::String& key);
+    mnm::library::LibraryModel::Slot projectSlotOfSound(const juce::String& key);
     bool isFavourite(const juce::String& key) { return m_model->user().isFavourite(key); }
     void setFavourite(const juce::String& key, bool on) { m_model->setFavourite(key, on); }
 

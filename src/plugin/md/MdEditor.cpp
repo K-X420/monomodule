@@ -274,7 +274,14 @@ MdEditor::MdEditor(MdProcessor& p)
       m_footerBy(spec::kFontSmall4x5, "BY SHNOLK", 2, false, juce::Justification::centredRight),
       m_status(spec::kFontBold8, "NO MACHINEDRUM OS FILE", kScale),
       m_syn(p.apvts, "SYNTHESIS"), m_fx(p.apvts, "EFFECTS"), m_routing(p.apvts, "ROUTING"),
-      m_lfo(p.apvts, "LFO"), m_master(p.apvts, "MASTER FX"), m_out(p.apvts, "OUTPUT")
+      m_lfo(p.apvts, "LFO"), m_master(p.apvts, "MASTER FX"), m_out(p.apvts, "OUTPUT"),
+      m_missingOs([this] { chooseOsFile(); }, [] {
+          OsRequirement os;
+          os.device = "Machinedrum"; os.osFile = "Elektron_SPS1-1UW_OS1.63.syx"; os.zipFile = "Elektron_SPS1-1UW_OS1.63.zip";
+          os.url = "https://www.elektron.se/support-downloads/machinedrum"; os.linkText = "elektron.se  -  Machinedrum support and downloads";
+          os.directDownload = false;
+          return os;
+      }())
 {
     setLookAndFeel(&m_lnf);
     m_artPath = loadSharedOsPath();   // the LCD fonts and dials come from the Monomachine OS file, when there is one
@@ -302,15 +309,16 @@ MdEditor::MdEditor(MdProcessor& p)
             case MdKitStrip::KitNext:   stepKit(1); break;
             case MdKitStrip::Kit:       if (!wasKits) openKitList(); break;
             case MdKitStrip::KitSave:
-                m_saveDialog.onSave = [this](const juce::String& name) { return saveKit(name); };
-                m_saveDialog.open("SAVE KIT", m_proc.kitName().isEmpty() ? juce::String("NEW KIT") : m_proc.kitName());
+                m_saveDialog.onSave = [this](const juce::String& name, bool into) { return saveKit(name, into); };
+                m_saveDialog.open("SAVE KIT", m_proc.kitName().isEmpty() ? juce::String("NEW KIT") : m_proc.kitName(), slotText(m_lib->projectSlotOfKit(m_proc.loadedKitKey())));
                 break;
             case MdKitStrip::SoundPrev: stepSound(-1); break;
             case MdKitStrip::SoundNext: stepSound(1); break;
             case MdKitStrip::Sound:     if (!wasSounds) openSoundList(); break;
             case MdKitStrip::SoundSave:
-                m_saveDialog.onSave = [this](const juce::String& name) { return saveSound(name); };
-                m_saveDialog.open("SAVE SOUND T" + juce::String(m_track + 1), soundDisplayName(m_track).isEmpty() || soundDisplayName(m_track) == "-" ? juce::String("NEW SOUND") : soundDisplayName(m_track));
+                m_saveDialog.onSave = [this](const juce::String& name, bool into) { return saveSound(name, into); };
+                m_saveDialog.open("SAVE SOUND T" + juce::String(m_track + 1), soundDisplayName(m_track).isEmpty() || soundDisplayName(m_track) == "-" ? juce::String("NEW SOUND") : soundDisplayName(m_track),
+                                  slotText(m_lib->projectSlotOfSound(m_proc.loadedSoundKey(m_track))));
                 break;
             case MdKitStrip::Library:   if (m_panel.isOpen()) m_panel.close(); else { m_picker.setVisible(false); m_panel.open(); } break;
             case MdKitStrip::None: break;
@@ -369,6 +377,12 @@ MdEditor::MdEditor(MdProcessor& p)
     m_keys.onLock = [this](int t) { m_proc.setTrackLocked(t, !m_proc.trackLocked(t)); timerCallback(); };
     addAndMakeVisible(m_keys);
     addChildComponent(m_panel);
+    m_engineStatus.setFont(juce::Font(juce::FontOptions(12.0f)));
+    addChildComponent(m_engineStatus);
+    addChildComponent(m_about);
+    m_skinDialog.onChanged = [this] { skinChanged(); };
+    addChildComponent(m_skinDialog);
+    addChildComponent(m_missingOs);
     addChildComponent(m_drop);
     addChildComponent(m_saveDialog);
 
@@ -449,20 +463,39 @@ void MdEditor::showMenu()
 {
     juce::PopupMenu skins;
     const auto current = skin::current().preset;
-    for (int i = 0; i < 3; ++i)   // the presets (CUSTOM colours are set from the One / Six editors)
-        skins.addItem(100 + i, skin::kPresetNames[i], true, int(current) == i);
+    for (int i = 0; i < skin::kNumPresets; ++i)
+        skins.addItem(100 + i, i == int(skin::Preset::Custom) ? juce::String("CUSTOM...") : juce::String(skin::kPresetNames[i]), true, int(current) == i);
     juce::PopupMenu m;
+    m.addItem(5, "INIT KIT");
     m.addItem(1, "SELECT MACHINEDRUM OS FILE...");
-    m.addItem(2, "IMPORT MACHINEDRUM .SYX...");
-    m.addSubMenu("SKIN", skins);
+    m.addItem(6, "CLEAR OS FILE SELECTION", m_proc.firmwarePath().isNotEmpty());
     m.addSeparator();
-    m.addItem(3, m_proc.statusText().toUpperCase(), false);
+    m.addItem(2, "IMPORT MACHINEDRUM .SYX...");
+    m.addItem(9, "LIBRARY", true, m_panel.isOpen());
+    m.addSeparator();
+    m.addSubMenu("SKIN", skins);
+    m.addItem(7, "SHOW ENGINE STATUS", true, m_showStatus);
     m.addItem(4, juce::String("SAMPLE MEMORY USED ") + juce::String(int(std::lround(m_proc.sampleMemoryUsed() * 100.0))) + "%", false);
+    m.addSeparator();
+    m.addItem(8, "PLUGIN INFO...");
     m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&m_menuButton), [this](int r) {
         if (r == 1) chooseOsFile();
         else if (r == 2) importSyx();
+        else if (r == 5) { m_proc.initKit(); selectTrack(m_track); timerCallback(); }
+        else if (r == 6) { m_proc.clearFirmware(); timerCallback(); }
+        else if (r == 7) { m_showStatus = !m_showStatus; resized(); timerCallback(); }
+        else if (r == 8) { m_about.setVisible(true); m_about.toFront(false); }
+        else if (r == 9) { if (m_panel.isOpen()) m_panel.close(); else m_panel.open(); }
+        else if (r == 100 + int(skin::Preset::Custom)) { m_skinDialog.setBounds(getLocalBounds()); m_skinDialog.open(); }
         else if (r >= 100) applySkin(skin::presetSkin(skin::Preset(r - 100)));
     });
+}
+
+void MdEditor::skinChanged()
+{
+    m_lnf.applySkin();
+    sendLookAndFeelChange();
+    repaint();
 }
 
 void MdEditor::applySkin(const skin::Skin& s)
@@ -589,10 +622,17 @@ void MdEditor::stepKit(int dir)
     loadKit(kits[size_t(i)]);
 }
 
-juce::String MdEditor::saveKit(const juce::String& name)
+juce::String MdEditor::slotText(const mnm::library::LibraryModel::Slot& s)
+{
+    if (!s.valid() || s.kit < 0) return {};
+    return "PROJECT " + s.projectName + ", KIT " + juce::String(s.kit + 1).paddedLeft('0', 2) + (s.track >= 0 ? " T" + juce::String(s.track + 1) : juce::String());
+}
+
+juce::String MdEditor::saveKit(const juce::String& name, bool intoProject)
 {
     juce::String key;
-    const auto r = m_lib->saveKit(name, m_proc.captureMdKit(), m_proc.loadedKitKey(), &key);
+    const auto into = intoProject ? m_lib->projectSlotOfKit(m_proc.loadedKitKey()) : mnm::library::LibraryModel::Slot{};
+    const auto r = m_lib->saveKit(name, m_proc.captureMdKit(), m_proc.loadedKitKey(), &key, into);
     if (r.failed()) return r.getErrorMessage();
     m_proc.setLoadedKit(key, name.toUpperCase());
     timerCallback();
@@ -620,10 +660,11 @@ void MdEditor::stepSound(int dir)
     loadSound(sounds[size_t(i)]);
 }
 
-juce::String MdEditor::saveSound(const juce::String& name)
+juce::String MdEditor::saveSound(const juce::String& name, bool intoProject)
 {
     juce::String key;
-    const auto r = m_lib->saveSound(name, m_proc.captureSound(m_track), m_proc.loadedSoundKey(m_track), &key);
+    const auto into = intoProject ? m_lib->projectSlotOfSound(m_proc.loadedSoundKey(m_track)) : mnm::library::LibraryModel::Slot{};
+    const auto r = m_lib->saveSound(name, m_proc.captureSound(m_track), m_proc.loadedSoundKey(m_track), &key, into);
     if (r.failed()) return r.getErrorMessage();
     m_proc.setLoadedSound(m_track, key, name.toUpperCase());
     timerCallback();
@@ -724,8 +765,16 @@ void MdEditor::timerCallback()
     const bool ready = m_proc.engineReady();
     if (ready != m_ready) m_shownMachineId = -2;   // the labels come from the OS file
     m_ready = ready;
-    m_status.setVisible(!ready);
-    m_osButton.setVisible(!ready);
+    m_status.setVisible(false);
+    m_osButton.setVisible(false);
+    if (m_missingOs.isVisible() == ready) { m_missingOs.setVisible(!ready); if (!ready) m_missingOs.toFront(false); }
+    if (!ready) m_missingOs.setStatusMessage(m_proc.firmwarePath().isNotEmpty() ? m_proc.statusText() : juce::String());
+    m_engineStatus.setVisible(m_showStatus);
+    if (m_showStatus) m_engineStatus.setText(m_proc.statusText() + (m_proc.firmwarePath().isNotEmpty() ? "   " + m_proc.firmwarePath() : juce::String()), juce::dontSendNotification);
+    if (--m_skinPoll <= 0) {   // a skin chosen in another Monomodule window
+        m_skinPoll = 40;
+        if (!m_skinDialog.isVisible()) if (const auto s = skin::load(); s != skin::current()) { skin::apply(s); skinChanged(); }
+    }
     // machines: the block, the keys, and the SYNTHESIS page when the selected track's machine changed
     for (int t = 0; t < kTracks; ++t) {
         const int idx = juce::jlimit(0, kNumMachines - 1, int(std::lround(m_proc.apvts.getRawParameterValue(machineId(t))->load())));
@@ -815,6 +864,10 @@ void MdEditor::resized()
     const int bw = m_sample.preferredWidth();
     m_sample.setBounds(m_syn.getRight() - bw - kScale, m_syn.getY() + m_syn.overhangPx() + kScale, bw, (KnobPage::kTitleH - 2) * kScale);
     m_saveDialog.setBounds(getLocalBounds());
+    m_missingOs.setBounds(getLocalBounds());
+    m_about.setBounds(getLocalBounds());
+    m_skinDialog.setBounds(getLocalBounds());
+    m_engineStatus.setBounds(m_machineBlock.getRight() + 12, m_strip.getBottom() + 1, getWidth() - m_machineBlock.getRight() - 22, 16);
     m_picker.setBounds(juce::Rectangle<int>(m_syn.getX(), m_syn.getY(), m_routing.getRight() - m_syn.getX(), m_out.getBottom() - m_syn.getY()));
     m_panel.setTargetBounds(juce::Rectangle<int>(m_syn.getX(), m_syn.getY(), m_routing.getRight() - m_syn.getX(), m_out.getBottom() - m_syn.getY()));
 }
