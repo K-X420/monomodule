@@ -41,6 +41,7 @@ private:
     void attachKnobs();
     void refreshLabels();
     void chooseOsFile();
+    void chooseKit();
     juce::Rectangle<int> padBounds(int t) const;
     juce::Rectangle<int> panelBounds() const;
 
@@ -51,6 +52,8 @@ private:
     int m_masterFx = 0;
     int m_shownMachine = -1;
     juce::TextButton m_osButton{"OS FILE..."};
+    juce::TextButton m_kitButton{"KIT..."};
+    std::vector<mnm::md::Kit> m_kits;   // the kits of the last chosen file (for the menu)
     std::array<juce::TextButton, 4> m_pageButtons;
     std::array<juce::TextButton, 4> m_fxButtons;
     juce::ComboBox m_machine;

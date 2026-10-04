@@ -25,6 +25,7 @@ constexpr MachineEntry kMachines[] = {
     {62, "E12-SH"}, {63, "E12-BC"},
     {64, "P-I-BD"}, {65, "P-I-SD"}, {66, "P-I-MT"}, {67, "P-I-ML"}, {68, "P-I-MA"}, {69, "P-I-RS"}, {70, "P-I-RC"},
     {71, "P-I-CC"}, {72, "P-I-HH"},
+    {80, "INP-GA"}, {81, "INP-GB"}, {82, "INP-FA"}, {83, "INP-FB"}, {84, "INP-EA"}, {85, "INP-EB"},   // the side-chain input
 };
 constexpr int kNumMachines = int(sizeof(kMachines) / sizeof(kMachines[0]));
 inline int machineIndexOf(int id) { for (int i = 0; i < kNumMachines; ++i) if (kMachines[i].id == id) return i; return 0; }

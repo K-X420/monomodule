@@ -18,6 +18,17 @@ int main(int argc, char** argv)
     const int block = 480;
     proc.setPlayConfigDetails(0, 2, rate, block);
     proc.prepareToPlay(rate, block);
+    bool kitLoaded = false;
+    if (argc > 5) {   // md-plugintest <os> <out.wav> <ui.png> <dump.syx> <kit position>
+        const auto kits = mnm::md::loadKits(argv[4]);
+        const int pos = std::atoi(argv[5]);
+        for (const auto& k : kits)
+            if (k.position == pos) {
+                const int emptied = proc.applyKit(k);
+                std::printf("kit %d '%s' loaded (%d tracks emptied)\n", pos, k.name.c_str(), emptied);
+                kitLoaded = true;
+            }
+    }
 
     // 120 BPM, 16th notes: kick 1, snare 2, closed hat 7, clap 4, open hat 8 on offbeats
     const double bpm = 120.0, stepSec = 60.0 / bpm / 4.0;
@@ -34,6 +45,11 @@ int main(int argc, char** argv)
             const int at = int(s * stepSec * rate);
             if (at < pos || at >= pos + n) continue;
             auto note = [&](int nn) { midi.addEvent(juce::MidiMessage::noteOn(1, nn, uint8_t(100)), at - pos); };
+            if (kitLoaded) {   // a busier pattern over all 16 tracks
+                for (int t = 0; t < kTracks; ++t)
+                    if ((s * (t + 3) + t) % (t < 2 ? 4 : 7) == 0) note(kTrackNotes[t]);
+                continue;
+            }
             if (s % 4 == 0) note(36);                 // kick
             if (s % 8 == 4) note(38);                 // snare
             if (s % 2 == 0) note(48);                 // closed hat (track 8 = TRX-CH... track 7)

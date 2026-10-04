@@ -33,14 +33,23 @@ public:
     // Control words for Y:S+1.. (packet[1..n-1] from ControlCpu::convert)
     void setPacket(int track, const uint32_t* words, int count);
     void trig(int track, int dspType);   // takes effect at the next pass (init on a type change, then update)
+    // Audio input for the INP machines: 32 stereo frames (L/R interleaved, 24-bit) for the next pass. Each INP
+    // voice reads 32 frames per block from the ADC ring X:0x100..0x1FF at its own pointer (+0x40 per block), so
+    // the block goes into all four ring slots.
+    void setInput(const int32_t* lr64);
     bool renderPass(Block& out);         // one 32-sample block for all 16 tracks
     bool faulted() const { return m_faulted; }
     const std::string& faultReason() const { return m_fault; }
     uint64_t lastPassInstructions() const { return m_lastInstr; }
+    uint32_t peek(int space, uint32_t addr) const;   // debug: 0 = P, 1 = X, 2 = Y
 
 private:
     bool runToPark(uint64_t maxExec);
     void installPatches();
+    // The latest packet of each track, rewritten before every pass as the OS keeps refreshing it: some machines'
+    // init routines clear packet words (P-I-ML clears HARD at Y:S+3) that the next refresh restores.
+    std::array<std::array<uint32_t, 0x40>, kTracks> m_packet{};
+    std::array<int, kTracks> m_packetLen{};
 
     const Firmware& m_fw;
     std::unique_ptr<dsp56k::DefaultMemoryValidator> m_validator;

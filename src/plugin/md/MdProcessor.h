@@ -17,6 +17,7 @@
 #include "MdParams.h"
 #include "MdControl.h"
 #include "MdFirmware.h"
+#include "MdKit.h"
 #include "MdMixEngine.h"
 #include "MdVoiceEngine.h"
 
@@ -57,6 +58,10 @@ public:
     const mnm::md::Machine* machineInfo(int id) const { return m_fw ? m_fw->byId(id) : nullptr; }
 
     int machineIdOf(int t) const;
+    // Kit loading (message thread): every track's machine and knobs, levels and the master effects. Machines the
+    // plugin does not run (ROM/RAM, MIDI, controller, input) become GND---. Returns how many tracks were emptied.
+    int applyKit(const mnm::md::Kit& kit);
+    juce::String kitName() const { return m_kitName; }
     void auditionTrack(int t) { m_audition[size_t(t)].store(true); }   // UI: trig as from MIDI
     float trackActivity(int t) const { return m_activity[size_t(t)].load(); }   // decays between UI polls
 
@@ -83,7 +88,7 @@ private:
     void parameterChanged(const juce::String& id, float newValue) override;
     void handleAsyncUpdate() override;
 
-    juce::String m_firmwarePath, m_status;
+    juce::String m_firmwarePath, m_status, m_kitName;
     std::unique_ptr<mnm::md::Firmware> m_fw;
     std::unique_ptr<mnm::md::ControlCpu> m_cpu;
     std::unique_ptr<mnm::md::VoiceEngine> m_voices;
@@ -108,6 +113,11 @@ private:
     int m_fifoLen = 0;
     double m_hostRate = 44100.0;
     std::array<juce::LagrangeInterpolator, kDac> m_interp;
+    // side-chain input for the INP machines, resampled to the engine rate
+    std::array<std::vector<float>, 2> m_inFifo;
+    int m_inLen = 0;
+    std::array<juce::LagrangeInterpolator, 2> m_inInterp;
+    std::array<int32_t, 64> m_inBlock{};
     struct PendingTrig { int track; double enginePos; };   // engine frames from the current FIFO read point
     std::vector<PendingTrig> m_pending;
     mnm::md::VoiceEngine::Block m_block{};

@@ -1,4 +1,5 @@
 #include "MdVoiceEngine.h"
+#include <algorithm>
 #include <sstream>
 #include <stdexcept>
 #include "dsp56kEmu/dsp.h"
@@ -109,7 +110,12 @@ bool VoiceEngine::runToPark(uint64_t maxExec)
 void VoiceEngine::setPacket(int track, const uint32_t* words, int count)
 {
     if (track < 0 || track >= kTracks) return;
-    for (int k = 1; k < count && k < 0x40; ++k) m_dsp->memWrite(MemArea_Y, trackBase(track) + TWord(k), words[k] & 0xFFFFFF);
+    const int n = std::min(count, 0x40);
+    for (int k = 1; k < n; ++k) {
+        m_packet[size_t(track)][size_t(k)] = words[k] & 0xFFFFFF;
+        m_dsp->memWrite(MemArea_Y, trackBase(track) + TWord(k), words[k] & 0xFFFFFF);
+    }
+    m_packetLen[size_t(track)] = n;
 }
 
 void VoiceEngine::trig(int track, int dspType)
@@ -118,9 +124,22 @@ void VoiceEngine::trig(int track, int dspType)
     m_dsp->memWrite(MemArea_Y, trackBase(track), TWord(dspType));
 }
 
+void VoiceEngine::setInput(const int32_t* lr64)
+{
+    for (TWord slot = 0; slot < 4; ++slot)
+        for (TWord k = 0; k < 64; ++k) m_dsp->memWrite(MemArea_X, 0x100 + slot * 0x40 + k, TWord(lr64[k]) & 0xFFFFFF);
+}
+
+uint32_t VoiceEngine::peek(int space, uint32_t addr) const
+{
+    return m_mem->get(space == 0 ? MemArea_P : space == 1 ? MemArea_X : MemArea_Y, addr);
+}
+
 bool VoiceEngine::renderPass(Block& out)
 {
     if (m_faulted) { for (auto& t : out) t.fill(0); return false; }
+    for (int t = 0; t < kTracks; ++t)
+        for (int k = 1; k < m_packetLen[size_t(t)]; ++k) m_dsp->memWrite(MemArea_Y, trackBase(t) + TWord(k), m_packet[size_t(t)][size_t(k)]);
     m_dsp->setPC(kMainLoop);
     if (!runToPark(kMaxExecPass)) { for (auto& t : out) t.fill(0); return false; }
     for (int t = 0; t < kTracks; ++t)

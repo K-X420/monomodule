@@ -13,6 +13,7 @@
 #include "MdFirmware.h"
 #include "MdVoiceEngine.h"
 #include "MdMixEngine.h"
+#include "MdKit.h"
 #include <memory>
 
 using namespace mnm::md;
@@ -41,6 +42,17 @@ int main(int argc, char** argv)
             for (const auto& m : fw.machines) {
                 std::printf("%3d %-7s handler %06x  ", m.id, m.name().c_str(), m.handler);
                 for (int k = 0; k < 8; ++k) if (!m.labels[size_t(k)].empty()) std::printf("%s=%d ", m.labels[size_t(k)].c_str(), m.defaults[size_t(k)]);
+                std::printf("\n");
+            }
+            return 0;
+        }
+        if (std::strcmp(argv[2], "kits") == 0 && argc > 3) {   // md-render <os.syx> kits <dump.syx>
+            for (const auto& k : loadKits(argv[3])) {
+                std::printf("kit %2d %-16s", k.position, k.name.c_str());
+                for (int t = 0; t < 16; ++t) {
+                    const auto* mm = fw.byId(int(k.machines[size_t(t)]));
+                    std::printf(" %s", mm ? mm->name().c_str() : ("#" + std::to_string(k.machines[size_t(t)])).c_str());
+                }
                 std::printf("\n");
             }
             return 0;
@@ -116,7 +128,18 @@ int main(int argc, char** argv)
         }
         MixEngine::Output mixed{};
         uint64_t mixInstr = 0;
+        double phase = 0.0;
+        const bool input = m->id >= 80 && m->id <= 85;   // INP machines: a 220 Hz tone at half scale on both inputs
         for (int p = 0; p < passes; ++p) {
+            if (input) {
+                std::array<int32_t, 64> in{};
+                for (int i = 0; i < 32; ++i) {
+                    const auto v = int32_t(0.5 * 8388607.0 * std::sin(phase));
+                    in[size_t(2 * i)] = v; in[size_t(2 * i + 1)] = v;
+                    phase += 2.0 * 3.14159265358979 * 220.0 / 44100.0;
+                }
+                eng.setInput(in.data());
+            }
             if (!eng.renderPass(blk)) { std::printf("render failed: %s\n", eng.faultReason().c_str()); return 1; }
             instr += eng.lastPassInstructions();
             if (mixer) {
@@ -128,6 +151,13 @@ int main(int argc, char** argv)
             }
         }
         if (mixer) std::printf("DSP1: %.1f M instr/s of audio\n", double(mixInstr) / seconds / 1e6);
+        if (std::getenv("MD_DUMP")) {   // debug: the track's state block and the first samples of its last block
+            std::printf("state Y:$%03x..:", 0x800 + 0x40 * track);
+            for (int k = 0; k < 0x30; ++k) std::printf("%s%06x", k % 8 == 0 ? "\n  " : " ", eng.peek(2, 0x800 + 0x40 * uint32_t(track) + uint32_t(k)));
+            std::printf("\nlast block:");
+            for (int i = 0; i < 8; ++i) std::printf(" %d", blk[size_t(track)][size_t(i)]);
+            std::printf("\n");
+        }
         const auto t2 = std::chrono::steady_clock::now();
         double peak = 0, sum = 0;
         for (auto v : out) { peak = std::max(peak, std::abs(double(v))); sum += double(v) * v; }

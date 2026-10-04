@@ -22,7 +22,8 @@ const char* familyOf(int id)
     if (id < 32) return "TRX";
     if (id < 48) return "EFM";
     if (id < 64) return "E12";
-    return "P-I";
+    if (id < 80) return "P-I";
+    return "INP";
 }
 constexpr const char* kPageNames[4] = {"SYNTH", "EFFECTS", "ROUTING", "MASTER FX"};
 }
@@ -117,6 +118,8 @@ MdEditor::MdEditor(MdProcessor& p) : AudioProcessorEditor(p), m_proc(p)
 
     m_osButton.onClick = [this] { chooseOsFile(); };
     addAndMakeVisible(m_osButton);
+    m_kitButton.onClick = [this] { chooseKit(); };
+    addAndMakeVisible(m_kitButton);
 
     for (int i = 0; i < 4; ++i) {
         auto& b = m_pageButtons[size_t(i)];
@@ -256,6 +259,35 @@ void MdEditor::chooseOsFile()
     });
 }
 
+// A Machinedrum sysex file (a kit or a whole dump), then which of its kits
+void MdEditor::chooseKit()
+{
+    m_chooser = std::make_unique<juce::FileChooser>("Load a Machinedrum kit (.syx kit or dump)",
+        juce::File::getSpecialLocation(juce::File::userDocumentsDirectory), "*.syx");
+    m_chooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles, [this](const juce::FileChooser& fc) {
+        const auto f = fc.getResult();
+        if (!f.existsAsFile()) return;
+        try { m_kits = mnm::md::loadKits(f.getFullPathName().toStdString()); } catch (const std::exception&) { m_kits.clear(); }
+        if (m_kits.empty()) {
+            juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Load Kit", "No Machinedrum kits in " + f.getFileName());
+            return;
+        }
+        auto apply = [this](int i) {
+            const int emptied = m_proc.applyKit(m_kits[size_t(i)]);
+            if (emptied > 0)
+                juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon, "Load Kit",
+                    juce::String(emptied) + " track(s) use ROM/RAM, MIDI, controller or input machines, which are not available yet; they were left empty.");
+            selectTrack(m_track);
+            repaint();
+        };
+        if (m_kits.size() == 1) { apply(0); return; }
+        juce::PopupMenu menu;
+        for (size_t i = 0; i < m_kits.size(); ++i)
+            menu.addItem(int(i) + 1, juce::String(m_kits[i].position + 1).paddedLeft('0', 2) + "  " + juce::String(m_kits[i].name));
+        menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&m_kitButton), [apply](int r) { if (r > 0) apply(r - 1); });
+    });
+}
+
 void MdEditor::timerCallback()
 {
     bool dirty = false;
@@ -287,7 +319,8 @@ void MdEditor::paint(juce::Graphics& g)
     g.setFont(lcdFont(22.0f));
     g.drawText("MONOMODULE MD", kMargin, 0, 300, kHeaderH, juce::Justification::centredLeft);
     g.setFont(lcdFont(13.0f, false));
-    g.drawText(m_proc.statusText().toUpperCase(), 300, 0, kW - 300 - 140, kHeaderH, juce::Justification::centredRight);
+    const auto kit = m_proc.kitName();
+    g.drawText((kit.isNotEmpty() ? "KIT " + kit + "   " : juce::String()) + m_proc.statusText().toUpperCase(), 250, 0, kW - 250 - 230, kHeaderH, juce::Justification::centredRight);
     for (int t = 0; t < kTracks; ++t) {
         const auto r = padBounds(t);
         const bool sel = t == m_track;
@@ -321,6 +354,7 @@ void MdEditor::paint(juce::Graphics& g)
 void MdEditor::resized()
 {
     m_osButton.setBounds(kW - kMargin - 120, 9, 120, 26);
+    m_kitButton.setBounds(kW - kMargin - 120 - 90, 9, 84, 26);
     const auto panel = panelBounds();
     // page tabs along the bottom of the panel, the machine / effect selector in the title bar
     const int tabW = 116;

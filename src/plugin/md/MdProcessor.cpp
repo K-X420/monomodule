@@ -20,6 +20,7 @@ int slew(int cur, int target) { return cur < target ? std::min(target, cur + kSl
 
 MdProcessor::MdProcessor()
     : AudioProcessor(BusesProperties()
+                         .withInput("Input (INP machines)", juce::AudioChannelSet::stereo(), false)
                          .withOutput("Main A/B", juce::AudioChannelSet::stereo(), true)
                          .withOutput("Out C/D", juce::AudioChannelSet::stereo(), false)
                          .withOutput("Out E/F", juce::AudioChannelSet::stereo(), false)),
@@ -93,6 +94,9 @@ void MdProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
     for (auto& f : m_fifo) f.assign(size_t(cap), 0.0f);
     m_fifoLen = 0;
     for (auto& i : m_interp) i.reset();
+    for (auto& f : m_inFifo) f.assign(size_t(cap + 64), 0.0f);
+    m_inLen = 0;
+    for (auto& i : m_inInterp) i.reset();
     m_pending.clear();
     m_pending.reserve(256);
 }
@@ -100,6 +104,8 @@ void MdProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 bool MdProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
 {
     if (layouts.getMainOutputChannelSet() != juce::AudioChannelSet::stereo()) return false;
+    const auto in = layouts.getMainInputChannelSet();
+    if (!in.isDisabled() && in != juce::AudioChannelSet::stereo() && in != juce::AudioChannelSet::mono()) return false;
     for (int b = 1; b < layouts.outputBuses.size(); ++b) {
         const auto& s = layouts.outputBuses.getReference(b);
         if (!s.isDisabled() && s != juce::AudioChannelSet::stereo()) return false;
@@ -170,6 +176,16 @@ void MdProcessor::refreshParameters()
 void MdProcessor::runPass()
 {
     refreshParameters();
+    // 32 frames of side-chain input (silence when the FIFO runs short)
+    for (int i = 0; i < kBlock; ++i)
+        for (int c = 0; c < 2; ++c) {
+            const float v = i < m_inLen ? m_inFifo[size_t(c)][size_t(i)] : 0.0f;
+            m_inBlock[size_t(2 * i + c)] = int32_t(std::lround(juce::jlimit(-1.0f, 1.0f, v) * 8388607.0f));
+        }
+    const int take = std::min(kBlock, m_inLen);
+    for (auto& f : m_inFifo) std::copy(f.begin() + take, f.begin() + m_inLen, f.begin());
+    m_inLen -= take;
+    m_voices->setInput(m_inBlock.data());
     m_voices->renderPass(m_block);
     for (int t = 0; t < kTracks; ++t) {
         float pk = m_activity[size_t(t)].load() * 0.97f;
@@ -211,6 +227,26 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
 {
     juce::ScopedNoDenormals noDenormals;
     const int n = buffer.getNumSamples();
+    // side-chain input -> engine-rate FIFO (before the shared buffer is cleared for output)
+    if (getBusCount(true) > 0 && getBus(true, 0)->isEnabled() && !m_inFifo[0].empty()) {
+        auto in = getBusBuffer(buffer, true, 0);
+        const double toEngine = kEngineRate / m_hostRate;
+        const int frames = int(std::floor(n * toEngine));
+        const int need = m_inLen + frames + 8;
+        if (int(m_inFifo[0].size()) < need) for (auto& f : m_inFifo) f.resize(size_t(need));
+        for (int c = 0; c < 2 && in.getNumChannels() > 0; ++c) {
+            const float* src = in.getReadPointer(std::min(c, in.getNumChannels() - 1));
+            float* dst = m_inFifo[size_t(c)].data() + m_inLen;
+            if (std::abs(toEngine - 1.0) < 1e-9) std::copy_n(src, frames, dst);
+            else m_inInterp[size_t(c)].process(1.0 / toEngine, src, dst, frames, n, 0);
+        }
+        m_inLen = std::min(m_inLen + frames, int(m_inFifo[0].size()));
+        if (m_inLen > 4 * kBlock) {   // keep the input close to real time
+            const int drop = m_inLen - 2 * kBlock;
+            for (auto& f : m_inFifo) std::copy(f.begin() + drop, f.begin() + m_inLen, f.begin());
+            m_inLen -= drop;
+        }
+    }
     buffer.clear();
     if (auto* ph = getPlayHead())
         if (const auto pos = ph->getPosition())
@@ -266,6 +302,35 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
     for (auto& p : m_pending) p.enginePos -= used;
 }
 
+int MdProcessor::applyKit(const mnm::md::Kit& kit)
+{
+    auto set = [&](const juce::String& id, float v) {
+        if (auto* p = apvts.getParameter(id)) p->setValueNotifyingHost(p->convertTo0to1(v));
+    };
+    int emptied = 0;
+    for (int t = 0; t < kTracks; ++t) {
+        const int id = int(kit.machines[size_t(t)]);
+        int idx = machineIndexOf(id);
+        if (kMachines[idx].id != id) { idx = 0; if (id != 0) ++emptied; }
+        set(machineId(t), float(idx));
+        const auto& p = kit.params[size_t(t)];
+        for (int k = 0; k < 8; ++k) set(knobId(t, k), float(p[size_t(k)]));
+        for (int k = 0; k < 8; ++k) set(fxId(t, k), float(p[size_t(8 + k)]));
+        set(distId(t), float(p[16]));
+        set(volId(t), float(p[17]));
+        set(panId(t), float(p[18]) - 64.0f);
+        set(delId(t), float(p[19]));
+        set(revId(t), float(p[20]));
+        set(levelId(t), float(kit.levels[size_t(t)]));
+        set(routeId(t), float(kNumRoutes - 1));
+    }
+    for (int fx = 0; fx < 4; ++fx)
+        for (int k = 0; k < 8; ++k) set(masterFxId(fx, k), float(kit.masterFx[size_t(fx)][size_t(k)]));
+    for (auto& f : m_machineChanged) f.store(false);   // the kit's knobs, not the machines' defaults
+    m_kitName = juce::String(kit.name);
+    return emptied;
+}
+
 void MdProcessor::parameterChanged(const juce::String& id, float)
 {
     for (int t = 0; t < kTracks; ++t)
@@ -288,6 +353,7 @@ void MdProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
     auto state = apvts.copyState();
     state.setProperty("schema", 2, nullptr);
+    state.setProperty("kitName", m_kitName, nullptr);
     if (auto xml = state.createXml()) copyXmlToBinary(*xml, destData);
 }
 
@@ -296,6 +362,7 @@ void MdProcessor::setStateInformation(const void* data, int sizeInBytes)
     auto xml = getXmlFromBinary(data, sizeInBytes);
     if (!xml || !xml->hasTagName(apvts.state.getType())) return;
     apvts.replaceState(juce::ValueTree::fromXml(*xml));
+    m_kitName = apvts.state.getProperty("kitName", "").toString();
     for (auto& f : m_machineChanged) f.store(false);   // restored knobs stay as saved
     for (auto& tr : m_tracks) tr.snap = true;
     m_masterSnap = true;
