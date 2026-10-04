@@ -15,6 +15,7 @@
 #include <vector>
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "MdParams.h"
+#include "MdLibrary.h"
 #include "MdControl.h"
 #include "MdFirmware.h"
 #include "MdKit.h"
@@ -60,8 +61,17 @@ public:
     int machineIdOf(int t) const;
     // Kit loading (message thread): every track's machine and knobs, levels and the master effects. Machines the
     // plugin does not run (ROM/RAM, MIDI, controller, input) become GND---. Returns how many tracks were emptied.
-    int applyKit(const mnm::md::Kit& kit);
+    int applyKit(const mnm::md::Kit& kit, const std::array<int, 16>* routes = nullptr);
     juce::String kitName() const { return m_kitName; }
+    // The kit library (MdLibrary): the current sound as a kit, loading one by key, and which one is loaded
+    LibraryKit captureKit() const;
+    int loadLibraryKit(const juce::String& key, const LibraryKit& kit, const juce::String& name);   // returns emptied tracks
+    void setLoadedKit(const juce::String& key, const juce::String& name);   // after a save: the new kit is the loaded one
+    juce::String loadedKitKey() const { return m_kitKey; }
+    bool kitModified() const;   // the sound differs from the loaded kit
+    // LOCK: a locked track keeps its sound when a kit is loaded (kept in the plugin state)
+    bool trackLocked(int t) const { return m_locked[size_t(t)].load(); }
+    void setTrackLocked(int t, bool on) { m_locked[size_t(t)].store(on); }
 
     // UW samples (message thread): any audio file into a ROM slot (mixed to mono, kept at its own rate; the DSP
     // resamples). Kept in the plugin state. Returns an error text, empty on success.
@@ -83,6 +93,7 @@ private:
         std::atomic<float>* mix[kMixRaw] = {};
         std::atomic<float>* lfo[8] = {};             // TRK PARAM SHP1 SHP2 TYPE SPD DEP MIX
         std::atomic<float>* route = nullptr;
+        std::atomic<float>* mute = nullptr;
         int sentMachine = -1;
         std::array<int, 8> synSent{};                // live raw words the DSP2 packet was built from
         std::array<int, kMixRaw> mixSent{};          // and the DSP1 words
@@ -103,7 +114,8 @@ private:
     void parameterChanged(const juce::String& id, float newValue) override;
     void handleAsyncUpdate() override;
 
-    juce::String m_firmwarePath, m_status, m_kitName;
+    juce::String m_firmwarePath, m_status, m_kitName, m_kitKey;
+    juce::var m_kitSnapshot;   // the loaded kit as captured right after loading (kitModified compares with it)
     std::unique_ptr<mnm::md::Firmware> m_fw;
     std::unique_ptr<mnm::md::ControlCpu> m_cpu;
     std::unique_ptr<mnm::md::VoiceEngine> m_voices;
@@ -124,6 +136,7 @@ private:
     std::atomic<float>* m_accent = nullptr;
     std::atomic<double> m_hostBpm{120.0};
     std::array<std::atomic<bool>, kTracks> m_audition{};
+    std::array<std::atomic<bool>, kTracks> m_locked{};
     std::array<std::atomic<float>, kTracks> m_activity{};
     std::array<std::atomic<bool>, kTracks> m_machineChanged{};   // message thread: load that machine's defaults
 

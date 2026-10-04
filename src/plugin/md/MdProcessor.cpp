@@ -37,6 +37,7 @@ MdProcessor::MdProcessor()
         tr.mix[13] = apvts.getRawParameterValue(levelId(t));
         tr.route = apvts.getRawParameterValue(routeId(t));
         for (int k = 0; k < 8; ++k) tr.lfo[k] = apvts.getRawParameterValue(lfoId(t, k));
+        tr.mute = apvts.getRawParameterValue(muteId(t));
         apvts.addParameterListener(machineId(t), this);
     }
     for (int fx = 0; fx < 4; ++fx)
@@ -289,7 +290,8 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
         const auto m = meta.getMessage();
         if (m.isNoteOn()) {
             for (int t = 0; t < kTracks; ++t)
-                if (kTrackNotes[t] == m.getNoteNumber()) m_pending.push_back({t, meta.samplePosition * ratio, int(m.getVelocity())});
+                if (kTrackNotes[t] == m.getNoteNumber() && m_tracks[size_t(t)].mute->load() < 0.5f)
+                    m_pending.push_back({t, meta.samplePosition * ratio, int(m.getVelocity())});
         } else if (m.isController()) {
             handleCc(m.getChannel(), m.getControllerNumber(), m.getControllerValue());
         }
@@ -433,13 +435,14 @@ void MdProcessor::samplesFromTree(const juce::ValueTree& t)
     pushSamples();
 }
 
-int MdProcessor::applyKit(const mnm::md::Kit& kit)
+int MdProcessor::applyKit(const mnm::md::Kit& kit, const std::array<int, 16>* routes)
 {
     auto set = [&](const juce::String& id, float v) {
         if (auto* p = apvts.getParameter(id)) p->setValueNotifyingHost(p->convertTo0to1(v));
     };
     int emptied = 0;
     for (int t = 0; t < kTracks; ++t) {
+        if (m_locked[size_t(t)].load()) continue;   // LOCK: the track keeps its sound
         const int id = int(kit.machines[size_t(t)]);
         int idx = machineIndexOf(id);
         if (kMachines[idx].id != id) { idx = 0; if (id != 0) ++emptied; }
@@ -453,7 +456,7 @@ int MdProcessor::applyKit(const mnm::md::Kit& kit)
         set(delId(t), float(p[19]));
         set(revId(t), float(p[20]));
         set(levelId(t), float(kit.levels[size_t(t)]));
-        set(routeId(t), float(kNumRoutes - 1));
+        set(routeId(t), float(routes ? juce::jlimit(0, kNumRoutes - 1, (*routes)[size_t(t)]) : kNumRoutes - 1));
         const auto& lfo = kit.lfos[size_t(t)];
         set(lfoId(t, 0), float(juce::jlimit(0, 15, int(lfo[0]))));
         set(lfoId(t, 1), float(juce::jlimit(0, 23, int(lfo[1]))));
@@ -471,7 +474,54 @@ int MdProcessor::applyKit(const mnm::md::Kit& kit)
         for (int k = 0; k < 8; ++k) set(masterFxId(fx, k), float(kit.masterFx[size_t(fx)][size_t(k)]));
     for (auto& f : m_machineChanged) f.store(false);   // the kit's knobs, not the machines' defaults
     m_kitName = juce::String(kit.name);
+    m_kitKey.clear();
+    m_kitSnapshot = MdLibrary::kitToJson(captureKit());
     return emptied;
+}
+
+LibraryKit MdProcessor::captureKit() const
+{
+    LibraryKit lk;
+    auto& k = lk.kit;
+    auto val = [this](const juce::String& id) { const auto* v = apvts.getRawParameterValue(id); return v ? int(std::lround(v->load())) : 0; };
+    auto u8 = [&](const juce::String& id) { return uint8_t(juce::jlimit(0, 127, val(id))); };
+    k.name = m_kitName.toStdString();
+    for (int t = 0; t < kTracks; ++t) {
+        k.machines[size_t(t)] = uint32_t(kMachines[juce::jlimit(0, kNumMachines - 1, val(machineId(t)))].id);
+        auto& p = k.params[size_t(t)];
+        for (int i = 0; i < 8; ++i) { p[size_t(i)] = u8(knobId(t, i)); p[size_t(8 + i)] = u8(fxId(t, i)); }
+        p[16] = u8(distId(t)); p[17] = u8(volId(t)); p[18] = u8(panId(t)); p[19] = u8(delId(t)); p[20] = u8(revId(t));
+        p[21] = u8(lfoId(t, 5)); p[22] = u8(lfoId(t, 6)); p[23] = u8(lfoId(t, 7));
+        k.levels[size_t(t)] = u8(levelId(t));
+        auto& l = k.lfos[size_t(t)];
+        l = m_kitLfos[size_t(t)];   // bytes 5.. are the OS's own LFO state, as the last kit had it
+        for (int i = 0; i < 5; ++i) l[size_t(i)] = uint8_t(val(lfoId(t, i)));
+        lk.routes[size_t(t)] = val(routeId(t));
+    }
+    for (int fx = 0; fx < 4; ++fx)
+        for (int i = 0; i < 8; ++i) k.masterFx[size_t(fx)][size_t(i)] = u8(masterFxId(fx, i));
+    return lk;
+}
+
+int MdProcessor::loadLibraryKit(const juce::String& key, const LibraryKit& lk, const juce::String& name)
+{
+    const int emptied = applyKit(lk.kit, &lk.routes);
+    setLoadedKit(key, name);
+    return emptied;
+}
+
+void MdProcessor::setLoadedKit(const juce::String& key, const juce::String& name)
+{
+    m_kitKey = key;
+    m_kitName = name;
+    m_kitSnapshot = MdLibrary::kitToJson(captureKit());
+}
+
+bool MdProcessor::kitModified() const
+{
+    if (m_kitSnapshot.isVoid()) return false;
+    auto now = MdLibrary::kitToJson(captureKit());
+    return juce::JSON::toString(now, true) != juce::JSON::toString(m_kitSnapshot, true);
 }
 
 void MdProcessor::parameterChanged(const juce::String& id, float)
@@ -497,6 +547,11 @@ void MdProcessor::getStateInformation(juce::MemoryBlock& destData)
     auto state = apvts.copyState();
     state.setProperty("schema", 2, nullptr);
     state.setProperty("kitName", m_kitName, nullptr);
+    state.setProperty("kitKey", m_kitKey, nullptr);
+    juce::String locked;
+    for (int t = 0; t < kTracks; ++t) locked << (m_locked[size_t(t)].load() ? "1" : "0");
+    state.setProperty("locked", locked, nullptr);
+    state.setProperty("kitSnapshot", m_kitSnapshot.isVoid() ? juce::String() : juce::JSON::toString(m_kitSnapshot, true), nullptr);
     state.removeChild(state.getChildWithName("SAMPLES"), nullptr);
     state.appendChild(samplesToTree(), nullptr);
     if (auto xml = state.createXml()) copyXmlToBinary(*xml, destData);
@@ -508,6 +563,11 @@ void MdProcessor::setStateInformation(const void* data, int sizeInBytes)
     if (!xml || !xml->hasTagName(apvts.state.getType())) return;
     apvts.replaceState(juce::ValueTree::fromXml(*xml));
     m_kitName = apvts.state.getProperty("kitName", "").toString();
+    m_kitKey = apvts.state.getProperty("kitKey", "").toString();
+    const auto locked = apvts.state.getProperty("locked", "").toString();
+    for (int t = 0; t < kTracks; ++t) m_locked[size_t(t)].store(locked[t] == '1');
+    const auto snap = apvts.state.getProperty("kitSnapshot", "").toString();
+    m_kitSnapshot = snap.isNotEmpty() ? juce::JSON::parse(snap) : juce::var();
     samplesFromTree(apvts.state.getChildWithName("SAMPLES"));
     for (auto& f : m_machineChanged) f.store(false);   // restored knobs stay as saved
     m_snap = true;

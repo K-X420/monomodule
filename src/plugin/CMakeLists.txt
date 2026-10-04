@@ -108,7 +108,7 @@ juce_add_plugin(MnmMd
   HARDENED_RUNTIME_ENABLED TRUE
   HARDENED_RUNTIME_OPTIONS ${MNM_HARDENED_OPTS}
   MICROPHONE_PERMISSION_ENABLED FALSE)
-set(MNM_MD_UI_SOURCES md/MdEditor.cpp one/LcdWidgets.cpp one/Lcd.cpp one/RomArt.cpp one/SpecData.cpp)
+set(MNM_MD_UI_SOURCES md/MdEditor.cpp md/MdLibrary.cpp md/MdLibraryUi.cpp one/LcdWidgets.cpp one/Lcd.cpp one/RomArt.cpp one/SpecData.cpp)
 target_sources(MnmMd PRIVATE md/MdProcessor.cpp ${MNM_MD_UI_SOURCES})
 target_include_directories(MnmMd PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(MnmMd PUBLIC

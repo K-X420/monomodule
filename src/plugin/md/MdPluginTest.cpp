@@ -1,4 +1,4 @@
-// md-plugintest <os.syx> <out.wav> [ui.png]: headless check of Monomodule MD. Plays a two-bar beat through the
+﻿// md-plugintest <os.syx> <out.wav> [ui.png]: headless check of Monomodule MD. Plays a two-bar beat through the
 // plugin processor at 48 kHz (resampled from the engine's 44.1 kHz) and writes the stereo result; optionally renders
 // the editor to a PNG.
 #include <cstdio>
@@ -56,6 +56,36 @@ int main(int argc, char** argv)
         set(machineId(2), float(machineIndexOf(16)));
         std::printf("RAM test: RAM-R1 records the kicks of bar 1, RAM-P1 plays them in bar 2\n");
     }
+    if (const char* syx = std::getenv("MD_LIB_IMPORT")) {   // the kit library: import, load the first kit, save it as a new kit
+        juce::SharedResourcePointer<MdLibrary> lib;
+        juce::String id;
+        const auto r = lib->importSyx(juce::File(juce::String(syx)), &id);
+        const auto again = lib->importSyx(juce::File(juce::String(syx)));   // the same file twice is one dump
+        const auto kits = lib->kits();
+        std::printf("library %s: import %s, again %s, %zu kits\n", lib->root().getFullPathName().toRawUTF8(),
+                    r.wasOk() ? "ok" : r.getErrorMessage().toRawUTF8(), again.wasOk() ? "ok" : "failed", kits.size());
+        proc.setTrackLocked(15, true);   // LOCK: track 16 keeps its machine through the kit load
+        const auto lockedBefore = proc.machineIdOf(15);
+        for (const auto& k : kits) if (k.sourceId == id) {
+            LibraryKit lk;
+            const bool ok = lib->load(k.key, lk);
+            const int emptied = proc.loadLibraryKit(k.key, lk, k.name);
+            std::printf("locked track 16: machine %d before, %d after the load (%s)\n", lockedBefore, proc.machineIdOf(15), lockedBefore == proc.machineIdOf(15) ? "kept" : "CHANGED");
+            std::printf("loaded %s '%s' (%s, %d emptied), modified=%d\n", k.key.toRawUTF8(), k.name.toRawUTF8(), ok ? "ok" : "FAILED", emptied, int(proc.kitModified()));
+            if (auto* p = proc.apvts.getParameter(knobId(0, 0))) p->setValueNotifyingHost(p->getValue() > 0.5f ? 0.1f : 0.9f);
+            std::printf("after a knob turn modified=%d\n", int(proc.kitModified()));
+            juce::String key;
+            const auto s = lib->saveKit("MY " + k.name, proc.captureKit(), k.key, &key);
+            proc.setLoadedKit(key, "MY " + k.name);
+            LibraryKit back;
+            std::printf("saved %s (%s), reload %s, modified=%d\n", key.toRawUTF8(), s.wasOk() ? "ok" : "FAILED",
+                        lib->load(key, back) && back.kit.params == proc.captureKit().kit.params ? "identical" : "DIFFERENT", int(proc.kitModified()));
+            kitLoaded = true;
+            break;
+        }
+    }
+    if (std::getenv("MD_MUTE_TEST"))   // MUTE: the kick (track 1) ignores its trigs
+        if (auto* p = proc.apvts.getParameter(muteId(0))) p->setValueNotifyingHost(1.0f);
     const bool lfoTest = std::getenv("MD_LFO_TEST") != nullptr;
     const bool velTest = std::getenv("MD_VEL_TEST") != nullptr;
     if (lfoTest) {   // track 1: GND-SN, long decay, LFO on its own PTCH (SYN1), depth 127, SPD 32
@@ -142,6 +172,7 @@ int main(int argc, char** argv)
         if (auto* med = dynamic_cast<MdEditor*>(ed.get())) {
             med->refresh();
             if (std::getenv("MD_UI_PICKER")) med->showMachinePicker();   // the machine picker open over the pages
+            if (std::getenv("MD_UI_KITS")) med->showKitList();          // the kit list open under the header
         }
         auto img = ed->createComponentSnapshot(ed->getLocalBounds(), true, 1.0f);
         juce::File png{juce::String(argv[3])};

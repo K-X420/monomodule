@@ -98,6 +98,7 @@ inline juce::String delId(int t) { return tp(t) + "del"; }
 inline juce::String revId(int t) { return tp(t) + "rev"; }
 inline juce::String levelId(int t) { return tp(t) + "lev"; }
 inline juce::String routeId(int t) { return tp(t) + "out"; }
+inline juce::String muteId(int t) { return tp(t) + "mute"; }   // a muted track ignores its trigs
 // LFO page: destination, shapes, type (the kit's LFO struct) and SPD DEP MIX (routing bytes 21-23)
 constexpr const char* kLfoLabels[8] = {"TRK", "PARAM", "SHP1", "SHP2", "TYPE", "SPD", "DEP", "MIX"};
 constexpr const char* kLfoTypes[3] = {"FREE", "TRIG", "HOLD"};
@@ -145,6 +146,7 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
         g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{lfoId(t, 5), 1}, "LFO SPD", 0, 127, 64));
         g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{lfoId(t, 6), 1}, "LFO DEP", 0, 127, 0));
         g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{lfoId(t, 7), 1}, "LFO MIX", 0, 127, 0));
+        g->addChild(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{muteId(t), 1}, "MUTE", false));
         layout.add(std::move(g));
     }
     for (int fx = 0; fx < 4; ++fx) {

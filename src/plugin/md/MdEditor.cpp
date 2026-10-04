@@ -142,6 +142,14 @@ void MdTrackKeys::paint(juce::Graphics& g)
         const int m = m_machine[size_t(t)];
         cv.textCentred(spec::kFontTiny3x5, familyOf(m).toRawUTF8(), r.getX() + 1, r.getWidth() - 1, r.getY() + 13, ink);
         cv.textCentred(spec::kFontTiny3x5, shortOf(m).toRawUTF8(), r.getX() + 1, r.getWidth() - 1, r.getY() + 19, ink);
+        // LOCK and MUTE keys along the bottom: solid when on, dotted otherwise
+        auto key = [&](juce::Rectangle<int> b, const char* letter, bool on) {
+            if (on) cv.fillRect(b.getX(), b.getY(), b.getWidth(), b.getHeight(), ink);
+            else dottedFrame(cv, b.getX(), b.getY(), b.getWidth(), b.getHeight());
+            cv.textCentred(spec::kFontTiny3x5, letter, b.getX(), b.getWidth(), b.getY() + 2, on ? !ink : ink);
+        };
+        key(lockBox(t), "L", m_locked[size_t(t)]);
+        key(muteBox(t), "M", m_muted[size_t(t)]);
     }
     cv.draw(g, 0, 0);
 }
@@ -149,8 +157,23 @@ void MdTrackKeys::paint(juce::Graphics& g)
 void MdTrackKeys::mouseDown(const juce::MouseEvent& e)
 {
     const auto p = e.getPosition() / kScale;
+    for (int t = 0; t < kTracks; ++t) {
+        if (!keyRect(t).contains(p)) continue;
+        if (lockBox(t).expanded(1).contains(p)) { if (onLock) onLock(t); }
+        else if (muteBox(t).expanded(1).contains(p)) { if (onMute) onMute(t); }
+        else if (onPress) onPress(t);
+        return;
+    }
+}
+
+void MdTrackKeys::mouseMove(const juce::MouseEvent& e)
+{
+    const auto p = e.getPosition() / kScale;
+    juce::String tip;
     for (int t = 0; t < kTracks; ++t)
-        if (keyRect(t).contains(p)) { if (onPress) onPress(t); return; }
+        if (lockBox(t).expanded(1).contains(p)) tip = "Lock: keep this track's sound when a kit is loaded";
+        else if (muteBox(t).expanded(1).contains(p)) tip = "Mute: ignore this track's trigs";
+    setTooltip(tip);
 }
 
 // ---------------------------------------------------------------------------------------------- machine picker
@@ -242,7 +265,6 @@ void MdBadgeButton::paintButton(juce::Graphics& g, bool highlighted, bool down)
 
 MdEditor::MdEditor(MdProcessor& p)
     : AudioProcessorEditor(p), m_proc((skin::apply(skin::load()), p)),   // the skin first: m_lnf reads it when it is built
-      m_kitName(spec::kFontBold8, "", kScale, false, juce::Justification::centredRight),
       m_footerVersion(spec::kFontSmall4x5, kPluginVersion, 2),
       m_footerBy(spec::kFontSmall4x5, "BY SHNOLK", 2, false, juce::Justification::centredRight),
       m_status(spec::kFontBold8, "NO MACHINEDRUM OS FILE", kScale),
@@ -260,13 +282,25 @@ MdEditor::MdEditor(MdProcessor& p)
     m_picker.hasSample = [this](int idx) { const int id = kMachines[idx].id; return isRomMachine(id) && m_proc.sampleName(romSlotOf(id)).isNotEmpty(); };
     addChildComponent(m_picker);
 
-    m_kitButton.onClick = [this] { chooseKit(); };
     m_menuButton.onClick = [this] { showMenu(); };
     m_osButton.onClick = [this] { chooseOsFile(); };
-    for (juce::Component* c : {static_cast<juce::Component*>(&m_kitButton), static_cast<juce::Component*>(&m_menuButton),
-                               static_cast<juce::Component*>(&m_kitName), static_cast<juce::Component*>(&m_footerVersion),
-                               static_cast<juce::Component*>(&m_footerBy), static_cast<juce::Component*>(&m_level)})
+    for (juce::Component* c : {static_cast<juce::Component*>(&m_menuButton), static_cast<juce::Component*>(&m_footerVersion),
+                               static_cast<juce::Component*>(&m_footerBy), static_cast<juce::Component*>(&m_level),
+                               static_cast<juce::Component*>(&m_strip)})
         addAndMakeVisible(c);
+    m_strip.onPart = [this](MdKitStrip::Part part) {
+        switch (part) {
+            case MdKitStrip::Prev: m_drop.setVisible(false); stepKit(-1); break;
+            case MdKitStrip::Next: m_drop.setVisible(false); stepKit(1); break;
+            case MdKitStrip::Kit:  if (m_drop.isVisible()) m_drop.close(); else openKitList(); break;
+            case MdKitStrip::Save: m_drop.setVisible(false); m_saveDialog.open(m_proc.kitName().isEmpty() ? juce::String("NEW KIT") : m_proc.kitName()); break;
+            case MdKitStrip::None: break;
+        }
+    };
+    m_drop.onLoad = [this](const KitEntry& e) { loadKit(e); };
+    m_drop.onImport = [this] { importSyx(); };
+    m_drop.onClosed = [this] { m_strip.setOpen(false); };
+    m_saveDialog.onSave = [this](const juce::String& name) { return saveKit(name); };
     addChildComponent(m_status);
     addChildComponent(m_osButton);
 
@@ -279,7 +313,14 @@ MdEditor::MdEditor(MdProcessor& p)
     addChildComponent(m_sample);
 
     m_keys.onPress = [this](int t) { if (t != m_track) selectTrack(t); m_proc.auditionTrack(t); };
+    m_keys.onMute = [this](int t) {
+        if (auto* p = m_proc.apvts.getParameter(muteId(t))) { p->beginChangeGesture(); p->setValueNotifyingHost(p->getValue() >= 0.5f ? 0.0f : 1.0f); p->endChangeGesture(); }
+        timerCallback();
+    };
+    m_keys.onLock = [this](int t) { m_proc.setTrackLocked(t, !m_proc.trackLocked(t)); timerCallback(); };
     addAndMakeVisible(m_keys);
+    addChildComponent(m_drop);
+    addChildComponent(m_saveDialog);
 
     selectTrack(0);
     const int levW = 19 * kScale, gap = 12;
@@ -362,14 +403,14 @@ void MdEditor::showMenu()
         skins.addItem(100 + i, skin::kPresetNames[i], true, int(current) == i);
     juce::PopupMenu m;
     m.addItem(1, "SELECT MACHINEDRUM OS FILE...");
-    m.addItem(2, "LOAD KIT...");
+    m.addItem(2, "IMPORT MACHINEDRUM .SYX...");
     m.addSubMenu("SKIN", skins);
     m.addSeparator();
     m.addItem(3, m_proc.statusText().toUpperCase(), false);
     m.addItem(4, juce::String("SAMPLE MEMORY USED ") + juce::String(int(std::lround(m_proc.sampleMemoryUsed() * 100.0))) + "%", false);
     m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&m_menuButton), [this](int r) {
         if (r == 1) chooseOsFile();
-        else if (r == 2) chooseKit();
+        else if (r == 2) importSyx();
         else if (r >= 100) applySkin(skin::presetSkin(skin::Preset(r - 100)));
     });
 }
@@ -394,33 +435,91 @@ void MdEditor::chooseOsFile()
     });
 }
 
-// A Machinedrum sysex file (a kit or a whole dump), then which of its kits
-void MdEditor::chooseKit()
+// Machinedrum sysex files (kits or whole dumps) into the kit library, then the list to pick from
+void MdEditor::importSyx()
 {
-    m_chooser = std::make_unique<juce::FileChooser>("Load a Machinedrum kit (.syx kit or dump)",
+    m_chooser = std::make_unique<juce::FileChooser>("Import Machinedrum kits (.syx kit or dump)",
         juce::File::getSpecialLocation(juce::File::userDocumentsDirectory), "*.syx");
-    m_chooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles, [this](const juce::FileChooser& fc) {
-        const auto f = fc.getResult();
-        if (!f.existsAsFile()) return;
-        try { m_kits = mnm::md::loadKits(f.getFullPathName().toStdString()); } catch (const std::exception&) { m_kits.clear(); }
-        if (m_kits.empty()) {
-            juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Load Kit", "No Machinedrum kits in " + f.getFileName());
-            return;
-        }
-        auto apply = [this](int i) {
-            const int emptied = m_proc.applyKit(m_kits[size_t(i)]);
-            if (emptied > 0)
-                juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon, "Load Kit",
-                    juce::String(emptied) + " track(s) use MIDI or controller machines, which are not available yet; they were left empty.");
-            selectTrack(m_track);
-            timerCallback();
-        };
-        if (m_kits.size() == 1) { apply(0); return; }
-        juce::PopupMenu menu;
-        for (size_t i = 0; i < m_kits.size(); ++i)
-            menu.addItem(int(i) + 1, juce::String(m_kits[i].position + 1).paddedLeft('0', 2) + "  " + juce::String(m_kits[i].name));
-        menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&m_kitButton), [apply](int r) { if (r > 0) apply(r - 1); });
-    });
+    m_chooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::canSelectMultipleItems,
+        [this](const juce::FileChooser& fc) { importFiles(fc.getResults()); });
+}
+
+void MdEditor::importFiles(const juce::Array<juce::File>& files)
+{
+    juce::StringArray problems;
+    juce::String lastId;
+    int imported = 0;
+    for (const auto& f : files) {
+        if (!f.existsAsFile()) continue;
+        juce::String id;
+        const auto r = m_lib->importSyx(f, &id);
+        if (r.failed()) problems.add(r.getErrorMessage());
+        else { lastId = id; ++imported; }
+    }
+    if (!problems.isEmpty())
+        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Import", problems.joinIntoString("\n"));
+    if (imported == 0) return;
+    // a file of a single kit is what the user wants to hear: load it; a dump opens the list
+    std::vector<KitEntry> fromLast;
+    for (const auto& k : m_lib->kits()) if (k.sourceId == lastId) fromLast.push_back(k);
+    if (imported == 1 && fromLast.size() == 1) loadKit(fromLast.front());
+    else openKitList();
+}
+
+bool MdEditor::isInterestedInFileDrag(const juce::StringArray& files)
+{
+    for (const auto& f : files) if (f.endsWithIgnoreCase(".syx")) return true;
+    return false;
+}
+
+void MdEditor::filesDropped(const juce::StringArray& files, int, int)
+{
+    juce::Array<juce::File> syx;
+    for (const auto& f : files) if (f.endsWithIgnoreCase(".syx")) syx.add(juce::File(f));
+    importFiles(syx);
+}
+
+void MdEditor::openKitList()
+{
+    const int maxH = m_out.getBottom() - m_strip.getBottom() - 2;
+    m_drop.open(m_proc.loadedKitKey(), {m_strip.getX(), m_strip.getBottom() + 2}, maxH);
+    m_strip.setOpen(true);
+}
+
+void MdEditor::loadKit(const KitEntry& e)
+{
+    LibraryKit lk;
+    if (!m_lib->load(e.key, lk)) {
+        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Load Kit", "The kit " + e.name + " could not be read from the library.");
+        return;
+    }
+    const int emptied = m_proc.loadLibraryKit(e.key, lk, e.name);
+    if (emptied > 0)
+        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon, "Load Kit",
+            juce::String(emptied) + " track(s) use MIDI or controller machines, which are not available yet; they were left empty.");
+    selectTrack(m_track);
+    timerCallback();
+}
+
+// previous / next kit in the list order, wrapping
+void MdEditor::stepKit(int dir)
+{
+    const auto kits = m_lib->kits();
+    if (kits.empty()) { openKitList(); return; }
+    int i = -1;
+    for (int k = 0; k < int(kits.size()); ++k) if (kits[size_t(k)].key == m_proc.loadedKitKey()) i = k;
+    i = i < 0 ? (dir > 0 ? 0 : int(kits.size()) - 1) : (i + dir + int(kits.size())) % int(kits.size());
+    loadKit(kits[size_t(i)]);
+}
+
+juce::String MdEditor::saveKit(const juce::String& name)
+{
+    juce::String key;
+    const auto r = m_lib->saveKit(name, m_proc.captureKit(), m_proc.loadedKitKey(), &key);
+    if (r.failed()) return r.getErrorMessage();
+    m_proc.setLoadedKit(key, name.toUpperCase());
+    timerCallback();
+    return {};
 }
 
 void MdEditor::sampleMenu()
@@ -466,6 +565,7 @@ void MdEditor::timerCallback()
         const int idx = juce::jlimit(0, kNumMachines - 1, int(std::lround(m_proc.apvts.getRawParameterValue(machineId(t))->load())));
         m_keys.setMachine(t, idx);
         m_keys.setActive(t, m_proc.trackActivity(t) > 0.012f);
+        m_keys.setFlags(t, m_proc.apvts.getRawParameterValue(muteId(t))->load() >= 0.5f, m_proc.trackLocked(t));
         if (t == m_track && idx != m_machineIndex) { m_machineIndex = idx; m_machineBlock.setMachine(idx); }
     }
     rebuildSynPage();
@@ -482,8 +582,8 @@ void MdEditor::timerCallback()
         if (m_sample.getButtonText() != text) { m_sample.setButtonText(text); resized(); }
     }
     if (m_sample.isVisible() != rom) { m_sample.setVisible(rom); resized(); }
-    const auto kit = m_proc.kitName().toUpperCase();
-    if (kit != m_shownKit) { m_shownKit = kit; m_kitName.setText(kit); }
+    if ((m_tick++ % 5) == 0) m_strip.setKit(m_proc.kitName(), m_proc.kitModified());   // the modified mark: a few times a second
+    m_strip.setVisible(ready);
 }
 
 void MdEditor::paint(juce::Graphics& g)
@@ -507,9 +607,11 @@ void MdEditor::resized()
     auto headerTop = header.removeFromTop(30);
     m_menuButton.setBounds(headerTop.removeFromRight(32 * kScale));
     headerTop.removeFromRight(10);
-    m_kitButton.setBounds(headerTop.removeFromRight(24 * kScale));
-    headerTop.removeFromRight(8);
-    m_kitName.setBounds(headerTop.removeFromRight(64 * kScale));
+    {   // the kit strip: centred between the machine block and MENU, as wide as that leaves
+        const int x0 = m_machineBlock.getRight() + 12, x1 = m_menuButton.getX() - 10;
+        const int w = m_strip.preferredWidth(juce::jmax(0, x1 - x0));
+        m_strip.setBounds(x0 + (x1 - x0 - w) / 2, top, w, MdKitStrip::kLcdH * MdKitStrip::kS);
+    }
     {   // without an OS file: the notice and its button beside the machine block
         auto s = headerTop.withLeft(m_machineBlock.getRight() + 16);
         m_status.setBounds(s.removeFromLeft(LcdCanvas::textWidth(spec::kFontBold8, "NO MACHINEDRUM OS FILE") * kScale + 6));
@@ -541,6 +643,7 @@ void MdEditor::resized()
     // the sample slot stands in the SYNTHESIS title bar, right-aligned like a page badge
     const int bw = m_sample.preferredWidth();
     m_sample.setBounds(m_syn.getRight() - bw - kScale, m_syn.getY() + m_syn.overhangPx() + kScale, bw, (KnobPage::kTitleH - 2) * kScale);
+    m_saveDialog.setBounds(getLocalBounds());
     m_picker.setBounds(juce::Rectangle<int>(m_syn.getX(), m_syn.getY(), m_routing.getRight() - m_syn.getX(), m_out.getBottom() - m_syn.getY()));
 }
 
