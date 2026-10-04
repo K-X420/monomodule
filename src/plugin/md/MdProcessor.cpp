@@ -41,6 +41,8 @@ MdProcessor::MdProcessor()
     for (int fx = 0; fx < 4; ++fx)
         for (int k = 0; k < 8; ++k) m_masterFx[size_t(fx)][size_t(k)] = apvts.getRawParameterValue(masterFxId(fx, k));
     m_master = apvts.getRawParameterValue(masterId());
+    m_velMode = apvts.getRawParameterValue(velModeId());
+    m_accent = apvts.getRawParameterValue(accentId());
     m_firmwarePath = loadOsPath();
     loadEngine();
 }
@@ -163,12 +165,12 @@ void MdProcessor::refreshParameters()
         for (int k = 9; k < 13; ++k) mix[size_t(k)] = m_cpu->liveParam(t, 8 + k);   // VOL PAN DEL REV = params 17..20
         mix[13] = m_cpu->liveLevel(t);
         const int route = juce::jlimit(0, kNumRoutes - 1, int(std::lround(tr.route->load())));
-        if (snap || mix != tr.mixSent || route != tr.sentRoute) {
+        if (snap || mix != tr.mixSent || route != tr.sentRoute || tr.accent != tr.sentAccent) {
             std::array<uint16_t, 9> fx{};
             for (int k = 0; k < 9; ++k) fx[size_t(k)] = uint16_t(mix[size_t(k)]);
             m_mixer->setTrackFx(t, fx);
-            m_mixer->setRouting(t, MixEngine::routingWords(uint32_t(mix[13]), uint32_t(mix[9]), uint32_t(mix[10]), uint32_t(mix[12]), uint32_t(mix[11]), route));
-            tr.mixSent = mix; tr.sentRoute = route;
+            m_mixer->setRouting(t, MixEngine::routingWords(uint32_t(mix[13]), uint32_t(mix[9]), uint32_t(mix[10]), uint32_t(mix[12]), uint32_t(mix[11]), route, tr.accent));
+            tr.mixSent = mix; tr.sentRoute = route; tr.sentAccent = tr.accent;
         }
     }
     // master effects (the delay also follows the tempo)
@@ -276,14 +278,14 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
         const auto m = meta.getMessage();
         if (m.isNoteOn()) {
             for (int t = 0; t < kTracks; ++t)
-                if (kTrackNotes[t] == m.getNoteNumber()) m_pending.push_back({t, meta.samplePosition * ratio});
+                if (kTrackNotes[t] == m.getNoteNumber()) m_pending.push_back({t, meta.samplePosition * ratio, int(m.getVelocity())});
         } else if (m.isController()) {
             handleCc(m.getChannel(), m.getControllerNumber(), m.getControllerValue());
         }
     }
     midi.clear();
     for (int t = 0; t < kTracks; ++t)
-        if (m_audition[size_t(t)].exchange(false)) m_pending.push_back({t, 0.0});
+        if (m_audition[size_t(t)].exchange(false)) m_pending.push_back({t, 0.0, 100});
 
     // render passes until the resampler has what it needs; each trig goes into the pass that covers its time
     const int needed = int(std::ceil(n * ratio)) + 4;
@@ -295,6 +297,11 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
             if (it->enginePos < passEnd) {
                 m_voices->trig(it->track, machineIdOf(it->track) + 1);
                 m_cpu->lfoTrig(it->track);
+                {   // the trig's accent factor (MainOS 0x20CD76): VOLUME mode = velocity; ACCENT mode = 0x80, accented at >= 112
+                    auto& tr = m_tracks[size_t(it->track)];
+                    if (int(std::lround(m_velMode->load())) == 0) tr.accent = it->velocity;
+                    else tr.accent = it->velocity >= 112 ? 0x80 + 2 * int(std::lround(m_accent->load())) : -128;
+                }
                 m_activity[size_t(it->track)].store(1.0f);
                 it = m_pending.erase(it);
             } else ++it;

@@ -60,11 +60,12 @@ private:
     juce::ComboBox m_machine;
     std::array<juce::Slider, 8> m_knobs;
     std::array<juce::Label, 8> m_knobLabels;
-    juce::Slider m_master;
-    juce::Label m_masterLabel;
+    juce::Slider m_master, m_accent;
+    juce::Label m_masterLabel, m_accentLabel;
+    juce::TextButton m_velButton;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> m_machineAttach;
     std::array<std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>, 8> m_knobAttach;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> m_masterAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> m_masterAttach, m_accentAttach;
     std::unique_ptr<juce::FileChooser> m_chooser;
     std::array<float, kTracks> m_lights{};
 };

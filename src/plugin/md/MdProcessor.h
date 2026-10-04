@@ -79,6 +79,8 @@ private:
         std::array<int, 8> synSent{};                // live raw words the DSP2 packet was built from
         std::array<int, kMixRaw> mixSent{};          // and the DSP1 words
         int sentRoute = -1;
+        int accent = -128;                           // the volume law's accent factor: velocity, or 0x80 (+2 x ACCENT)
+        int sentAccent = 0;
     };
 
     void loadEngine();
@@ -105,6 +107,8 @@ private:
     std::array<std::atomic<bool>, kTracks> m_kitLfoPending{};
     double m_tempoSent = 0.0;
     std::atomic<float>* m_master = nullptr;
+    std::atomic<float>* m_velMode = nullptr;
+    std::atomic<float>* m_accent = nullptr;
     std::atomic<double> m_hostBpm{120.0};
     std::array<std::atomic<bool>, kTracks> m_audition{};
     std::array<std::atomic<float>, kTracks> m_activity{};
@@ -121,7 +125,7 @@ private:
     int m_inLen = 0;
     std::array<juce::LagrangeInterpolator, 2> m_inInterp;
     std::array<int32_t, 64> m_inBlock{};
-    struct PendingTrig { int track; double enginePos; };   // engine frames from the current FIFO read point
+    struct PendingTrig { int track; double enginePos; int velocity; };   // engine frames from the current FIFO read point
     std::vector<PendingTrig> m_pending;
     mnm::md::VoiceEngine::Block m_block{};
     mnm::md::MixEngine::Output m_out{};

@@ -20,6 +20,7 @@ int main(int argc, char** argv)
     proc.prepareToPlay(rate, block);
     bool kitLoaded = false;
     const bool lfoTest = std::getenv("MD_LFO_TEST") != nullptr;
+    const bool velTest = std::getenv("MD_VEL_TEST") != nullptr;
     if (lfoTest) {   // track 1: GND-SN, long decay, LFO on its own PTCH (SYN1), depth 127, SPD 32
         auto set = [&](const juce::String& id, float v) { if (auto* p = proc.apvts.getParameter(id)) p->setValueNotifyingHost(p->convertTo0to1(v)); };
         set(machineId(0), float(machineIndexOf(1)));
@@ -53,7 +54,15 @@ int main(int argc, char** argv)
         for (int s = 0; s < steps; ++s) {
             const int at = int(s * stepSec * rate);
             if (at < pos || at >= pos + n) continue;
-            auto note = [&](int nn) { midi.addEvent(juce::MidiMessage::noteOn(1, nn, uint8_t(100)), at - pos); };
+            auto note = [&](int nn, int vel = 100) { midi.addEvent(juce::MidiMessage::noteOn(1, nn, uint8_t(vel)), at - pos); };
+            if (velTest) {   // kick at 127, 64, 20 (VOLUME mode), then 100 and 120 (ACCENT mode)
+                static const int vels[5] = {127, 64, 20, 100, 120};
+                if (s % 6 == 0 && s / 6 < 5) {
+                    if (s / 6 == 3) if (auto* p = proc.apvts.getParameter(velModeId())) p->setValueNotifyingHost(1.0f);
+                    note(36, vels[s / 6]);
+                }
+                continue;
+            }
             if (lfoTest) { if (s == 0) note(36); continue; }
             if (kitLoaded) {   // a busier pattern over all 16 tracks
                 for (int t = 0; t < kTracks; ++t)

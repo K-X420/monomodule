@@ -93,6 +93,10 @@ constexpr const char* kLfoParamNames[24] = {"SYN1", "SYN2", "SYN3", "SYN4", "SYN
 inline juce::String lfoId(int t, int k) { static const char* n[8] = {"lfotrk", "lfopar", "lfosh1", "lfosh2", "lfotyp", "lfospd", "lfodep", "lfomix"}; return tp(t) + n[k]; }
 inline juce::String masterFxId(int fx, int k) { static const char* p[4] = {"rv", "dl", "eq", "dx"}; return juce::String(p[fx]) + juce::String(k + 1); }
 inline juce::String masterId() { return "master"; }
+// MIDI velocity, as the OS's two trig paths (MainOS 0x20CD76): VOLUME = the velocity scales the track volume;
+// ACCENT = velocity >= 112 is an accented trig (+2 x ACCENT in the volume law), others play at normal volume
+inline juce::String velModeId() { return "velmode"; }
+inline juce::String accentId() { return "accent"; }
 
 inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
 {
@@ -136,6 +140,8 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
         layout.add(std::move(g));
     }
     layout.add(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{masterId(), 1}, "VOLUME", 0, 127, 80));
+    layout.add(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{velModeId(), 1}, "VEL", juce::StringArray{"VOLUME", "ACCENT"}, 0));
+    layout.add(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{accentId(), 1}, "ACCENT", 0, 127, 64));
     return layout;
 }
 

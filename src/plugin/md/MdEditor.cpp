@@ -8,7 +8,7 @@ juce::Colour ink() { return skin::inkColour(); }
 juce::Colour paper() { return skin::paperColour(); }
 juce::Font lcdFont(float h, bool bold = true) { return juce::Font(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(), h, bold ? juce::Font::bold : juce::Font::plain)); }
 
-constexpr int kW = 980, kH = 360;
+constexpr int kW = 980, kH = 420;
 constexpr int kMargin = 16;
 constexpr int kHeaderH = 44;
 constexpr int kPadsY = kHeaderH + 10, kPadH = 64;
@@ -157,9 +157,17 @@ MdEditor::MdEditor(MdProcessor& p) : AudioProcessorEditor(p), m_proc(p)
     setupKnob(m_master, m_masterLabel);
     m_masterLabel.setText("VOLUME", juce::dontSendNotification);
     m_masterAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(m_proc.apvts, masterId(), m_master);
+    setupKnob(m_accent, m_accentLabel);
+    m_accentLabel.setText("ACCENT", juce::dontSendNotification);
+    m_accentAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(m_proc.apvts, accentId(), m_accent);
+    m_velButton.onClick = [this] {   // VEL: VOLUME <-> ACCENT
+        if (auto* p = m_proc.apvts.getParameter(velModeId())) p->setValueNotifyingHost(p->getValue() >= 0.5f ? 0.0f : 1.0f);
+    };
+    addAndMakeVisible(m_velButton);
 
     selectTrack(0);
     setSize(kW, kH);
+    timerCallback();   // VEL button text, ACCENT state
     startTimerHz(30);
 }
 
@@ -299,6 +307,10 @@ void MdEditor::timerCallback()
         if (std::abs(a - m_lights[size_t(t)]) > 0.02f) { m_lights[size_t(t)] = a; dirty = true; }
     }
     if (m_page == Page::Synth) refreshLabels();
+    const bool accentMode = m_proc.apvts.getRawParameterValue(velModeId())->load() >= 0.5f;
+    const juce::String vel = accentMode ? "VEL: ACCENT" : "VEL: VOLUME";
+    if (m_velButton.getButtonText() != vel) m_velButton.setButtonText(vel);
+    m_accent.setEnabled(accentMode);
     if (dirty) repaint(juce::Rectangle<int>(0, kPadsY, kW, kPadH));
 }
 
@@ -372,8 +384,11 @@ void MdEditor::resized()
         m_knobs[size_t(k)].setBounds(x, y0 + 18, knobW, knobH);
     }
     const auto mix = juce::Rectangle<int>(kW - kMargin - kMixW, kPanelY, kMixW, kH - kPanelY - kMargin);
-    m_masterLabel.setBounds(mix.getX() + 10, mix.getY() + 40, kMixW - 20, 18);
-    m_master.setBounds(mix.getX() + 25, mix.getY() + 58, kMixW - 50, 110);
+    m_masterLabel.setBounds(mix.getX() + 10, mix.getY() + 36, kMixW - 20, 18);
+    m_master.setBounds(mix.getX() + 30, mix.getY() + 54, kMixW - 60, 92);
+    m_accentLabel.setBounds(mix.getX() + 10, mix.getY() + 150, kMixW - 20, 18);
+    m_accent.setBounds(mix.getX() + 40, mix.getY() + 168, kMixW - 80, 70);
+    m_velButton.setBounds(mix.getX() + 8, mix.getBottom() - 34, kMixW - 16, 26);
 }
 
 } // namespace mnm::plugin::md
