@@ -1,6 +1,7 @@
-// md-render: plays Machinedrum machines from the user's MD OS file, with the knob values converted by the OS's own
+﻿// md-render: plays Machinedrum machines from the user's MD OS file, with the knob values converted by the OS's own
 // control handlers.
 //   md-render <os.syx> list
+//   md-render <os.syx> dis <1|2> <hex addr> [count] | grep <1|2> <text>   (DSP2 / DSP1 program disassembly)
 //   md-render <os.syx> <machine name or id> <out.wav> [seconds=1] [k1..k8 knob values, '-' = default] [--track N]
 #include <chrono>
 #include <cmath>
@@ -14,7 +15,10 @@
 #include "MdVoiceEngine.h"
 #include "MdMixEngine.h"
 #include "MdKit.h"
+#include <map>
 #include <memory>
+#include "dsp56kEmu/disasm.h"
+#include "dsp56kEmu/opcodes.h"
 
 using namespace mnm::md;
 
@@ -54,6 +58,31 @@ int main(int argc, char** argv)
                     std::printf(" %s", mm ? mm->name().c_str() : ("#" + std::to_string(k.machines[size_t(t)])).c_str());
                 }
                 std::printf("\n");
+            }
+            return 0;
+        }
+        if ((std::strcmp(argv[2], "dis") == 0 || std::strcmp(argv[2], "grep") == 0) && argc > 4) {
+            // md-render <os.syx> dis <1|2> <hex addr> [count]: DSP2 (1) or DSP1 (2) program words
+            // md-render <os.syx> grep <1|2> <text>: every instruction whose disassembly contains the text
+            const auto& img = std::atoi(argv[3]) == 2 ? fw.mixDsp : fw.voiceDsp;
+            std::map<uint32_t, uint32_t> p;
+            for (const auto& r : img.records)
+                if (r.space == decltype(r.space)::P || r.addr >= 0x100000)
+                    for (size_t k = 0; k < r.words.size(); ++k) p[r.addr + uint32_t(k)] = r.words[k];
+            dsp56k::Opcodes ops;
+            dsp56k::Disassembler dis(ops);
+            auto line = [&](uint32_t a) {
+                std::string s;
+                const auto b = p.count(a + 1) ? p[a + 1] : 0;
+                const auto n = dis.disassemble(s, p[a], b, 0, 0, a);
+                return std::make_pair(s, n ? n : 1u);
+            };
+            if (argv[2][0] == 'd') {
+                uint32_t a = uint32_t(std::strtoul(argv[4], nullptr, 16));
+                const int count = argc > 5 ? std::atoi(argv[5]) : 40;
+                for (int i = 0; i < count; ++i) { const auto [s, n] = line(a); std::printf("%06x  %06x  %s\n", a, p[a], s.c_str()); a += n; }
+            } else {
+                for (const auto& [a, w] : p) { const auto s = line(a).first; if (s.find(argv[4]) != std::string::npos) std::printf("%06x  %s\n", a, s.c_str()); }
             }
             return 0;
         }

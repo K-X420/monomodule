@@ -93,6 +93,11 @@ void MixEngine::setTrackFx(int track, const std::array<uint16_t, 9>& raw)
     setY(0x200 + 0x40 * uint32_t(track), w.data(), 9);
 }
 
+void MixEngine::masterReturn(int32_t* lr64) const
+{
+    for (TWord k = 0; k < 64; ++k) lr64[k] = int32_t(m_mem->get(MemArea_X, 0x688 + k) << 8) >> 8;
+}
+
 bool MixEngine::renderBlock(const VoiceEngine::Block& voices, Output& out)
 {
     if (m_faulted) { for (auto& f : out) f.fill(0); return false; }

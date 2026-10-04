@@ -24,6 +24,7 @@ const char* familyOf(int id)
     if (id < 64) return "E12";
     if (id < 80) return "P-I";
     if (id < 128) return "INP";
+    if (id >= 160 && id <= 168) return "RAM";
     return "ROM";
 }
 constexpr const char* kPageNames[5] = {"SYNTH", "EFFECTS", "ROUTING", "LFO", "MASTER FX"};

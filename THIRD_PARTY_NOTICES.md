@@ -29,7 +29,7 @@ the AGPL v3.
 Monomodule applies `ext/patches/0001-dsp56300-mnm.patch` to dsp56300 commit
 `c051afad31612c2d2c7a81a7ab23e1c5ac9e61af`. The patch adds:
 - DSP56300 arithmetic saturation mode (SR.SM), in the interpreter and in both JIT back ends (x64 and AArch64)
-- the MPYRI and PFLUSH instructions
+- the MPYRI, PFLUSH and MERGE instructions (MERGE in the interpreter and both JIT back ends)
 - sign extension of 24-bit immediate multiply operands in the JIT
 - an option to treat the interrupt vector region as ordinary code
 - a recoverable failure path for when the JIT cannot allocate or generate code

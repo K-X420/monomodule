@@ -43,6 +43,8 @@ public:
     void setTrackFx(int track, const std::array<uint16_t, 9>& raw);   // AMD AMF EQF EQG FLTF FLTW FLTQ SRR DIST
     void setRouting(int track, const std::array<uint32_t, 5>& words) { setY(0x100 + 5 * uint32_t(track), words.data(), 5); }
     bool renderBlock(const VoiceEngine::Block& voices, Output& out);
+    // The finished master block (32 stereo frames, L/R) DSP1 sends back to DSP2 for the RAM recorders (X:0x688)
+    void masterReturn(int32_t* lr64) const;
     bool faulted() const { return m_faulted; }
     const std::string& faultReason() const { return m_fault; }
     uint64_t lastBlockInstructions() const { return m_lastInstr; }

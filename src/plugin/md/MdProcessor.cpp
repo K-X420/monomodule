@@ -219,6 +219,8 @@ void MdProcessor::runPass()
         m_activity[size_t(t)].store(pk);
     }
     m_mixer->renderBlock(m_block, m_out);
+    m_mixer->masterReturn(m_masterReturn.data());   // the main mix for the RAM recorders, next block
+    m_voices->setMasterReturn(m_masterReturn.data());
     const float gain = float(m_master->load()) / 100.0f * (1.0f / 8388608.0f);
     for (int c = 0; c < kDac; ++c) {
         float* dst = m_fifo[size_t(c)].data() + m_fifoLen;

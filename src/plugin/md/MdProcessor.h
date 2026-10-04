@@ -138,6 +138,7 @@ private:
     int m_inLen = 0;
     std::array<juce::LagrangeInterpolator, 2> m_inInterp;
     std::array<int32_t, 64> m_inBlock{};
+    std::array<int32_t, 64> m_masterReturn{};
     struct PendingTrig { int track; double enginePos; int velocity; };   // engine frames from the current FIFO read point
     std::vector<PendingTrig> m_pending;
     mnm::md::VoiceEngine::Block m_block{};

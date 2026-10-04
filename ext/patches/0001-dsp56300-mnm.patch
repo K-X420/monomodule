@@ -13,7 +13,7 @@ index 566ff163..7e0debe5 100644
  	inline void DSP::op_Pflushun(const TWord op)
  	{
 diff --git a/source/dsp56kEmu/dsp_ops_alu.inl b/source/dsp56kEmu/dsp_ops_alu.inl
-index 386e30f3..9fd92c58 100644
+index 386e30f3..266f7f08 100644
 --- a/source/dsp56kEmu/dsp_ops_alu.inl
 +++ b/source/dsp56kEmu/dsp_ops_alu.inl
 @@ -72,6 +72,7 @@ namespace dsp56k
@@ -88,7 +88,27 @@ index 386e30f3..9fd92c58 100644
  
  		sr_z_update(d);
  		sr_v_update(res,d);
-@@ -1160,7 +1169,17 @@ namespace dsp56k
+@@ -1099,7 +1108,18 @@ namespace dsp56k
+ 	}
+ 	inline void DSP::op_Merge(const TWord op)
+ 	{
+-		errNotImplemented("MERGE");		
++		// MNM patch: MERGE, S[11:0] : D[35:24] -> D[47:24], D2 and D0 unchanged
++		const auto D = getFieldValue<Merge, Field_D>(op);
++		const auto sss = getFieldValue<Merge, Field_SSS>(op);
++		const uint64_t s = decode_sss_read<TWord>(sss) & 0xfff;
++
++		auto& d = D ? reg.b.var : reg.a.var;
++		const uint64_t hi = (s << 12) | ((d >> 24) & 0xfff);
++		d = (d & 0xff000000ffffffull) | (hi << 24);
++
++		sr_toggle(CCRB_N, bitvalue<uint64_t, 47>(d));	// Set if bit 47 of the result is set
++		sr_toggle(CCR_Z, hi == 0);						// Set if bits 47-24 of the result are 0
++		sr_clear(CCR_V);								// Always cleared
+ 	}
+ 	inline void DSP::op_Mpy_S1S2D(const TWord op)
+ 	{
+@@ -1160,7 +1180,17 @@ namespace dsp56k
  	}
  	inline void DSP::op_Mpyri(const TWord op)
  	{
@@ -107,7 +127,7 @@ index 386e30f3..9fd92c58 100644
  	}
  	inline void DSP::op_Neg(const TWord op)
  	{
-@@ -1275,6 +1294,7 @@ namespace dsp56k
+@@ -1275,6 +1305,7 @@ namespace dsp56k
  		const TInt64 res = (d.signextend<TInt64>() << 1) - s.signextend<TInt64>();
  		d.var = res;
  		d.doMasking();
@@ -115,7 +135,7 @@ index 386e30f3..9fd92c58 100644
  		// Carry bit note: "The Carry bit (C) is set correctly if the source operand does not overflow as a result of the left shift operation.", we do not care at the moment
  		sr_toggle(CCR_V, bittest(old, 55) != bittest(d, 55));
  		sr_z_update(d);
-@@ -1293,6 +1313,7 @@ namespace dsp56k
+@@ -1293,6 +1324,7 @@ namespace dsp56k
  		const TInt64 res = (d.signextend<TInt64>() >> 1) - s.signextend<TInt64>();
  		d.var = res;
  		d.doMasking();
@@ -352,9 +372,18 @@ index e451024b..8eb4a33a 100644
  	private:
  		JitRegPoolRegPair& getPair(const bool _y)
 diff --git a/source/dsp56kEmu/jitops.h b/source/dsp56kEmu/jitops.h
-index 0be2c03f..e8a44fb5 100644
+index 0be2c03f..f5315ec9 100644
 --- a/source/dsp56kEmu/jitops.h
 +++ b/source/dsp56kEmu/jitops.h
+@@ -202,7 +202,7 @@ namespace dsp56k
+ 		void op_Macri_xxxx(TWord op)	{ errNotImplemented(op); }
+ 		void op_Max(TWord op);
+ 		void op_Maxm(TWord op);
+-		void op_Merge(TWord op)			{ errNotImplemented(op); }
++		void op_Merge(TWord op);
+ 		void op_Move_Nop(TWord op);
+ 		void op_Move_xx(TWord op);
+ 		void op_Mover(TWord op);
 @@ -240,7 +240,7 @@ namespace dsp56k
  		template<Instruction Inst, bool Accumulate> void op_Mpy_su(TWord op);
  		void op_Mpyi(TWord op);
@@ -450,10 +479,46 @@ index f9f81809..31f865d8 100644
  	{
  		const bool	ab = getFieldValue<Maci_xxxx, Field_d>(op);
 diff --git a/source/dsp56kEmu/jitops_alu_aarch64.cpp b/source/dsp56kEmu/jitops_alu_aarch64.cpp
-index fa8c64e6..4d2e9864 100644
+index fa8c64e6..021ad391 100644
 --- a/source/dsp56kEmu/jitops_alu_aarch64.cpp
 +++ b/source/dsp56kEmu/jitops_alu_aarch64.cpp
-@@ -641,6 +641,32 @@ namespace dsp56k
+@@ -559,6 +559,35 @@ namespace dsp56k
+ 		ccr_clear(CCR_V);								// Always cleared
+ 	}
+ 
++	void JitOps::op_Merge(TWord op)
++	{
++		// MNM patch: MERGE, S[11:0] : D[35:24] -> D[47:24]
++		const auto ab = getFieldValue<Merge, Field_D>(op);
++		const auto sss = getFieldValue<Merge, Field_SSS>(op);
++
++		{
++			const RegGP s(m_block);
++			{
++				DspValue src(m_block);
++				decode_sss_read(src, sss);
++				m_asm.mov(r32(s), r32(src.get()));
++			}
++
++			DspValue d(m_block);
++			getALU1(d, ab);
++			m_asm.and_(r32(d.get()), r32(d.get()), asmjit::Imm(0xfff));
++			m_asm.bfi(r32(d.get()), r32(s), asmjit::Imm(12), asmjit::Imm(12));
++			setALU1(ab, d);
++
++			copyBitToCCR(r32(d), 23, CCRB_N);			// Set if bit 47 of the result is set
++
++			m_asm.test_(d.get());
++			ccr_update_ifZero(CCRB_Z);					// Set if bits 47-24 of the result are 0
++		}
++
++		ccr_clear(CCR_V);								// Always cleared
++	}
++
+ 	void JitOps::op_Rol(TWord op)
+ 	{
+ 		const auto D = getFieldValue<Rol, Field_d>(op);
+@@ -641,6 +670,32 @@ namespace dsp56k
  
  		m_dspRegs.mask56(d);
  	}
@@ -487,10 +552,48 @@ index fa8c64e6..4d2e9864 100644
  
  #endif
 diff --git a/source/dsp56kEmu/jitops_alu_x64.cpp b/source/dsp56kEmu/jitops_alu_x64.cpp
-index 293486a7..74c72082 100644
+index 293486a7..43a27073 100644
 --- a/source/dsp56kEmu/jitops_alu_x64.cpp
 +++ b/source/dsp56kEmu/jitops_alu_x64.cpp
-@@ -665,6 +665,40 @@ namespace dsp56k
+@@ -585,6 +585,37 @@ namespace dsp56k
+ 		ccr_clear(CCR_V);								// Always cleared
+ 	}
+ 
++	void JitOps::op_Merge(TWord op)
++	{
++		// MNM patch: MERGE, S[11:0] : D[35:24] -> D[47:24]
++		const auto ab = getFieldValue<Merge, Field_D>(op);
++		const auto sss = getFieldValue<Merge, Field_SSS>(op);
++
++		{
++			const RegGP s(m_block);
++			{
++				DspValue src(m_block);
++				decode_sss_read(src, sss);
++				m_asm.mov(r32(s), r32(src.get()));
++			}
++			m_asm.and_(r32(s), asmjit::Imm(0xfff));
++			m_asm.shl(r32(s), asmjit::Imm(12));
++
++			DspValue d(m_block);
++			getALU1(d, ab);
++			m_asm.and_(r32(d), asmjit::Imm(0xfff));
++			m_asm.or_(r32(d), r32(s));
++			setALU1(ab, d);
++
++			copyBitToCCR(d.get(), 23, CCRB_N);			// Set if bit 47 of the result is set
++
++			m_asm.test_(d.get());
++			ccr_update_ifZero(CCRB_Z);					// Set if bits 47-24 of the result are 0
++		}
++
++		ccr_clear(CCR_V);								// Always cleared
++	}
++
+ 	void JitOps::op_Rol(TWord op)
+ 	{
+ 		const auto D = getFieldValue<Rol, Field_d>(op);
+@@ -665,6 +696,40 @@ namespace dsp56k
  
  		m_dspRegs.mask56(d);
  	}
@@ -599,3 +702,16 @@ index 932eae49..f46554cc 100644
  				}
  				else
  				{
+diff --git a/source/dsp56kEmu/opcodeanalysis.h b/source/dsp56kEmu/opcodeanalysis.h
+index c2b612f2..98f08eee 100644
+--- a/source/dsp56kEmu/opcodeanalysis.h
++++ b/source/dsp56kEmu/opcodeanalysis.h
+@@ -888,7 +888,7 @@ namespace dsp56k
+ 			break;
+ 		case Merge:
+ 			readf(Field_SSS);
+-			writef(Field_D);
++			readwritef(Field_D);
+ 			break;
+ 		case Move_xx:
+ 			writef(Field_ddddd);

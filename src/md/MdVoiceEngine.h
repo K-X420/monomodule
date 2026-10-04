@@ -37,6 +37,9 @@ public:
     // voice reads 32 frames per block from the ADC ring X:0x100..0x1FF at its own pointer (+0x40 per block), so
     // the block goes into all four ring slots.
     void setInput(const int32_t* lr64);
+    // The main mix for the RAM recorders: DSP1's finished master block (32 stereo frames) goes into DSP2's master
+    // return ring X:0x700..0x7FF (all four 64-word slots, read at X:0x243), as DMA2 does on the hardware.
+    void setMasterReturn(const int32_t* lr64);
 
     // UW sample slots (ROM-01..32 = slots 0..31, ROM-33..48 = 48..63; RAM-R/P use 32..40). The OS's loader layout:
     // 12-bit codes, two per word (first sample in the high 12 bits), in sample memory 0x150000..0x1FFA00; the player
@@ -45,6 +48,7 @@ public:
     // only runs the player while it holds a sample (its dispatch entries are switched like the OS does).
     static constexpr int kSlots = 64;
     static constexpr uint32_t kSampleCapacity = (0x1FFA00 - 0x150000) * 2;   // 12-bit samples (~32 s at 44.1 kHz)
+    static constexpr uint32_t kRomCapacity = 0x140000;   // the 48-ROM branch's ROM budget (~29.7 s); RAM gets the rest
     // Replaces every slot's sample (index = slot; empty = no sample). Returns false when they do not fit.
     // samples: -1..1 floats per slot, encoded to the nearest code of the DSP's own table.
     bool setSamples(const std::array<std::vector<float>, kSlots>& samples, const std::array<double, kSlots>& rates,

@@ -35,6 +35,8 @@ constexpr MachineEntry kMachines[] = {
     {176, "ROM-33"}, {177, "ROM-34"}, {178, "ROM-35"}, {179, "ROM-36"}, {180, "ROM-37"}, {181, "ROM-38"}, {182, "ROM-39"},
     {183, "ROM-40"}, {184, "ROM-41"}, {185, "ROM-42"}, {186, "ROM-43"}, {187, "ROM-44"}, {188, "ROM-45"}, {189, "ROM-46"},
     {190, "ROM-47"}, {191, "ROM-48"},
+    // RAM machines: R1..R4 record the input and the main mix into slots 32..35, P1..P4 play them
+    {160, "RAM-R1"}, {161, "RAM-R2"}, {165, "RAM-R3"}, {166, "RAM-R4"}, {162, "RAM-P1"}, {163, "RAM-P2"}, {167, "RAM-P3"}, {168, "RAM-P4"},
 };
 inline bool isRomMachine(int id) { return (id >= 128 && id <= 159) || (id >= 176 && id <= 191); }
 inline int romSlotOf(int id) { return id - 128; }   // the UW slot (0..31, 48..63)

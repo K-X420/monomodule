@@ -42,6 +42,19 @@ int main(int argc, char** argv)
         other.setStateInformation(state.getData(), int(state.getSize()));
         std::printf("state %zu bytes; restored instance has '%s' (%.2f s) in slot 0\n", state.getSize(), other.sampleName(0).toRawUTF8(), other.sampleSeconds(0));
     }
+    const bool ramTest = std::getenv("MD_RAM_TEST") != nullptr;
+    if (ramTest) {   // T1 RAM-R1 records the main mix (MLEV 32, MD_RAM_MLEV) in bar 1, T2 RAM-P1 plays it in bar 2, T3 TRX-BD kicks in bar 1
+        auto set = [&](const juce::String& id, float v) { if (auto* p = proc.apvts.getParameter(id)) p->setValueNotifyingHost(p->convertTo0to1(v)); };
+        set(machineId(0), float(machineIndexOf(160)));
+        int rec[8] = {32, 64, 0, 64, 0, 0, 127, 127};   // MLEV 32: the full mix is hot, higher levels clip
+        if (const char* m = std::getenv("MD_RAM_MLEV")) rec[0] = std::atoi(m);
+        for (int k = 0; k < 8; ++k) set(knobId(0, k), float(rec[k]));
+        set(machineId(1), float(machineIndexOf(162)));
+        const int play[8] = {64, 64, 127, 0, 0, 127, 0, 64};
+        for (int k = 0; k < 8; ++k) set(knobId(1, k), float(play[k]));
+        set(machineId(2), float(machineIndexOf(16)));
+        std::printf("RAM test: RAM-R1 records the kicks of bar 1, RAM-P1 plays them in bar 2\n");
+    }
     const bool lfoTest = std::getenv("MD_LFO_TEST") != nullptr;
     const bool velTest = std::getenv("MD_VEL_TEST") != nullptr;
     if (lfoTest) {   // track 1: GND-SN, long decay, LFO on its own PTCH (SYN1), depth 127, SPD 32
@@ -87,6 +100,12 @@ int main(int argc, char** argv)
                 continue;
             }
             if (lfoTest || std::getenv("MD_ROM_TEST")) { if (s == 0) note(36); continue; }
+            if (ramTest) {
+                if (s == 0) note(36);                       // T1 RAM-R1: start recording
+                if (s < 16 && s % 4 == 0) note(40);         // T3 kicks, bar 1 only
+                if (s == 16) note(38);                      // T2 RAM-P1: play the recording
+                continue;
+            }
             if (kitLoaded) {   // a busier pattern over all 16 tracks
                 for (int t = 0; t < kTracks; ++t)
                     if ((s * (t + 3) + t) % (t < 2 ? 4 : 7) == 0) note(kTrackNotes[t]);

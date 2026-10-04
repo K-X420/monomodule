@@ -154,8 +154,9 @@ bool VoiceEngine::setSamples(const std::array<std::vector<float>, kSlots>& sampl
                              const std::array<int, kSlots>& loopStarts)
 {
     size_t total = 0;
-    for (const auto& s : samples) total += (s.size() + 1) & ~size_t(1);
-    if (total > kSampleCapacity) return false;
+    for (int slot = 0; slot < kSlots; ++slot)
+        if (slot < 32 || slot >= 48) total += (samples[size_t(slot)].size() + 1) & ~size_t(1);
+    if (total > kRomCapacity) return false;
     // the decode table (built by the DSP at boot): monotonic, code 0 = -1.0 .. code 4095 = +1.0
     std::array<int32_t, 4096> table{};
     for (TWord k = 0; k < 4096; ++k) table[k] = int32_t(m_mem->get(MemArea_Y, 0x146000 + k) << 8) >> 8;
@@ -174,7 +175,8 @@ bool VoiceEngine::setSamples(const std::array<std::vector<float>, kSlots>& sampl
         // ROM slots only run the sample player while they hold a sample (the OS points their dispatch entries at
         // the player, P:0x13D / 0x15A / 0x16C, or back at the fallback)
         const bool romSlot = slot < 32 || slot >= 48;
-        if (romSlot) {
+        if (!romSlot) continue;   // RAM slots 32..35 are the recorders' (below); 36..47 are unused
+        {
             const TWord type = TWord(slot) + 129;
             const bool on = !s.empty();
             m_dsp->memWriteP(0x145AF5 + type, on ? 0x00013D : 0x10008E);
@@ -199,6 +201,31 @@ bool VoiceEngine::setSamples(const std::array<std::vector<float>, kSlots>& sampl
         m_dsp->memWriteP(rec + 2, loopStarts[size_t(slot)] >= 0 ? TWord(loopStarts[size_t(slot)]) : 0xFFFFFF);
         m_dsp->memWriteP(rec + 3, rateWord);
     }
+
+    // RAM machines (MainOS 0x20D5A0): the four recording slots 32..35 share what the ROM samples leave, as the OS
+    // partitions it; record {base, length 0, no loop, 0}; the record limit (samples) at 0x147F00. The recorders
+    // (RAM-R1..R4) and players (RAM-P1..P4) are switched on like the OS does once the slots exist.
+    const TWord ramWords = (kSampleEnd - addr) / 4;
+    for (int i = 0; i < 4; ++i) {
+        const TWord rec = kSlotTable + 4 * TWord(32 + i);
+        m_dsp->memWriteP(rec + 0, addr + TWord(i) * ramWords);
+        m_dsp->memWriteP(rec + 1, 0);
+        m_dsp->memWriteP(rec + 2, 0xFFFFFF);
+        m_dsp->memWriteP(rec + 3, 0);
+    }
+    m_dsp->memWriteP(0x147F00, (ramWords * 2 - 32) & 0xFFFFFF);
+    struct Entry { TWord type, init, update, render; };
+    static const Entry ram[8] = {
+        {161, 0x10351D, 0x103537, 0x103579}, {162, 0x103528, 0x10353A, 0x103579},   // RAM-R1, R2
+        {163, 0x000137, 0x00015A, 0x00016C}, {164, 0x00013A, 0x00015A, 0x00016C},   // RAM-P1, P2
+        {166, 0x10352D, 0x10353D, 0x103579}, {167, 0x103532, 0x103540, 0x103579},   // RAM-R3, R4
+        {168, 0x10009B, 0x00015A, 0x00016C}, {169, 0x10009F, 0x00015A, 0x00016C},   // RAM-P3, P4
+    };
+    for (const auto& e : ram) {
+        m_dsp->memWriteP(0x145AF5 + e.type, e.init);
+        m_dsp->memWriteP(0x145BB6 + e.type, e.update);
+        m_dsp->memWriteP(0x145C77 + e.type, e.render);
+    }
     return true;
 }
 
@@ -206,6 +233,13 @@ void VoiceEngine::setInput(const int32_t* lr64)
 {
     for (TWord slot = 0; slot < 4; ++slot)
         for (TWord k = 0; k < 64; ++k) m_dsp->memWrite(MemArea_X, 0x100 + slot * 0x40 + k, TWord(lr64[k]) & 0xFFFFFF);
+    m_dsp->memWrite(MemArea_X, 0x256, 0x100);   // the ADC ring position the RAM recorders read (P:0xE2 is patched out)
+}
+
+void VoiceEngine::setMasterReturn(const int32_t* lr64)
+{
+    for (TWord slot = 0; slot < 4; ++slot)
+        for (TWord k = 0; k < 64; ++k) m_dsp->memWrite(MemArea_X, 0x700 + slot * 0x40 + k, TWord(lr64[k]) & 0xFFFFFF);
 }
 
 uint32_t VoiceEngine::peek(int space, uint32_t addr) const
