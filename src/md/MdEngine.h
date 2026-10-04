@@ -24,6 +24,8 @@ public:
         uint8_t level = 127;
         std::array<uint8_t, 5> lfoConfig{};   // dest track, dest param, shape 1, shape 2, type
         int route = 6;                        // 0-5 = A..F, 6 = MAIN
+        int ctrMasterFx = -1;                 // a CTR-RE / GB / EQ / DX track: the master effect (0 reverb .. 3 dynamix)
+                                              // its SYNTHESIS knobs are; an LFO on one moves that master parameter
     };
 
     explicit Engine(const Firmware& fw);   // throws when a DSP cannot boot

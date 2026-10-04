@@ -1,4 +1,5 @@
 #include "MdEngine.h"
+#include <algorithm>
 #include <cmath>
 
 namespace mnm::md {
@@ -33,6 +34,22 @@ void Engine::refresh()
     if (snap) m_cpu->snapToTargets();
     m_cpu->setTempo(m_bpm);
     m_cpu->tick((m_blockCount++ & 3) == 0);   // the LFOs advance every 4th block, as on the hardware
+    // An LFO on a CTR-RE / GB / EQ / DX track's SYNTHESIS knob k: the master effect's parameter k takes that knob's live
+    // word (knob + LFO): its live word and its target (MainOS 0x23AEAC -> 0x237C54, which also writes the kit). Here only
+    // the control CPU's copies move (the plugin's master parameter keeps the knob's value: no automation at LFO rate), so
+    // they are put back after every tick, as setTargets restores the target each pass.
+    for (int t = 0; t < kTracks; ++t) {
+        const int fx = m_tracks[size_t(t)].target.ctrMasterFx;
+        if (fx < 0 || fx > 3) continue;
+        for (int l = 0; l < kTracks; ++l) {
+            const auto& cfg = m_tracks[size_t(l)].target.lfoConfig;
+            const int k = cfg[1];
+            if (cfg[0] != t || k > 7) continue;
+            const uint16_t raw = m_cpu->liveParam(t, k);
+            m_cpu->setLiveLevel(16 + 8 * fx + k, raw);
+            m_cpu->setLevelTarget(16 + 8 * fx + k, uint8_t(std::min(127, raw >> 7)));   // the sections read some targets
+        }
+    }
 
     for (int t = 0; t < kTracks; ++t) {
         auto& st = m_tracks[size_t(t)];

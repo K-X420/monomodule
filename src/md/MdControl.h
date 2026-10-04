@@ -51,6 +51,8 @@ public:
     uint16_t liveParam(int track, int k) const;          // raw word, 0..0x3FFF
     uint16_t baseParam(int track, int k) const;          // the slewed word before the LFOs (live - base = the LFO's part)
     uint16_t liveLevel(int track) const;
+    void setLiveLevel(int index, uint16_t raw);          // 0-15 levels, 16 + 8 fx + k the master effects (the tick slews on from it)
+    void setLevelTarget(int index, uint8_t value);       // the same index's target (the next setTargets puts the caller's back)
 
     // Developer aid: the instruction at pc (MainOS / SRAM addresses), Musashi's 68020 syntax. Returns its length.
     int disassemble(uint32_t pc, std::string& text);

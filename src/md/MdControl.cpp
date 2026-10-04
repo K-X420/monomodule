@@ -223,6 +223,18 @@ uint16_t ControlCpu::liveLevel(int track) const
     return uint16_t((p[0] << 8) | p[1]);
 }
 
+void ControlCpu::setLiveLevel(int index, uint16_t raw)
+{
+    if (index < 0 || index >= 48) return;
+    uint8_t* p = sram(kLevelLive + 2 * uint32_t(index));
+    p[0] = uint8_t(raw >> 8); p[1] = uint8_t(raw);
+}
+
+void ControlCpu::setLevelTarget(int index, uint8_t value)
+{
+    if (index >= 0 && index < 48) sram(kLevelTargets)[index] = value;
+}
+
 ControlCpu::~ControlCpu() = default;
 
 int ControlCpu::convert(uint32_t handler, int dspType, const std::array<uint16_t, 8>& raw, std::array<uint32_t, kMaxPacket>& packet)

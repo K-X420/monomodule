@@ -120,6 +120,46 @@ int main(int argc, char** argv)
             }
             return 0;
         }
+        if (std::strcmp(argv[2], "ctrlfo") == 0) {
+            // md-render <os.syx> ctrlfo: T1 a held GND-SN; T3 = a CTR-GB (silent, master reverb), its LFO on its own SYN1
+            // (DVOL): the track's live word, the master word and the main level, pass by pass. CTRFX=f CTRK=k: master
+            // effect f parameter k instead (CTRFX=2 CTRK=7: EQ GAIN); CTRHAND=v: that parameter fixed at v, no LFO
+            Engine e(fw);
+            for (int tr = 0; tr < 16; ++tr) {
+                Engine::Track x;
+                x.level = 0;
+                if (tr == 0) { x.machine = 1; x.params[0] = 64; x.params[1] = 127; x.params[10] = 64; x.params[13] = 127; x.params[17] = 127; x.params[18] = 64; x.level = 127; }
+                if (tr == 2) {
+                    x.params[0] = 64; x.params[21] = 100; x.params[22] = 127; x.params[23] = 0;
+                    x.lfoConfig = {2, 0, 0, 0, 0};
+                    x.ctrMasterFx = 0;
+                } else x.lfoConfig = {uint8_t(tr), 0, 0, 0, 0};
+                e.setTrack(tr, x);
+            }
+            const int hand = std::getenv("CTRHAND") ? std::atoi(std::getenv("CTRHAND")) : -1;   // a static master DVOL, no LFO
+            const int fxi = std::getenv("CTRFX") ? std::atoi(std::getenv("CTRFX")) : 0, kk = std::getenv("CTRK") ? std::atoi(std::getenv("CTRK")) : 0;
+            std::array<std::array<uint8_t, 8>, 4> mfx{{{64, 0, 64, 64, 0, 127, 0, 127}, {24, 0, 0, 32, 0, 127, 0, 127}, {64, 64, 64, 64, 64, 64, 64, 64}, {0, 64, 127, 0, 0, 0, 64, 0}}};
+            if (hand >= 0) mfx[size_t(fxi)][size_t(kk)] = uint8_t(hand);
+            e.setMasterFx(mfx);
+            if (hand >= 0 || fxi != 0 || kk != 0) {
+                Engine::Track x; x.level = 0; x.params[0] = mfx[size_t(fxi)][size_t(kk)]; x.params[size_t(kk)] = mfx[size_t(fxi)][size_t(kk)];
+                x.params[21] = 100; x.params[22] = uint8_t(hand >= 0 ? 0 : 127); x.lfoConfig = {2, uint8_t(kk), 0, 0, 0}; x.ctrMasterFx = fxi;
+                e.setTrack(2, x);
+            }
+            e.snap();
+            e.render();
+            e.trig(0, 1, 127);
+            double acc = 0;
+            for (int pass = 0; pass < 64; ++pass) {
+                e.render();
+                for (int i = 0; i < 32; ++i) { const double v = e.output()[size_t(i)][2] / 8388608.0; acc += v * v; }
+                if (pass % 4 == 3) {
+                    std::printf("pass %2d  T3 SYN1 live %5u   master DVOL live %5u   main rms %.4f\n", pass, e.cpu().liveParam(2, 0), e.cpu().liveLevel(16), std::sqrt(acc / 128));
+                    acc = 0;
+                }
+            }
+            return 0;
+        }
         if (std::strcmp(argv[2], "directcheck") == 0 && argc > 4) {
             // md-render <os.syx> directcheck <dump.syx> <kit>: each track of the kit alone, once in the mix and once on its
             // own output (Engine::setDirect); its own output against the main, sample by sample (neutral master section)

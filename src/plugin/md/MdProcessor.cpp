@@ -172,12 +172,12 @@ void MdProcessor::refreshParameters()
         e.route = juce::jlimit(0, kNumRoutes - 1, int(std::lround(tr.route->load())));
         if (isMidMachine(e.machine)) {   // no voice; the parameters stay (the OS's LFOs move them: midStream)
             e.machine = 0; e.level = 0;
-        } else if (isCtrMachine(e.machine)) {   // no voice; the LFO (CTR-RE..DX) still runs
+        } else if (isCtrMachine(e.machine)) {   // no voice; CTR-RE..DX keep SYNTHESIS (an LFO moves the master effect from it)
             const bool lfo = e.machine != kCtrAll && e.machine != kCtr8p;
             const auto keep = p;
             p.fill(0);
-            p[17] = 0;
-            if (lfo) { p[21] = keep[21]; p[22] = keep[22]; p[23] = keep[23]; }
+            if (lfo) { for (int k = 0; k < 8; ++k) p[size_t(k)] = keep[size_t(k)]; p[21] = keep[21]; p[22] = keep[22]; p[23] = keep[23]; }
+            e.ctrMasterFx = ctrMasterFx(e.machine);
             e.machine = 0; e.level = 0;
         }
         if (m_kitLfoPending[size_t(t)].exchange(false)) m_engine->setLfoState(t, m_kitLfos[size_t(t)].data());

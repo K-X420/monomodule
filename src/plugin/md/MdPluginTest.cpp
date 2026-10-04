@@ -134,6 +134,7 @@ int main(int argc, char** argv)
         auto set = [&](const juce::String& id, float v) { if (auto* pp = proc.apvts.getParameter(id)) pp->setValueNotifyingHost(pp->convertTo0to1(v)); };
         auto get = [&](const juce::String& id) { return int(std::lround(proc.apvts.getRawParameterValue(id)->load())); };
         std::vector<juce::MidiMessage> out;
+        std::vector<double> blockRms;   // the main bus, per block
         int64_t clock = 0;
         auto run = [&](int blocks, std::vector<int> notesAt0 = {}) {   // blocks of 480 at 48 kHz; notes at the first block's start
             for (int b = 0; b < blocks; ++b) {
@@ -141,6 +142,7 @@ int main(int argc, char** argv)
                 juce::MidiBuffer midi;
                 if (b == 0) for (int nn : notesAt0) midi.addEvent(juce::MidiMessage::noteOn(1, nn, uint8_t(100)), 0);
                 proc.processBlock(buf, midi);
+                { double e = 0; for (int c = 0; c < 2; ++c) for (int i = 0; i < block; ++i) e += double(buf.getSample(c, i)) * buf.getSample(c, i); blockRms.push_back(std::sqrt(e / (2.0 * block))); }
                 for (const auto m : midi) { auto msg = m.getMessage(); msg.setTimeStamp(double(clock + m.samplePosition)); out.push_back(msg); }
                 clock += block;
                 proc.syncMachineSideEffects();   // the message thread: the CTR writes land
@@ -216,6 +218,24 @@ int main(int argc, char** argv)
         set(fxId(3, 4), 2); set(fxId(3, 5), 1); run(3);   // P3 -> T3 (CTR-GB) SYN2 = master reverb PRED
         set(knobId(3, 2), 77); run(4);
         check(get(masterFxId(0, 1)) == 77, "CTR-8P P3 -> CTR-GB PRED -> master reverb PRED = " + juce::String(get(masterFxId(0, 1))));
+        // CTR-EQ's LFO (T3 turned into a CTR-EQ, its LFO on its own GAIN) makes a held sine on T7 swell and dip
+        machine(2, 122); run(10);
+        auto wobble = [&](int depth) {
+            machine(6, 1); run(5);   // T7 GND-SN
+            set(knobId(6, 0), 64); set(knobId(6, 1), 127); set(volId(6), 127); set(levelId(6), 127);
+            set(knobId(2, 7), 64);   // GAIN in the middle: room both ways
+            set(lfoId(2, 0), 2); set(lfoId(2, 1), 7); set(lfoId(2, 2), 0); set(lfoId(2, 3), 0); set(lfoId(2, 4), 0);
+            set(lfoId(2, 5), 40); set(lfoId(2, 7), 0); set(lfoId(2, 6), float(depth));
+            run(5);
+            blockRms.clear();
+            run(100, {47});
+            double lo = 1e9, hi = 0;
+            for (size_t b = 15; b < blockRms.size(); ++b) { lo = std::min(lo, blockRms[b]); hi = std::max(hi, blockRms[b]); }
+            return hi / std::max(lo, 1e-9);
+        };
+        const double still = wobble(0), moving = wobble(127);
+        check(still < 1.2 && moving > 4.0, "CTR-EQ LFO on GAIN: main level range x" + juce::String(still, 2) + " at depth 0, x" + juce::String(moving, 1) + " at depth 127");
+        check(get(masterFxId(2, 7)) == get(knobId(2, 7)) && get(masterFxId(2, 7)) == 64, "the master EQ GAIN parameter stays at the knob (" + juce::String(get(masterFxId(2, 7))) + "): the LFO is not written into it");
         std::printf(fails ? "CTR TEST FAILED (%d)\n" : "CTR TEST OK\n", fails);
         return fails ? 1 : 0;
     }

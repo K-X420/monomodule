@@ -108,6 +108,7 @@ public:
     double sampleMemoryUsed() const;   // 0..1 of the UW sample memory
     void auditionTrack(int t) { m_audition[size_t(t)].store(true); }   // UI: trig as from MIDI
     float trackActivity(int t) const { return m_activity[size_t(t)].load(); }   // decays between UI polls
+    mnm::md::Engine* engineForTests() { return m_engine.get(); }   // dev: md-plugintest probes
 
     juce::AudioProcessorValueTreeState apvts;
 
