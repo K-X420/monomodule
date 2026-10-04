@@ -94,7 +94,7 @@ AboutOverlay::AboutOverlay(const juce::String& pluginTitle, const juce::String& 
     m_body.setText(
         (device == "Monomachine" ? juce::String(kPluginTagline) : "A chip-level emulation of the Elektron " + device) + ". It runs the sound engine from the "
         + device + " OS file you supply, so what you hear is what the hardware sounds like.\n\n"
-        + (device == "Monomachine" ? juce::String(kCredits) : "Built on Monomodule by Shnolk (GNU AGPL v3); the Machinedrum support is not part of Shnolk's release.")
+        + (device == "Monomachine" ? juce::String(kCredits) : "Monomodule by Shnolk (GNU AGPL v3). Machinedrum version by KX; it is not part of Shnolk's release.")
         + "\n\n" + (device == "Monomachine" ? juce::String(kDisclaimer)
                      : "Not affiliated with or endorsed by Elektron. " + device + " is a trademark of Elektron Music Machines MAQ AB, named here only to say what this software emulates."),
         juce::dontSendNotification);

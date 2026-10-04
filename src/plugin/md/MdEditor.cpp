@@ -271,7 +271,7 @@ void MdBadgeButton::paintButton(juce::Graphics& g, bool highlighted, bool down)
 MdEditor::MdEditor(MdProcessor& p)
     : AudioProcessorEditor(p), m_proc((skin::apply(skin::load()), p)),   // the skin first: m_lnf reads it when it is built
       m_footerVersion(spec::kFontSmall4x5, kPluginVersion, 2),
-      m_footerBy(spec::kFontSmall4x5, "BY SHNOLK", 2, false, juce::Justification::centredRight),
+      m_footerBy(spec::kFontSmall4x5, "BY SHNOLK - MD BY KX", 2, false, juce::Justification::centredRight),
       m_status(spec::kFontBold8, "NO MACHINEDRUM OS FILE", kScale),
       m_syn(p.apvts, "SYNTHESIS"), m_fx(p.apvts, "EFFECTS"), m_routing(p.apvts, "ROUTING"),
       m_lfo(p.apvts, "LFO"), m_master(p.apvts, "MASTER FX"), m_out(p.apvts, "OUTPUT"),
