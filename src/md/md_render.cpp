@@ -15,6 +15,7 @@
 #include "MdVoiceEngine.h"
 #include "MdMixEngine.h"
 #include "MdKit.h"
+#include "MdPreview.h"
 #include <map>
 #include <memory>
 #include "dsp56kEmu/disasm.h"
@@ -84,6 +85,43 @@ int main(int argc, char** argv)
             } else {
                 for (const auto& [a, w] : p) { const auto s = line(a).first; if (s.find(argv[4]) != std::string::npos) std::printf("%06x  %s\n", a, s.c_str()); }
             }
+            return 0;
+        }
+        if (std::strcmp(argv[2], "preview") == 0 && argc > 5) {
+            // md-render <os.syx> preview <dump.syx> <pattern slot 0-127 | kNN = kit NN's demo> <out.wav> [bpm]: a library preview
+            std::FILE* f = std::fopen(argv[3], "rb");
+            if (!f) { std::printf("cannot read %s\n", argv[3]); return 1; }
+            std::vector<uint8_t> bytes;
+            for (int c; (c = std::fgetc(f)) != EOF;) bytes.push_back(uint8_t(c));
+            std::fclose(f);
+            const auto d = mnm::mddump::parseDump(bytes.data(), bytes.size(), "dump");
+            mnm::mdpreview::Options opt;
+            if (argc > 6) opt.bpm = std::atof(argv[6]);
+            mnm::mdpreview::Spec spec;
+            if (argv[4][0] == 'k') {
+                const auto* k = d.kitAt(std::atoi(argv[4] + 1));
+                if (!k) { std::printf("no such kit\n"); return 1; }
+                spec = mnm::mdpreview::patternPreview(*k, mnm::mdpreview::demoPattern(*k), opt);
+            } else {
+                const auto* p = d.patternAt(std::atoi(argv[4]));
+                const auto* k = p ? d.kitAt(p->kit) : nullptr;
+                if (!p || !k) { std::printf("no such pattern / kit\n"); return 1; }
+                spec = mnm::mdpreview::patternPreview(*k, *p, opt);
+                int locks = 0, accents = 0;
+                for (const auto& e : spec.events) { locks += e.locks.empty() ? 0 : 1; accents += e.accent != -128 ? 1 : 0; }
+                std::printf("pattern %s on kit %s: %zu trigs (%d locked, %d accented), %d loops, swing %d%%\n", mnm::mddump::patternSlotName(p->position).c_str(),
+                            k->name.c_str(), spec.events.size(), locks, accents, spec.loops, p->swingPercent());
+            }
+            mnm::mdpreview::Renderer r(fw);
+            std::vector<int32_t> out;
+            const auto t0 = std::chrono::steady_clock::now();
+            const bool ok = r.render(spec, opt.bpm, [&](uint32_t, const mnm::mdpreview::Block& b) {
+                for (int i = 0; i < b.kFrames; ++i) { out.push_back(int32_t(b.mixL[size_t(i)] * 8388607.0f)); out.push_back(int32_t(b.mixR[size_t(i)] * 8388607.0f)); }
+            });
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            if (!ok) { std::printf("render failed: %s\n", r.error().c_str()); return 1; }
+            writeWav(argv[5], out, 2);
+            std::printf("rendered %.2f s in %.0f ms\n", spec.frames / 44100.0, ms);
             return 0;
         }
         if (argc < 4) { std::printf("missing output file\n"); return 2; }

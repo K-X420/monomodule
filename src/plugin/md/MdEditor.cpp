@@ -314,6 +314,8 @@ MdEditor::MdEditor(MdProcessor& p)
     m_drop.onLoadKit = [this](const KitEntry& e) { loadKit(e); };
     m_drop.onLoadSound = [this](const SoundEntry& e) { loadSound(e); };
     m_drop.onImport = [this] { importSyx(); };
+    m_drop.onAudition = [this](const juce::String& key, bool kit) { audition(key, kit); };
+    m_drop.isPlaying = [this](const juce::String& key) { return m_proc.previewKey() == key; };
     m_drop.onClosed = [this] { m_strip.setOpen(MdKitStrip::None); };
     addChildComponent(m_status);
     addChildComponent(m_osButton);
@@ -594,6 +596,29 @@ juce::String MdEditor::saveSound(const juce::String& name)
     return {};
 }
 
+// A kit (its best pattern, else a demo) or a sound (one trig), heard before loading it; a second click stops
+void MdEditor::audition(const juce::String& key, bool kit)
+{
+    if (m_proc.previewKey() == key) { m_proc.previewStop(); m_drop.repaint(); return; }
+    const auto& cat = m_lib->model().mdCatalog();
+    mnm::mdpreview::Options opt;
+    if (kit) {
+        const auto* k = cat.kit(key.toStdString());
+        if (!k) return;
+        const auto kitData = k->kit;
+        const auto best = mnm::mdpreview::choosePreviewPattern(cat, *k);
+        if (const auto* p = best.empty() ? nullptr : cat.pattern(best)) { const auto pat = p->pattern; m_proc.previewPlay(key, [kitData, pat, opt] { return mnm::mdpreview::patternPreview(kitData, pat, opt); }); }
+        else m_proc.previewPlay(key, [kitData, opt] { return mnm::mdpreview::patternPreview(kitData, mnm::mdpreview::demoPattern(kitData), opt); });
+    } else {
+        const auto* s = cat.sound(key.toStdString());
+        if (!s) return;
+        const auto snd = s->sound;
+        m_proc.previewPlay(key, [snd, opt] { return mnm::mdpreview::soundPreview(snd, opt); });
+    }
+    if (const auto st = m_proc.previewStatus(); st.isNotEmpty()) juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon, "Audition", st);
+    m_drop.repaint();
+}
+
 // The selected track's sound: the name it was loaded or saved under, else its catalog name, else "-"
 juce::String MdEditor::soundDisplayName(int t)
 {
@@ -664,6 +689,7 @@ void MdEditor::timerCallback()
         if (m_sample.getButtonText() != text) { m_sample.setButtonText(text); resized(); }
     }
     if (m_sample.isVisible() != rom) { m_sample.setVisible(rom); resized(); }
+    if (m_proc.previewPoll()) m_drop.repaint();   // an audition ended
     if ((m_tick++ % 5) == 0) {   // the modified marks: a few times a second
         m_strip.setKit(m_proc.kitName(), m_proc.kitModified());
         m_strip.setSound(m_track, soundDisplayName(m_track), m_proc.soundModified(m_track));

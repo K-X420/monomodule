@@ -219,6 +219,54 @@ static int playtest(const juce::StringArray& args)
     return ok ? 0 : 1;
 }
 
+// mdplaytest <md.syx> <pattern slot>: the player end to end with a Machinedrum pattern preview (render thread, cache,
+// audio device), as the app plays it: renders and plays, plays again from the cache, stops
+static int mdplaytest(const juce::StringArray& args)
+{
+    juce::ScopedJuceInitialiser_GUI gui;
+    const auto src = juce::File::getCurrentWorkingDirectory().getChildFile(args[1]);
+    const auto bytes = readAll(src);
+    const auto d = mnm::mddump::parseDump(bytes.data(), bytes.size(), "md");
+    const auto* pat = d.patternAt(args[2].getIntValue());
+    const auto* kit = pat ? d.kitAt(pat->kit) : nullptr;
+    if (!pat || !kit) { std::printf("no pattern %s with a kit\n", args[2].toRawUTF8()); return 1; }
+    juce::String os = juce::String(std::getenv("MD_OS") ? std::getenv("MD_OS") : "");
+    if (os.isEmpty()) os = mnm::plugin::loadSharedSetting("mdOsPath");
+    if (os.isEmpty() || !juce::File(os).existsAsFile()) { std::printf("no Machinedrum OS file (MD_OS)\n"); return 1; }
+    PreviewPlayer player;
+    player.setMdFirmwarePath(os);
+    player.onChange = [&] { std::printf("  change: playing=%d rendering=%d status=\"%s\"\n", player.isPlaying(), player.rendering(), player.status().toRawUTF8()); };
+    mnm::mdpreview::Options opt;
+    const auto p = *pat; const auto k = *kit;
+    auto build = [p, k, opt] { return mnm::mdpreview::patternPreview(k, p, opt); };
+    const auto t0 = juce::Time::getMillisecondCounterHiRes();
+    double startedAt = 0;
+    bool ok = true;
+    int phase = 0;
+    player.playMd("pattern/test", build, -1);
+    while (true) {
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+        const double now = juce::Time::getMillisecondCounterHiRes() - t0;
+        const double pr = player.progress();
+        if (phase == 0) {
+            if (pr > 0 && startedAt == 0) { startedAt = now; std::printf("  audio started after %.0f ms\n", now); }
+            if (!player.isPlaying()) {
+                std::printf("  ended after %.0f ms, status \"%s\"\n", now, player.status().toRawUTF8());
+                ok = ok && startedAt > 0 && player.status().isEmpty();
+                phase = 1;
+                player.playMd("pattern/test", build, 3);   // cached, track 4's voice
+                std::printf("play again (cached, a voice): playing=%d rendering=%d stem=%d\n", player.isPlaying(), player.rendering(), player.playingStem());
+                ok = ok && player.isPlaying() && !player.rendering() && player.playingStem() == 3;
+            } else if (now > 30000) { std::printf("  timeout\n"); ok = false; break; }
+        } else {
+            if (pr > 0.2) { player.stop(); std::printf("  stopped at %.0f%%: playing=%d\n", 100 * pr, player.isPlaying()); ok = ok && !player.isPlaying(); break; }
+            if (!player.isPlaying() || now > 60000) { std::printf("  second run ended unexpectedly\n"); ok = false; break; }
+        }
+    }
+    std::printf("MD PLAYTEST %s\n", ok ? "OK" : "FAIL");
+    return ok ? 0 : 1;
+}
+
 int main(int argc, char** argv)
 {
     const juce::StringArray args(argv + 1, argc - 1);
@@ -232,6 +280,7 @@ int main(int argc, char** argv)
     const auto cmd = args[0];
     if (cmd == "preview" && args.size() >= 5) return preview(args);
     if (cmd == "playtest" && args.size() == 4) return playtest(args);
+    if (cmd == "mdplaytest" && args.size() == 3) return mdplaytest(args);
     if (cmd == "render" && args.size() >= 3) {
         // the app window offscreen, on a throw-away library holding this dump as a project (imported twice when
         // "history" is asked for, so the timeline has more than one version)

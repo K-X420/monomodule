@@ -16,6 +16,7 @@
 #include <memory>
 #include "preview/KitRenderer.h"
 #include "preview/Preview.h"
+#include "MdPreview.h"
 
 namespace mnm::library {
 
@@ -29,12 +30,13 @@ struct PreviewAudio {
     // playback runs out. loopEnd = 0 means no region (loop the whole buffer).
     uint32_t loopStart = 0, loopEnd = 0;
     bool stems = false;
+    int stemCount = 6;   // 6 tracks (Monomachine) or 16 voices (Machinedrum)
     std::vector<float> mixL, mixR;
-    std::array<std::vector<float>, 6> stemL, stemR;
+    std::array<std::vector<float>, 16> stemL, stemR;
     std::atomic<uint32_t> ready{0};
     std::atomic<bool> done{false}, failed{false};
     std::string error;
-    size_t bytes() const { return (mixL.size() + mixR.size() + (stems ? 12 * mixL.size() : 0)) * sizeof(float); }
+    size_t bytes() const { return (mixL.size() + mixR.size() + (stems ? 2 * size_t(stemCount) * mixL.size() : 0)) * sizeof(float); }
 };
 
 class PreviewRenderer : private juce::Thread {
@@ -48,6 +50,10 @@ public:
     // The render named `key` at this tempo: from the cache, or started now (`build` is called synchronously when it
     // is not cached). A request for another key supersedes a render in progress.
     std::shared_ptr<PreviewAudio> request(const juce::String& key, double bpm, const std::function<preview::PreviewSpec()>& build);
+    // Machinedrum previews: their own OS file (Monomodule MD's), the same cache and thread
+    void setMdFirmwarePath(const juce::String& path);
+    bool hasMdFirmwarePath() const;
+    std::shared_ptr<PreviewAudio> requestMd(const juce::String& key, double bpm, const std::function<mdpreview::Spec()>& build);
     bool rendering() const { return m_rendering.load(); }
     juce::String status() const;          // "" or the last problem: no OS file, load failure, render failure
     void clearStatus() { setStatus({}); }
@@ -56,7 +62,9 @@ public:
     void keep(const std::shared_ptr<PreviewAudio>& playing) { m_keep = playing; }   // never evicted
 
 private:
-    struct Job { juce::String key; preview::PreviewSpec spec; std::shared_ptr<PreviewAudio> audio; double bpm = 120.0; };
+    struct Job { juce::String key; preview::PreviewSpec spec; std::shared_ptr<PreviewAudio> audio; double bpm = 120.0; bool md = false; mdpreview::Spec mdSpec; };
+    std::shared_ptr<PreviewAudio> enqueue(const juce::String& ck, std::unique_ptr<Job> job, uint32_t frames, uint32_t loopFrames, int loops, bool stems, int stemCount);
+    void renderMdJob(Job& job);
     void run() override;
     void renderJob(Job& job);
     void setStatus(const juce::String& s);
@@ -75,6 +83,10 @@ private:
     bool m_fwDirty = true;
     std::unique_ptr<fw::Firmware> m_firmware;
     std::unique_ptr<preview::KitRenderer> m_renderer;
+    juce::String m_mdFwPath;                   // under m_jobLock
+    bool m_mdFwDirty = true;
+    std::unique_ptr<mnm::md::Firmware> m_mdFirmware;
+    std::unique_ptr<mdpreview::Renderer> m_mdRenderer;
     mutable juce::CriticalSection m_statusLock;
     juce::String m_status;
 };
@@ -115,6 +127,7 @@ public:
     PreviewPlayer();
     ~PreviewPlayer() override;
     void setFirmwarePath(const juce::String& path) { m_renderer.setFirmwarePath(path); }
+    void setMdFirmwarePath(const juce::String& path) { m_renderer.setMdFirmwarePath(path); }
     void setOptions(const preview::PreviewOptions& opt) { m_options = opt; }   // tempo etc.; a change makes the cache stale
     preview::PreviewOptions options() const { return m_options; }
 
@@ -122,6 +135,7 @@ public:
     // cached, `stem` = -1 the mix or a track 0-5. Replaces whatever is playing (the caller decides about
     // stop-on-second-click).
     void play(const juce::String& key, const std::function<preview::PreviewSpec()>& build, int stem = -1);
+    void playMd(const juce::String& key, const std::function<mdpreview::Spec()>& build, int stem = -1);   // a Machinedrum item (stem 0-15)
     void stop();
     bool isPlaying() const { return m_playingKey.isNotEmpty(); }
     // Loop the playing preview until it is switched off, stopped or replaced by another preview (play() and stop()

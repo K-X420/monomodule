@@ -193,7 +193,8 @@ void MdLibraryDrop::paint(juce::Graphics& g)
         else if (i == m_hover) dottedFrame(cv, {1, y, w - 2, kRowH});
         const auto right = fit(spec::kFontTiny3x5, row.right, 60);
         const int rw = LcdCanvas::textWidth(spec::kFontTiny3x5, right.toRawUTF8());
-        textMarked(cv, spec::kFontBold8, fit(spec::kFontBold8, row.name, w - 22 - rw), 6, y + 2, !on, row.fav);
+        playGlyph(cv, {2, y, 11, kRowH}, isPlaying && isPlaying(row.key), !on);   // audition
+        textMarked(cv, spec::kFontBold8, fit(spec::kFontBold8, row.name, w - 31 - rw), 15, y + 2, !on, row.fav);
         cv.text(spec::kFontTiny3x5, right.toRawUTF8(), w - 6 - rw, y + 4, !on);
     }
     if (m_rows.empty())
@@ -205,12 +206,12 @@ void MdLibraryDrop::paint(juce::Graphics& g)
     const int fy = h - kFootH;
     cv.fillRect(0, fy, w, 1, true);
     if (m_kits) {
-        cv.text(spec::kFontTiny3x5, "CLICK = LOAD   RIGHT-CLICK = FAVOURITE", 4, fy + 5, true);
+        cv.text(spec::kFontTiny3x5, "CLICK = LOAD   GLYPH = AUDITION", 4, fy + 5, true);
         const int iw = LcdCanvas::textWidth(spec::kFontSmall4x5, "IMPORT .SYX") + 8;
         cv.fillRect(w - iw - 2, fy + 2, iw, kFootH - 4, true);
         cv.text(spec::kFontSmall4x5, "IMPORT .SYX", w - iw + 2, fy + 5, false);
     } else {
-        const juce::String hint = "CLICK = LOAD ON T" + juce::String(m_track + 1) + (m_alt ? "  (ANOTHER MACHINE CHANGES THE MACHINE)" : "   RIGHT-CLICK = FAVOURITE");
+        const juce::String hint = "CLICK = LOAD ON T" + juce::String(m_track + 1) + (m_alt ? "  (ANOTHER MACHINE CHANGES THE MACHINE)" : "   GLYPH = AUDITION");
         cv.text(spec::kFontTiny3x5, fit(spec::kFontTiny3x5, hint, w - 8).toRawUTF8(), 4, fy + 5, true);
     }
     cv.draw(g, 0, 0, kS);
@@ -230,6 +231,7 @@ void MdLibraryDrop::mouseDown(const juce::MouseEvent& e)
     if (i < 0 || m_rows[size_t(i)].header) return;
     const auto row = m_rows[size_t(i)];
     if (e.mods.isPopupMenu()) { m_lib.setFavourite(row.key, !row.fav); rebuild(); repaint(); return; }
+    if (lcd.x < 14) { if (onAudition) onAudition(row.key, m_kits); repaint(); return; }   // the glyph: hear it first
     close();
     if (m_kits) { if (onLoadKit) onLoadKit(row.kit); }
     else if (onLoadSound) onLoadSound(row.sound);

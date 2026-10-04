@@ -9,6 +9,7 @@ namespace {
 constexpr uint32_t kPrefillFrames = 44100 / 4;   // playback starts once this much (or everything) is rendered
 constexpr int kMaxPad = 1 << 16;
 const char* kNoOs = "Audio preview needs the Monomachine OS file (MENU)";
+const char* kNoMdOs = "Machinedrum previews need the Machinedrum OS file (MENU)";
 }
 
 // ---------------------------------------------------------------------------
@@ -76,15 +77,50 @@ std::shared_ptr<PreviewAudio> PreviewRenderer::request(const juce::String& key, 
     }
     auto job = std::make_unique<Job>();
     job->key = ck; job->spec = build(); job->bpm = bpm;
-    auto audio = std::make_shared<PreviewAudio>();
-    audio->frames = ((job->spec.frames + 15) / 16) * 16;
-    if (job->spec.loopFrames > 0 && job->spec.loops > 0 && uint32_t(job->spec.loops) * job->spec.loopFrames <= audio->frames) {
-        audio->loopEnd = uint32_t(job->spec.loops) * job->spec.loopFrames;
-        audio->loopStart = audio->loopEnd - job->spec.loopFrames;
+    const auto frames = job->spec.frames, loopFrames = job->spec.loopFrames;
+    const int loops = job->spec.loops;
+    const bool stems = job->spec.stems;
+    return enqueue(ck, std::move(job), frames, loopFrames, loops, stems, 6);
+}
+
+void PreviewRenderer::setMdFirmwarePath(const juce::String& path)
+{
+    const juce::ScopedLock sl(m_jobLock);
+    if (path == m_mdFwPath && !m_mdFwDirty) return;
+    m_mdFwPath = path;
+    m_mdFwDirty = true;
+}
+
+bool PreviewRenderer::hasMdFirmwarePath() const { const juce::ScopedLock sl(m_jobLock); return m_mdFwPath.isNotEmpty(); }
+
+std::shared_ptr<PreviewAudio> PreviewRenderer::requestMd(const juce::String& key, double bpm, const std::function<mdpreview::Spec()>& build)
+{
+    if (!hasMdFirmwarePath()) { setStatus(kNoMdOs); return nullptr; }
+    const juce::String ck = "md:" + key + "@" + juce::String(bpm, 2);
+    if (auto it = m_cache.find(ck); it != m_cache.end() && !it->second->failed.load()) {
+        m_lru.remove(ck); m_lru.push_back(ck);
+        return it->second;
     }
-    audio->stems = job->spec.stems;
+    auto job = std::make_unique<Job>();
+    job->key = ck; job->md = true; job->mdSpec = build(); job->bpm = bpm;
+    const auto frames = job->mdSpec.frames, loopFrames = job->mdSpec.loopFrames;
+    const int loops = job->mdSpec.loops;
+    const bool stems = job->mdSpec.stems;
+    return enqueue(ck, std::move(job), frames, loopFrames, loops, stems, 16);
+}
+
+std::shared_ptr<PreviewAudio> PreviewRenderer::enqueue(const juce::String& ck, std::unique_ptr<Job> job, uint32_t frames, uint32_t loopFrames, int loops, bool stems, int stemCount)
+{
+    auto audio = std::make_shared<PreviewAudio>();
+    audio->frames = ((frames + 31) / 32) * 32;   // whole passes of either engine
+    if (loopFrames > 0 && loops > 0 && uint32_t(loops) * loopFrames <= audio->frames) {
+        audio->loopEnd = uint32_t(loops) * loopFrames;
+        audio->loopStart = audio->loopEnd - loopFrames;
+    }
+    audio->stems = stems;
+    audio->stemCount = stemCount;
     audio->mixL.assign(audio->frames, 0.f); audio->mixR.assign(audio->frames, 0.f);
-    if (audio->stems) for (int t = 0; t < 6; ++t) { audio->stemL[size_t(t)].assign(audio->frames, 0.f); audio->stemR[size_t(t)].assign(audio->frames, 0.f); }
+    if (audio->stems) for (int t = 0; t < stemCount; ++t) { audio->stemL[size_t(t)].assign(audio->frames, 0.f); audio->stemR[size_t(t)].assign(audio->frames, 0.f); }
     job->audio = audio;
     m_cache[ck] = audio;
     m_lru.remove(ck); m_lru.push_back(ck);
@@ -120,8 +156,41 @@ void PreviewRenderer::run()
     }
 }
 
+void PreviewRenderer::renderMdJob(Job& job)
+{
+    auto& a = *job.audio;
+    auto fail = [&](const juce::String& why, bool report = true) { a.error = why.toStdString(); a.failed.store(true); a.done.store(true); if (report) setStatus(why); };
+    juce::String path;
+    bool dirty;
+    { const juce::ScopedLock sl(m_jobLock); path = m_mdFwPath; dirty = m_mdFwDirty; m_mdFwDirty = false; }
+    if (dirty || !m_mdFirmware) {
+        m_mdRenderer.reset(); m_mdFirmware.reset();
+        if (path.isEmpty()) { fail(kNoMdOs); return; }
+        try {
+            m_mdFirmware = std::make_unique<mnm::md::Firmware>(mnm::md::loadFirmware(path.toStdString()));
+            m_mdRenderer = std::make_unique<mdpreview::Renderer>(*m_mdFirmware);
+        } catch (const std::exception& e) { fail("Machinedrum OS file: " + juce::String(e.what())); return; }
+    }
+    if (m_cancel.load() || threadShouldExit()) { fail("cancelled", false); return; }
+    const bool ok = m_mdRenderer->render(job.mdSpec, job.bpm, [&](uint32_t f0, const mdpreview::Block& b) {
+        constexpr int N = mdpreview::Block::kFrames;
+        if (f0 + N > a.frames) return;
+        std::copy(b.mixL.begin(), b.mixL.end(), a.mixL.begin() + f0);
+        std::copy(b.mixR.begin(), b.mixR.end(), a.mixR.begin() + f0);
+        if (a.stems)
+            for (int t = 0; t < 16; ++t) {   // a voice is mono: the same on both sides
+                std::copy(b.stem[size_t(t)].begin(), b.stem[size_t(t)].end(), a.stemL[size_t(t)].begin() + f0);
+                std::copy(b.stem[size_t(t)].begin(), b.stem[size_t(t)].end(), a.stemR[size_t(t)].begin() + f0);
+            }
+        a.ready.store(f0 + N);
+    }, &m_cancel);
+    if (!ok) { if (m_cancel.load()) fail("cancelled", false); else fail("Machinedrum preview failed: " + juce::String(m_mdRenderer->error())); return; }
+    a.done.store(true);
+}
+
 void PreviewRenderer::renderJob(Job& job)
 {
+    if (job.md) { renderMdJob(job); return; }
     auto& a = *job.audio;
     auto fail = [&](const juce::String& why, bool report = true) { a.error = why.toStdString(); a.failed.store(true); a.done.store(true); if (report) setStatus(why); };
     juce::String path;
@@ -165,7 +234,7 @@ void PreviewVoice::start(std::shared_ptr<PreviewAudio> audio, int stem)
 {
     const juce::SpinLock::ScopedLockType sl(m_lock);
     m_playing = std::move(audio);
-    m_stem = m_playing && m_playing->stems ? stem : -1;
+    m_stem = m_playing && m_playing->stems && stem < m_playing->stemCount ? stem : -1;
     m_pos = 0; m_started = false;
     m_playPos.store(0); m_finished.store(false); m_loop.store(false);
     m_interpL.reset(); m_interpR.reset();
@@ -281,6 +350,19 @@ void PreviewPlayer::play(const juce::String& key, const std::function<preview::P
 {
     if (!m_renderer.hasFirmwarePath() || !ensureDevice()) { m_renderer.request(key, m_options.bpm, build); triggerAsyncUpdate(); return; }
     auto audio = m_renderer.request(key, m_options.bpm, build);
+    if (!audio) { triggerAsyncUpdate(); return; }
+    m_audio = audio;
+    m_renderer.keep(audio);
+    m_voice.start(audio, stem);
+    m_playingKey = key;
+    m_playingStem = audio->stems ? stem : -1;
+    triggerAsyncUpdate();
+}
+
+void PreviewPlayer::playMd(const juce::String& key, const std::function<mdpreview::Spec()>& build, int stem)
+{
+    if (!m_renderer.hasMdFirmwarePath() || !ensureDevice()) { m_renderer.requestMd(key, m_options.bpm, build); triggerAsyncUpdate(); return; }
+    auto audio = m_renderer.requestMd(key, m_options.bpm, build);
     if (!audio) { triggerAsyncUpdate(); return; }
     m_audio = audio;
     m_renderer.keep(audio);

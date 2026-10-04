@@ -6,6 +6,7 @@
 #include <juce_audio_formats/juce_audio_formats.h>
 #include "MdProcessor.h"
 #include "MdEditor.h"
+#include "MdPreview.h"
 
 int main(int argc, char** argv)
 {
@@ -100,6 +101,22 @@ int main(int argc, char** argv)
             break;
         }
     }
+    const bool auditionTest = std::getenv("MD_AUDITION") != nullptr;
+    if (auditionTest) {   // a library kit auditioned (no notes): the output is the preview alone
+        juce::SharedResourcePointer<MdLibrary> lib;
+        const auto kits = lib->kits();
+        if (kits.empty()) { std::printf("audition: the library has no MD kits\n"); return 1; }
+        const auto& cat = lib->model().mdCatalog();
+        const auto* k = cat.kit(kits.back().key.toStdString());
+        const auto best = mnm::mdpreview::choosePreviewPattern(cat, *k);
+        const auto* pat = cat.pattern(best);
+        const auto kitData = k->kit;
+        mnm::mdpreview::Options opt;
+        if (pat) { const auto pd = pat->pattern; proc.previewPlay(kits.back().key, [kitData, pd, opt] { return mnm::mdpreview::patternPreview(kitData, pd, opt); }); }
+        else proc.previewPlay(kits.back().key, [kitData, opt] { return mnm::mdpreview::patternPreview(kitData, mnm::mdpreview::demoPattern(kitData), opt); });
+        std::printf("audition '%s' (%s): key %s, status '%s'\n", kits.back().name.toRawUTF8(), pat ? "its pattern" : "demo", proc.previewKey().isNotEmpty() ? "set" : "EMPTY", proc.previewStatus().toRawUTF8());
+        juce::Thread::sleep(1500);   // let the render thread get ahead (the harness runs faster than real time)
+    }
     if (std::getenv("MD_MUTE_TEST"))   // MUTE: the kick (track 1) ignores its trigs
         if (auto* p = proc.apvts.getParameter(muteId(0))) p->setValueNotifyingHost(1.0f);
     const bool lfoTest = std::getenv("MD_LFO_TEST") != nullptr;
@@ -146,6 +163,7 @@ int main(int argc, char** argv)
                 }
                 continue;
             }
+            if (auditionTest) continue;
             if (lfoTest || std::getenv("MD_ROM_TEST")) { if (s == 0) note(36); continue; }
             if (ramTest) {
                 if (s == 0) note(36);                       // T1 RAM-R1: start recording

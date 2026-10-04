@@ -234,7 +234,7 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
         if (const auto pos = ph->getPosition())
             if (const auto b = pos->getBpm(); b && *b > 0.0) m_hostBpm.store(*b);
     const juce::ScopedTryLock sl(m_engineLock);
-    if (!sl.isLocked() || !m_engineReady) { midi.clear(); return; }
+    if (!sl.isLocked() || !m_engineReady) { midi.clear(); mixPreview(buffer); return; }
     const double ratio = kEngineRate / m_hostRate;   // engine frames per host frame
 
     for (const auto meta : midi) {
@@ -286,6 +286,44 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
     for (auto& f : m_fifo) std::copy(f.begin() + used, f.begin() + m_fifoLen, f.begin());
     m_fifoLen -= used;
     for (auto& p : m_pending) p.enginePos -= used;
+    mixPreview(buffer);
+}
+
+// A library preview plays over the main output, whether or not the engine does
+void MdProcessor::mixPreview(juce::AudioBuffer<float>& buffer)
+{
+    if (m_previewKey.isEmpty() || getBusCount(false) == 0) return;
+    auto main = getBusBuffer(buffer, false, 0);
+    if (main.getNumChannels() > 0)
+        m_previewVoice.process(main.getWritePointer(0), main.getNumChannels() > 1 ? main.getWritePointer(1) : nullptr, main.getNumSamples(), m_hostRate, false);
+}
+
+void MdProcessor::previewPlay(const juce::String& key, const std::function<mnm::mdpreview::Spec()>& build)
+{
+    if (!m_previewRenderer) m_previewRenderer = std::make_unique<mnm::library::PreviewRenderer>();
+    m_previewRenderer->setMdFirmwarePath(m_firmwarePath);
+    m_previewRenderer->clearStatus();
+    double bpm = m_hostBpm.load();
+    if (bpm < 30.0 || bpm > 300.0) bpm = 120.0;
+    auto audio = m_previewRenderer->requestMd(key, bpm, build);
+    if (!audio) { previewStop(); return; }
+    m_previewAudio = audio;
+    m_previewRenderer->keep(audio);
+    m_previewVoice.start(audio, -1);
+    m_previewKey = key;
+}
+
+void MdProcessor::previewStop()
+{
+    m_previewVoice.stop();
+    m_previewKey.clear();
+}
+
+bool MdProcessor::previewPoll()
+{
+    if (m_previewKey.isEmpty()) return false;
+    if (m_previewVoice.consumeFinished() || (m_previewAudio && m_previewAudio->failed.load()) || !m_previewVoice.active()) { previewStop(); return true; }
+    return false;
 }
 
 // ---- UW samples ----------------------------------------------------------------------------------------------

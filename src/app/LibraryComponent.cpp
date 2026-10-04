@@ -176,7 +176,9 @@ LibraryComponent::LibraryComponent(std::unique_ptr<Store> store, bool audio) : m
     m_mdSlotKitView.onLink = [this](const juce::var& v) { onLink(v); };
     m_mdSlotKitView.onTrack = [this](int t) { if (const auto* d = shownMdState()) if (const auto* k = d->kitAt(m_nav.selKit)) { const auto id = MdCatalog::soundHash(mnm::mdcatalog::Sound::fromKit(*k, t)); if (m_mdCatalog.sound(id)) navigateItem("mdsound", juce::String(id)); } };
     m_mdSlotKitView.onPlayKit = [this] { playSlot("kit", m_nav.selKit); };
-    m_mdSlotKitView.onPlayTrack = [this](int) { playSlot("kit", m_nav.selKit); };
+    m_mdSlotKitView.onPlayTrack = [this](int t) {   // the voice in the kit's preview: its catalog item
+        if (const auto* d = shownMdState()) if (const auto* k = d->kitAt(m_nav.selKit)) if (const auto* it = m_mdCatalog.kit(MdCatalog::kitHash(*k))) playCatalog("mdkit", juce::String(it->id), t);
+    };
     m_mdSlotKitView.onDragKit = [this] { if (const auto* d = shownMdState()) if (const auto* k = d->kitAt(m_nav.selKit)) startFileDrag(mnm::library::writeMdKitDragFile(*k, juce::String(k->name)), &m_mdSlotKitView); };
     m_mdSlotKitView.onDragTrack = [this](int t) {
         if (const auto* d = shownMdState()) if (const auto* k = d->kitAt(m_nav.selKit))
@@ -215,6 +217,8 @@ LibraryComponent::LibraryComponent(std::unique_ptr<Store> store, bool audio) : m
         m_player = std::make_unique<mnm::library::PreviewPlayer>();
         m_osPath = mnm::plugin::loadSharedOsPath();
         m_player->setFirmwarePath(m_osPath);
+        m_mdOsPath = mnm::plugin::loadSharedSetting("mdOsPath");   // Monomodule MD's OS file
+        m_player->setMdFirmwarePath(m_mdOsPath);
         auto opt = m_player->options();
         opt.bpm = juce::jlimit(30.0, 300.0, mnm::plugin::loadSharedSetting("previewBpm", "120").getDoubleValue());
         m_player->setOptions(opt);
@@ -1598,10 +1602,60 @@ void LibraryComponent::playTag(const juce::String& t, const juce::String& key, c
     repaint();
 }
 
+void LibraryComponent::playTagMd(const juce::String& t, const juce::String& key, const std::function<mnm::mdpreview::Spec()>& build, int stem)
+{
+    if (!m_player) return;
+    if (m_player->isPlaying() && t == m_playingTag) { m_player->stop(); return; }
+    if (m_mdOsPath.isEmpty()) { toast("Machinedrum previews need the Machinedrum OS file: MENU > Select Machinedrum OS File"); return; }
+    m_player->playMd(key, build, stem);
+    if (m_player->isPlaying()) m_playingTag = t;
+    refreshPlaying();
+    repaint();
+}
+
+mnm::mdpreview::Options LibraryComponent::mdPreviewOptions() const
+{
+    mnm::mdpreview::Options o;
+    if (m_player) { const auto p = m_player->options(); o.bpm = p.bpm; o.minSeconds = p.minSeconds; o.maxLoops = p.maxLoops; o.tailSeconds = p.tailSeconds; }
+    return o;
+}
+
+void LibraryComponent::selectMdOsFile()
+{
+    m_chooser = std::make_unique<juce::FileChooser>("Select the Machinedrum OS file (Elektron_SPS1-1UW_OS1.63.syx)", juce::File::getSpecialLocation(juce::File::userHomeDirectory), "*.syx");
+    m_chooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles, [this](const juce::FileChooser& fc) {
+        const auto f = fc.getResult();
+        if (!f.existsAsFile()) return;
+        m_mdOsPath = f.getFullPathName();
+        mnm::plugin::saveSharedSetting("mdOsPath", m_mdOsPath);   // shared with Monomodule MD
+        if (m_player) m_player->setMdFirmwarePath(m_mdOsPath);
+        repaint();
+    });
+}
+
 void LibraryComponent::playCatalog(const juce::String& kind, const juce::String& id, int stem)
 {
-    if (kind.startsWith("md")) { toast("Machinedrum previews are not available yet"); return; }
     if (!m_player || id.isEmpty()) return;
+    if (kind.startsWith("md")) {   // Machinedrum items: rendered with the emulated Machinedrum
+        const auto mopt = mdPreviewOptions();
+        const juce::String t = kind + ":" + id + (stem >= 0 ? ":t" + juce::String(stem) : juce::String());
+        if (kind == "mdsound") {
+            if (const auto* s = m_mdCatalog.sound(id.toStdString())) { const auto snd = s->sound; playTagMd(t, "sound/" + id, [snd, mopt] { return mnm::mdpreview::soundPreview(snd, mopt); }, -1); }
+        } else if (kind == "mdpattern") {
+            const auto* p = m_mdCatalog.pattern(id.toStdString());
+            const auto* k = p ? m_mdCatalog.kit(p->kitId) : nullptr;
+            if (p && k) { const auto pat = p->pattern; const auto kit = k->kit; playTagMd(t, "pattern/" + id, [pat, kit, mopt] { return mnm::mdpreview::patternPreview(kit, pat, mopt); }, stem); }
+            else toast("This pattern's kit slot is empty");
+        } else if (kind == "mdkit") {
+            const auto* k = m_mdCatalog.kit(id.toStdString());
+            if (!k) return;
+            const auto kit = k->kit;
+            const auto best = mnm::mdpreview::choosePreviewPattern(m_mdCatalog, *k);
+            if (const auto* p = best.empty() ? nullptr : m_mdCatalog.pattern(best)) { const auto pat = p->pattern; playTagMd(t, "pattern/" + juce::String(best), [pat, kit, mopt] { return mnm::mdpreview::patternPreview(kit, pat, mopt); }, stem); }
+            else playTagMd(t, "kitdemo/" + id, [kit, mopt] { return mnm::mdpreview::patternPreview(kit, mnm::mdpreview::demoPattern(kit), mopt); }, stem);
+        }
+        return;
+    }
     const auto opt = m_player->options();
     const juce::String t = kind + ":" + id + (stem >= 0 ? ":t" + juce::String(stem) : juce::String());
     if (kind == "preset") {
@@ -1621,7 +1675,28 @@ void LibraryComponent::playCatalog(const juce::String& kind, const juce::String&
 
 void LibraryComponent::playSlot(const juce::String& kind, int pos)
 {
-    if (isMdProject()) { toast("Machinedrum previews are not available yet"); return; }
+    if (isMdProject()) {
+        const auto* d = shownMdState();
+        if (!m_player || !d) return;
+        const auto mopt = mdPreviewOptions();
+        const juce::String t = "slot:" + kind + ":" + juce::String(pos);
+        if (kind == "pat") {
+            const auto* p = d->patternAt(pos);
+            const auto* k = p ? d->kitAt(p->kit) : nullptr;
+            if (!p || !k || k->isEmptySlot()) { toast("This pattern's kit slot is empty"); return; }
+            const auto pat = *p; const auto kit = *k;
+            playTagMd(t, "pattern/" + juce::String(mdPatternIdIn(*d, *p)), [pat, kit, mopt] { return mnm::mdpreview::patternPreview(kit, pat, mopt); }, -1);
+        } else {
+            const auto* k = d->kitAt(pos);
+            if (!k || k->isEmptySlot()) return;
+            const auto kit = *k;
+            const md::Pattern* best = nullptr; long score = -1;   // the pattern of this state using the kit with the most tracks
+            for (const auto& p : d->patterns) if (!p.empty() && p.kit == pos) { int n = 0; for (int tr = 0; tr < md::kTracks; ++tr) n += p.trigCount(tr); const long sc = long(mdUsedTracks(p)) * 100000 + n; if (sc > score) { score = sc; best = &p; } }
+            if (best) { const auto pat = *best; playTagMd(t, "pattern/" + juce::String(mdPatternIdIn(*d, *best)), [pat, kit, mopt] { return mnm::mdpreview::patternPreview(kit, pat, mopt); }, -1); }
+            else playTagMd(t, "kitdemo/" + juce::String(MdCatalog::kitHash(kit)), [kit, mopt] { return mnm::mdpreview::patternPreview(kit, mnm::mdpreview::demoPattern(kit), mopt); }, -1);
+        }
+        return;
+    }
     const auto* d = shownState();
     if (!m_player || !d) return;
     const auto opt = m_player->options();
@@ -1794,6 +1869,7 @@ void LibraryComponent::showMenu()
     m.addItem(4, "Show the Original .syx in Finder", proj && p->versions.back().kind == "imported");
     m.addSeparator();
     m.addItem(7, juce::String("Select Monomachine OS File...") + (m_osPath.isNotEmpty() ? "  (" + juce::File(m_osPath).getFileName() + ")" : juce::String()), m_player != nullptr);
+    m.addItem(10, juce::String("Select Machinedrum OS File...") + (m_mdOsPath.isNotEmpty() ? "  (" + juce::File(m_mdOsPath).getFileName() + ")" : juce::String()), m_player != nullptr);
     m.addItem(8, "Preview Tempo..." + (m_player ? "  (" + juce::String(m_player->options().bpm, 1) + " BPM)" : juce::String()), m_player != nullptr);
     m.addItem(9, "Stop Preview", m_player && m_player->isPlaying());
     m.addSeparator();
@@ -1825,6 +1901,7 @@ void LibraryComponent::showMenu()
         case 7: selectOsFile(); break;
         case 8: setPreviewTempo(); break;
         case 9: if (m_player) m_player->stop(); break;
+        case 10: selectMdOsFile(); break;
         case 50: case 51: case 52: { const auto s = mnm::plugin::skin::presetSkin(mnm::plugin::skin::Preset(r - 50)); mnm::plugin::skin::apply(s); mnm::plugin::skin::save(s); skinChanged(); break; }
         case 53: m_skinDialog.setBounds(getLocalBounds()); m_skinDialog.open(); break;
         default: break;
@@ -1855,6 +1932,8 @@ void LibraryComponent::timerCallback()
     if (m_player) {   // the OS file chosen in a plugin
         const auto p = mnm::plugin::loadSharedOsPath();
         if (p != m_osPath && (p.isEmpty() || juce::File(p).existsAsFile())) { m_osPath = p; m_player->setFirmwarePath(p); if (loadLcdArt(p)) { resized(); repaint(); } }
+        const auto mdp = mnm::plugin::loadSharedSetting("mdOsPath");   // the Machinedrum OS file chosen in Monomodule MD
+        if (mdp != m_mdOsPath && (mdp.isEmpty() || juce::File(mdp).existsAsFile())) { m_mdOsPath = mdp; m_player->setMdFirmwarePath(mdp); }
     }
 }
 

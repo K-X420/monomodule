@@ -46,6 +46,8 @@ public:
     std::function<void()> onClosed, onImport;
     std::function<void(const KitEntry&)> onLoadKit;
     std::function<void(const SoundEntry&)> onLoadSound;
+    std::function<void(const juce::String& key, bool kit)> onAudition;   // the row's glyph: play / stop
+    std::function<bool(const juce::String& key)> isPlaying;
     void rebuild();
     void paint(juce::Graphics&) override;
     void mouseDown(const juce::MouseEvent&) override;

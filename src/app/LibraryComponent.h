@@ -130,6 +130,10 @@ public:
 private:
     void playSlot(const juce::String& kind, int pos);
     void playTag(const juce::String& tag, const juce::String& key, const std::function<mnm::preview::PreviewSpec()>& build, int stem);
+    void playTagMd(const juce::String& tag, const juce::String& key, const std::function<mnm::mdpreview::Spec()>& build, int stem);
+    mnm::mdpreview::Options mdPreviewOptions() const;
+    void selectMdOsFile();
+    juce::String m_mdOsPath;
     void refreshPlaying();
     // misc
     void importChooser();

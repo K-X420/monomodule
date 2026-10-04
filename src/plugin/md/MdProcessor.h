@@ -16,6 +16,8 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "MdParams.h"
 #include "MdLibrary.h"
+#include "PreviewPlayer.h"
+#include "MdPreview.h"
 #include "MdCatalog.h"
 #include "MdDump.h"
 #include "MdControl.h"
@@ -80,6 +82,13 @@ public:
     juce::String loadedSoundKey(int t) const { return m_sounds[size_t(t)].key; }
     juce::String loadedSoundName(int t) const { return m_sounds[size_t(t)].name; }
     bool soundModified(int t) const;
+    // Library previews (auditioning a kit or a sound before loading it), mixed into the main output. The renderer and
+    // its own emulated Machinedrum exist from the first preview on.
+    void previewPlay(const juce::String& key, const std::function<mnm::mdpreview::Spec()>& build);
+    void previewStop();
+    juce::String previewKey() const { return m_previewKey; }
+    juce::String previewStatus() const { return m_previewRenderer ? m_previewRenderer->status() : juce::String(); }
+    bool previewPoll();   // editor timer: true when the playing state changed
     // LOCK: a locked track keeps its sound when a kit is loaded (kept in the plugin state)
     bool trackLocked(int t) const { return m_locked[size_t(t)].load(); }
     void setTrackLocked(int t, bool on) { m_locked[size_t(t)].store(on); }
@@ -140,6 +149,11 @@ private:
     std::atomic<double> m_hostBpm{120.0};
     std::array<std::atomic<bool>, kTracks> m_audition{};
     std::array<std::atomic<bool>, kTracks> m_locked{};
+    std::unique_ptr<mnm::library::PreviewRenderer> m_previewRenderer;
+    mnm::library::PreviewVoice m_previewVoice;
+    std::shared_ptr<mnm::library::PreviewAudio> m_previewAudio;
+    juce::String m_previewKey;
+    void mixPreview(juce::AudioBuffer<float>& buffer);
     std::array<std::atomic<float>, kTracks> m_activity{};
     std::array<std::atomic<bool>, kTracks> m_machineChanged{};   // message thread: load that machine's defaults
 

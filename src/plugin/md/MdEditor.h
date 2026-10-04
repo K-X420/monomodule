@@ -129,6 +129,7 @@ private:
     void stepSound(int dir);
     juce::String saveSound(const juce::String& name);
     juce::String soundDisplayName(int t);
+    void audition(const juce::String& key, bool kit);
     void sampleMenu();
     void setMachine(int index);
     void applySkin(const skin::Skin& s);
