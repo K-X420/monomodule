@@ -240,6 +240,55 @@ int main(int argc, char** argv)
         std::printf(ok && refused ? "OK\n" : "FAILED\n");
         return ok && refused ? 0 : 1;
     }
+    if (argc == 3 && juce::String(argv[1]) == "--polytest") {
+        // --polytest <os.syx>: headless check of Six's POLY mode. A chord on one channel must sound on as many
+        // tracks as it has notes (one each); seven notes fill all six; with POLY off the chord stays on track 1.
+        using namespace mnm::plugin::one;
+        MnmOneProcessor proc(6);
+        proc.setFirmwarePath(juce::String(argv[2]), false);
+        if (!proc.engineReady()) { std::printf("engine not ready: %s\n", proc.statusText().toRawUTF8()); return 1; }
+        proc.prepareToPlay(44100.0, 512);
+        juce::AudioBuffer<float> buf(12, 512);
+        auto setPoly = [&](bool on) { proc.apvts.getParameter(polyId())->setValueNotifyingHost(on ? 1.0f : 0.0f); };
+        auto play = [&](std::initializer_list<int> notes, bool on) {
+            juce::MidiBuffer midi;
+            for (int n : notes) midi.addEvent(on ? juce::MidiMessage::noteOn(1, n, 1.0f) : juce::MidiMessage::noteOff(1, n), 0);
+            buf.clear();
+            proc.processBlock(buf, midi);
+        };
+        auto sounding = [&] {   // after a few blocks: which tracks put out sound
+            for (int b = 0; b < 8; ++b) { juce::MidiBuffer none; buf.clear(); proc.processBlock(buf, none); }
+            int mask = 0;
+            for (int t = 0; t < 6; ++t) if (proc.trackPeak(t) > 1e-3f) mask |= 1 << t;
+            return mask;
+        };
+        auto quiet = [&] {
+            juce::MidiBuffer midi;
+            midi.addEvent(juce::MidiMessage::allNotesOff(1), 0);
+            for (int t = 2; t <= 6; ++t) midi.addEvent(juce::MidiMessage::allNotesOff(t), 0);
+            buf.clear(); proc.processBlock(buf, midi);
+            for (int b = 0; b < 400; ++b) { juce::MidiBuffer none; buf.clear(); proc.processBlock(buf, none); }
+        };
+        auto bits = [](int m) { juce::String s; for (int t = 0; t < 6; ++t) s << ((m >> t) & 1 ? juce::String(t + 1) : juce::String("-")); return s; };
+        bool ok = true;
+        auto check = [&](const char* what, int got, int want) {
+            std::printf("%-34s tracks %s (want %s) %s\n", what, bits(got).toRawUTF8(), bits(want).toRawUTF8(), got == want ? "ok" : "FAIL");
+            ok = ok && got == want;
+        };
+        quiet();
+        setPoly(true);
+        play({60, 64, 67}, true);
+        check("POLY on, 3-note chord", sounding(), 0b000111);
+        play({72, 76, 79, 84}, true);   // 7 notes held: every track busy, the oldest note stolen
+        check("POLY on, 7 notes held", sounding(), 0b111111);
+        play({60, 64, 67, 72, 76, 79, 84}, false);
+        quiet();
+        setPoly(false);
+        play({60, 64, 67}, true);
+        check("POLY off, 3-note chord", sounding(), 0b000001);
+        std::printf(ok ? "OK\n" : "FAILED\n");
+        return ok ? 0 : 1;
+    }
     if (argc == 3 && juce::String(argv[1]) == "--unirender") {
         // --unirender <os.syx>: headless audio check of Monomodule One.
         // A note must make sound; an FX machine must pass/effect the side-chain input and stay

@@ -56,6 +56,8 @@ MnmOneProcessor::MnmOneProcessor(Variant variant)
     m_bpm = apvts.getRawParameterValue(bpmId());
     m_bpmSync = apvts.getRawParameterValue(bpmSyncId());
     m_outputMode = m_numTracks > 1 ? apvts.getRawParameterValue(outputModeId()) : nullptr;
+    m_poly = m_numTracks > 1 ? apvts.getRawParameterValue(polyId()) : nullptr;
+    resetPoly();
     m_firmwarePath = loadSharedOsPath();   // never a compiled-in path: fresh installs start unconfigured
     loadEngine();
 }
@@ -283,6 +285,19 @@ bool MnmOneProcessor::loadKit(const mnm::dump::Kit& kit, const juce::String& id,
     return true;
 }
 
+bool MnmOneProcessor::copySoundToAllTracks(int src, juce::String& error)
+{
+    if (src < 0 || src >= m_numTracks) { error = "No such track"; return false; }
+    const auto kit = currentKit();
+    const auto ref = m_tracks[size_t(src)]->loaded;
+    for (int t = 0; t < m_numTracks; ++t) {
+        if (t == src || m_tracks[size_t(t)]->locked) continue;
+        if (!applyKitTrack(t, kit, src, error, true)) return false;   // sound only: each track keeps its level and routing
+        markPresetSaved(t, ref.id, ref.name);
+    }
+    return true;
+}
+
 void MnmOneProcessor::markPresetSaved(int t, const juce::String& id, const juce::String& name)
 {
     auto& tr = *m_tracks[size_t(t)];
@@ -431,6 +446,8 @@ void MnmOneProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
         tr->interpL.reset(); tr->interpR.reset(); tr->interpInL.reset(); tr->interpInR.reset();
         if (tr->voice) { tr->voice->warmUp(16); tr->heldNotes.clear(); }
     }
+    m_polyMidi.ensureSize(4096);   // grows on the audio thread only past this
+    resetPoly();
 }
 
 bool MnmOneProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
@@ -537,6 +554,60 @@ void MnmOneProcessor::handleMidi(Track& tr, const juce::MidiMessage& m)
             if (lfo >= 0) {
                 const int k = cc - (lfo == 0 ? 88 : lfo == 1 ? 104 : 112);
                 if (auto* p = apvts.getParameter(lfoId(tr.index, lfo, k))) p->setValueNotifyingHost(p->convertTo0to1(float(v)));
+            }
+        }
+    }
+}
+
+void MnmOneProcessor::resetPoly()
+{
+    m_voiceNote.fill(-1);
+    m_voiceAge.fill(0);
+    m_voiceClock = 0;
+}
+
+// POLY: rewrites the block's MIDI so that each note goes to one track (channel t+1), as handleMidi expects on a
+// Six. A note takes the free track released longest ago (its tail has decayed most); with none free it steals the
+// oldest playing note, which is ended first so the track's note stack holds only the new one. Muted tracks are
+// skipped. A note-off ends the oldest track playing that pitch. Everything else (CCs, all notes off) goes to every
+// track, so a knob turned on the controller changes all six voices alike.
+void MnmOneProcessor::allocatePoly(const juce::MidiBuffer& in, juce::MidiBuffer& out)
+{
+    out.clear();
+    const int n = std::min(m_numTracks, int(m_voiceNote.size()));
+    for (const auto meta : in) {
+        const auto m = meta.getMessage();
+        const int pos = meta.samplePosition;
+        if (m.isNoteOn()) {
+            const int note = m.getNoteNumber();
+            int best = -1;
+            for (int t = 0; t < n; ++t)
+                if (m_tracks[size_t(t)]->mute->load() < 0.5f && m_voiceNote[size_t(t)] < 0 && (best < 0 || m_voiceAge[size_t(t)] < m_voiceAge[size_t(best)])) best = t;
+            if (best < 0) {
+                for (int t = 0; t < n; ++t)
+                    if (m_tracks[size_t(t)]->mute->load() < 0.5f && (best < 0 || m_voiceAge[size_t(t)] < m_voiceAge[size_t(best)])) best = t;
+                if (best < 0) continue;   // every track muted
+                out.addEvent(juce::MidiMessage::noteOff(best + 1, m_voiceNote[size_t(best)]), pos);
+            }
+            m_voiceNote[size_t(best)] = note;
+            m_voiceAge[size_t(best)] = ++m_voiceClock;
+            out.addEvent(juce::MidiMessage::noteOn(best + 1, note, m.getVelocity()), pos);
+        } else if (m.isNoteOff()) {
+            const int note = m.getNoteNumber();
+            int oldest = -1;
+            for (int t = 0; t < n; ++t)
+                if (m_voiceNote[size_t(t)] == note && (oldest < 0 || m_voiceAge[size_t(t)] < m_voiceAge[size_t(oldest)])) oldest = t;
+            if (oldest < 0) continue;   // stolen earlier: already ended
+            m_voiceNote[size_t(oldest)] = -1;
+            m_voiceAge[size_t(oldest)] = ++m_voiceClock;
+            out.addEvent(juce::MidiMessage::noteOff(oldest + 1, note), pos);
+        } else {
+            if (m.isAllNotesOff() || m.isAllSoundOff()) m_voiceNote.fill(-1);
+            if (m.getChannel() == 0) { out.addEvent(m, pos); continue; }   // sysex and other channel-less messages
+            for (int t = 0; t < n; ++t) {
+                auto copy = m;
+                copy.setChannel(t + 1);
+                out.addEvent(copy, pos);
             }
         }
     }
@@ -697,8 +768,16 @@ void MnmOneProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiB
         if (int(m_busL[size_t(b)].size()) < nEngine) { m_busL[size_t(b)].resize(size_t(nEngine)); m_busR[size_t(b)].resize(size_t(nEngine)); }
         std::fill_n(m_busL[size_t(b)].data(), nEngine, 0.f); std::fill_n(m_busR[size_t(b)].data(), nEngine, 0.f);
     }
+    const bool poly = m_poly && m_poly->load() >= 0.5f;
+    if (poly != m_wasPoly) {   // switching modes: nothing stays stuck from the other one
+        resetPoly();
+        for (auto& tr : m_tracks) if (tr->voice) { tr->heldNotes.clear(); tr->voice->host().noteOff(); }
+        m_wasPoly = poly;
+    }
+    if (poly) allocatePoly(midi, m_polyMidi);
+    const auto& events = poly ? m_polyMidi : midi;
     for (auto& tr : m_tracks)   // in track order: NEIBOR and the mix buses carry the tracks before this one
-        if (tr->voice) renderTrack(*tr, nEngine, ratio, midi);
+        if (tr->voice) renderTrack(*tr, nEngine, ratio, events);
     writeOutputs(buffer, nEngine, ratio);
     midi.clear();
 }

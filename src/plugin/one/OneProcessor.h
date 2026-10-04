@@ -71,6 +71,7 @@ public:
     // soundOnly = a preset load: the track keeps its level and routing (they belong to the kit).
     bool applyKitTrack(int t, const mnm::dump::Kit& kit, int kitTrack, juce::String& error, bool soundOnly = false);
     bool applyKit(const mnm::dump::Kit& kit, juce::String& error);   // locked tracks keep their sound
+    bool copySoundToAllTracks(int src, juce::String& error);          // Six: track src's sound onto the other (unlocked) tracks, for POLY
 
     // What the library knows about the plugin's sounds (message thread, kept in the plugin state): the preset each
     // track was loaded from and the kit (Six), so the editor can name them, step through the library from them and
@@ -153,6 +154,8 @@ private:
     void loadEngine();
     void applyParametersToHost(Track&);
     void handleMidi(Track&, const juce::MidiMessage&);
+    void allocatePoly(const juce::MidiBuffer& in, juce::MidiBuffer& out);
+    void resetPoly();
     void pushParamFromCC(Track&, host::Page page, int k, int value);
     void renderTrack(Track&, int nEngine, double ratio, const juce::MidiBuffer&);
     void fillFxInput(Track&, int nEngine, double ratio);
@@ -179,6 +182,14 @@ private:
     std::atomic<float>* m_bpm = nullptr;
     std::atomic<float>* m_bpmSync = nullptr;
     std::atomic<float>* m_outputMode = nullptr;   // Six only
+    // POLY (Six only): incoming notes, on any channel, are rewritten onto channels 1-6 so each lands on a free
+    // track (else the oldest note is stolen); everything else is copied to all six. Audio thread only.
+    std::atomic<float>* m_poly = nullptr;
+    bool m_wasPoly = false;
+    juce::MidiBuffer m_polyMidi;
+    std::array<int, 6> m_voiceNote{};       // the note each track plays, -1 = free
+    std::array<uint32_t, 6> m_voiceAge{};   // when it was last started or released
+    uint32_t m_voiceClock = 0;
     std::array<std::vector<float>, 3> m_busL, m_busR;   // mix buses AB/CD/EF at 44.1 kHz, rebuilt every block in track order
     std::vector<float> m_outL, m_outR;                  // resampling scratch for the bus outputs
     std::atomic<float> m_hostBpm{120.0f};

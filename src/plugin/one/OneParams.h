@@ -47,6 +47,7 @@ inline juce::String outBusId(int t, int bus) { static const char* n[3] = {"outab
 inline juce::String lpKeyTrackId(int t) { return trackPrefix(t) + "lpf"; }   // KIT > ASSIGN > KEY: LPF / HPF tracking
 inline juce::String hpKeyTrackId(int t) { return trackPrefix(t) + "hpf"; }
 inline juce::String outputModeId() { return "outputs"; }
+inline juce::String polyId() { return "poly"; }   // Six: notes on any channel are spread over the six tracks
 inline juce::String lfoId(int t, int lfo, int k) { return trackPrefix(t) + "lfo" + juce::String(lfo + 1) + "p" + juce::String(k); }   // lfo 0..2
 inline juce::String bpmId() { return "bpm"; }
 inline juce::String bpmSyncId() { return "bpmsync"; }
@@ -188,6 +189,8 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout(Variant 
     if (numTracks > 1)
         layout.add(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{outputModeId(), 1}, "OUTPUTS",
             juce::StringArray{"Per Track", "Mix Buses AB CD EF"}, int(OutputMode::Tracks)));
+    if (numTracks > 1)
+        layout.add(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{polyId(), 1}, "POLY", false));
     // Tempo: the tick word (24 x BPM) follows the host's transport by default; BPM is the free value used
     // when sync is off (drag or type it in the header).
     layout.add(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{bpmSyncId(), 1}, "BPM sync to host", true));
