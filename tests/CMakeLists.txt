@@ -7,10 +7,11 @@ add_executable(mnm-tests
   test_lfo.cpp
   test_preview.cpp
   test_uispec.cpp
+  test_mddump.cpp
   ${CMAKE_SOURCE_DIR}/src/plugin/one/SpecData.cpp
   ${CMAKE_SOURCE_DIR}/src/plugin/one/RomArt.cpp
 )
-target_link_libraries(mnm-tests PRIVATE mnmcore)
+target_link_libraries(mnm-tests PRIVATE mnmcore mdcore)
 target_include_directories(mnm-tests PRIVATE ${CMAKE_SOURCE_DIR}/src/plugin/one)
 add_test(NAME mnm-tests COMMAND mnm-tests)
 # the dsp56300 emulator's own interpreter/JIT opcode tests, run against the patched emulator (no OS file needed)
