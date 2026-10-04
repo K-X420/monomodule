@@ -12,10 +12,12 @@
 #include "MdControl.h"
 #include "MdFirmware.h"
 #include "MdVoiceEngine.h"
+#include "MdMixEngine.h"
+#include <memory>
 
 using namespace mnm::md;
 
-static void writeWav(const char* path, const std::vector<int32_t>& s)
+static void writeWav(const char* path, const std::vector<int32_t>& s, int channels = 1)
 {
     FILE* f = std::fopen(path, "wb");
     if (!f) { std::printf("cannot write %s\n", path); return; }
@@ -23,7 +25,7 @@ static void writeWav(const char* path, const std::vector<int32_t>& s)
     auto u32 = [&](uint32_t v) { std::fwrite(&v, 4, 1, f); };
     auto u16 = [&](uint16_t v) { std::fwrite(&v, 2, 1, f); };
     std::fwrite("RIFF", 1, 4, f); u32(36 + bytes); std::fwrite("WAVEfmt ", 1, 8, f);
-    u32(16); u16(1); u16(1); u32(rate); u32(rate * 2); u16(2); u16(16);
+    u32(16); u16(1); u16(uint16_t(channels)); u32(rate); u32(rate * 2 * uint32_t(channels)); u16(uint16_t(2 * channels)); u16(16);
     std::fwrite("data", 1, 4, f); u32(bytes);
     for (auto v : s) u16(uint16_t(int16_t(std::max(-32768, std::min(32767, v >> 8)))));
     std::fclose(f);
@@ -50,8 +52,24 @@ int main(int argc, char** argv)
         const double seconds = argc > 4 ? std::atof(argv[4]) : 1.0;
         int track = 0;
         std::array<uint8_t, 8> knobs = m->defaults;
+        bool mix = false;
+        std::array<int, 9> fx = {0, 0, 64, 64, 0, 127, 0, 0, 0};   // AMD AMF EQF EQG FLTF FLTW FLTQ SRR DIST
+        int level = 127, vol = 100, pan = 64, rev = 0, del = 0;
+        std::array<std::array<int, 8>, 4> master = {{{127, 0, 64, 64, 0, 127, 0, 127},       // reverb  DVOL PRED DEC DAMP HP LP GATE LEV
+                                                     {24, 0, 0, 32, 0, 127, 0, 127},          // delay   TIME MOD MFRQ FB FLTF FLTW MONO LEV
+                                                     {64, 64, 64, 64, 64, 64, 64, 64},        // EQ      LF LG HF HG PF PG PQ GAIN
+                                                     {0, 64, 127, 0, 0, 0, 64, 0}}};          // dynamix ATCK REL TRHD RTIO KNEE HP OUTG MIX
         for (int a = 5, k = 0; a < argc; ++a) {
             if (std::strcmp(argv[a], "--track") == 0 && a + 1 < argc) { track = std::atoi(argv[++a]); continue; }
+            if (std::strcmp(argv[a], "--mix") == 0) { mix = true; continue; }
+            if (std::strcmp(argv[a], "--fx") == 0 && a + 1 < argc) {   // comma list of the 9 track effect values
+                std::string s = argv[++a]; size_t p = 0;
+                for (int i = 0; i < 9 && p != std::string::npos; ++i) { fx[size_t(i)] = std::atoi(s.c_str() + p); p = s.find(','); if (p != std::string::npos) s.erase(0, p + 1), p = 0; }
+                mix = true; continue;
+            }
+            if (std::strcmp(argv[a], "--rev") == 0 && a + 1 < argc) { rev = std::atoi(argv[++a]); mix = true; continue; }
+            if (std::strcmp(argv[a], "--del") == 0 && a + 1 < argc) { del = std::atoi(argv[++a]); mix = true; continue; }
+            if (std::strcmp(argv[a], "--pan") == 0 && a + 1 < argc) { pan = std::atoi(argv[++a]); mix = true; continue; }
             if (k < 8) { if (std::strcmp(argv[a], "-") != 0) knobs[size_t(k)] = uint8_t(std::atoi(argv[a])); ++k; }
         }
 
@@ -76,11 +94,40 @@ int main(int argc, char** argv)
         std::vector<int32_t> out;
         VoiceEngine::Block blk{};
         uint64_t instr = 0;
+        std::unique_ptr<MixEngine> mixer;
+        if (mix) {
+            mixer = std::make_unique<MixEngine>(fw);
+            for (int t = 0; t < VoiceEngine::kTracks; ++t) {
+                { std::array<uint16_t, 9> raw{}; const std::array<int, 9> neutral{0, 0, 64, 64, 0, 127, 0, 0, 0}; for (int k = 0; k < 9; ++k) raw[size_t(k)] = ControlCpu::rawFromValue(t == track ? fx[size_t(k)] : neutral[size_t(k)]); mixer->setTrackFx(t, raw); }
+                mixer->setRouting(t, MixEngine::routingWords(ControlCpu::rawFromValue(level), ControlCpu::rawFromValue(vol), ControlCpu::rawFromValue(t == track ? pan : 64), ControlCpu::rawFromValue(t == track ? rev : 0), ControlCpu::rawFromValue(t == track ? del : 0)));
+            }
+            for (int e = 0; e < ControlCpu::kNumMasterFx; ++e) {
+                std::array<uint16_t, 8> mr{};
+                for (int k = 0; k < 8; ++k) mr[size_t(k)] = ControlCpu::rawFromValue(master[size_t(e)][size_t(k)]);
+                std::array<uint32_t, 16> words{};
+                const auto fxId = ControlCpu::MasterFx(e);
+                if (!cpu.convertMasterFx(fxId, mr, words)) { std::printf("master FX %d: %s\n", e, cpu.lastError()); return 1; }
+                const auto& s = ControlCpu::masterFxSection(fxId);
+                mixer->setY(s.dspAddr, words.data(), s.words);
+                std::printf("master FX %d -> Y:$%03x:", e, s.dspAddr);
+                for (int k = 0; k < s.words; ++k) std::printf(" %06x", words[size_t(k)]);
+                std::printf("\n");
+            }
+        }
+        MixEngine::Output mixed{};
+        uint64_t mixInstr = 0;
         for (int p = 0; p < passes; ++p) {
             if (!eng.renderPass(blk)) { std::printf("render failed: %s\n", eng.faultReason().c_str()); return 1; }
             instr += eng.lastPassInstructions();
-            out.insert(out.end(), blk[size_t(track)].begin(), blk[size_t(track)].end());
+            if (mixer) {
+                if (!mixer->renderBlock(blk, mixed)) { std::printf("mix failed: %s\n", mixer->faultReason().c_str()); return 1; }
+                mixInstr += mixer->lastBlockInstructions();
+                for (const auto& f : mixed) { out.push_back(f[MixEngine::kMainLeft]); out.push_back(f[MixEngine::kMainRight]); }
+            } else {
+                out.insert(out.end(), blk[size_t(track)].begin(), blk[size_t(track)].end());
+            }
         }
+        if (mixer) std::printf("DSP1: %.1f M instr/s of audio\n", double(mixInstr) / seconds / 1e6);
         const auto t2 = std::chrono::steady_clock::now();
         double peak = 0, sum = 0;
         for (auto v : out) { peak = std::max(peak, std::abs(double(v))); sum += double(v) * v; }
@@ -88,7 +135,7 @@ int main(int argc, char** argv)
         std::printf("boot %.0f ms; rendered %.2f s in %.3f s (%.1fx realtime, %.1f M DSP instr/s of audio); peak %.3f RMS %.4f\n",
                     std::chrono::duration<double, std::milli>(t1 - t0).count(), seconds, renderSec, seconds / renderSec,
                     double(instr) / seconds / 1e6, peak / 8388608.0, std::sqrt(sum / double(out.size())) / 8388608.0);
-        writeWav(argv[3], out);
+        writeWav(argv[3], out, mixer ? 2 : 1);
         std::printf("wrote %s\n", argv[3]);
     } catch (const std::exception& e) {
         std::printf("error: %s\n", e.what());

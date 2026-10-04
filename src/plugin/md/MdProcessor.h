@@ -1,8 +1,12 @@
-// Monomodule MD: the Machinedrum's 16 synthesis voices from the user's MD OS file.
-//   DSP2 renders the voices (md/MdVoiceEngine), the OS's own ColdFire control handlers convert the knobs
-//   (md/MdControl), and a plain stereo mixer applies level and pan (DSP1's track effects, routing and master
-//   effects are not run yet).
-// MIDI: the Machinedrum's trig notes (36 38 40 41 43 45 47 48 50 52 53 55 57 59 60 62 = tracks 1-16), any channel.
+// Monomodule MD: the Machinedrum's sound engine from the user's MD OS file.
+//   DSP2 renders the 16 voices (md/MdVoiceEngine), DSP1 runs the track effects, routing, mixer and master effects
+//   (md/MdMixEngine); the OS's own ColdFire code converts the synthesis knobs and the master effects (md/MdControl),
+//   and its routing law converts level, volume, pan and the sends. Knobs are slewed as raw words, as the OS does.
+// MIDI (any channel for trigs; base channel 1 for CCs, as the hardware's default map):
+//   trigs  notes 36 38 40 41 43 45 47 48 50 52 53 55 57 59 60 62 = tracks 1-16
+//   CCs    channel 1 + t/4: [16, 40, 72, 96][t%4] + 0..7 synthesis, +8..15 effects, +16..20 DIST VOL PAN DEL REV;
+//          CC 8 + t%4 = level
+// Outputs: main = the hardware's A/B (MAIN and A, B routes), optional C/D and E/F buses.
 // As on the hardware, a new machine starts playing at its track's next trig.
 #pragma once
 #include <array>
@@ -13,6 +17,7 @@
 #include "MdParams.h"
 #include "MdControl.h"
 #include "MdFirmware.h"
+#include "MdMixEngine.h"
 #include "MdVoiceEngine.h"
 
 namespace mnm::plugin::md {
@@ -35,7 +40,7 @@ public:
     bool acceptsMidi() const override { return true; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
-    double getTailLengthSeconds() const override { return 5.0; }
+    double getTailLengthSeconds() const override { return 8.0; }
     int getNumPrograms() override { return 1; }
     int getCurrentProgram() override { return 0; }
     void setCurrentProgram(int) override {}
@@ -58,43 +63,55 @@ public:
     juce::AudioProcessorValueTreeState apvts;
 
 private:
+    static constexpr int kMixRaw = 14;   // AMD AMF EQF EQG FLTF FLTW FLTQ SRR, DIST, VOL, PAN, DEL, REV, LEVEL
     struct Track {
         std::atomic<float>* machine = nullptr;
         std::atomic<float>* knobs[8] = {};
-        std::atomic<float>* level = nullptr;
-        std::atomic<float>* pan = nullptr;
-        int sentMachine = -1;                 // machine ID whose packet the DSP holds
-        std::array<int, 8> sentKnobs{};       // knob values that packet was built from
-        float gainL = 0.0f, gainR = 0.0f;
+        std::atomic<float>* mix[kMixRaw] = {};
+        std::atomic<float>* route = nullptr;
+        int sentMachine = -1;
+        std::array<int, 8> synRaw{}, synSent{};      // slewed raw words and the ones the packet was built from
+        std::array<int, kMixRaw> mixRaw{}, mixSent{};
+        int sentRoute = -1;
+        bool snap = true;                            // jump to the targets (load, state restore)
     };
 
     void loadEngine();
-    void refreshPackets();                    // audio thread, between passes
-    void runPass();                           // one 32-frame DSP2 block, mixed into the FIFO
+    void refreshParameters();   // audio thread, before each pass: slew, convert, send
+    void runPass();             // one 32-frame block through DSP2 and DSP1 into the FIFO
+    void handleCc(int channel, int cc, int value);
     void parameterChanged(const juce::String& id, float newValue) override;
     void handleAsyncUpdate() override;
 
     juce::String m_firmwarePath, m_status;
     std::unique_ptr<mnm::md::Firmware> m_fw;
     std::unique_ptr<mnm::md::ControlCpu> m_cpu;
-    std::unique_ptr<mnm::md::VoiceEngine> m_engine;
+    std::unique_ptr<mnm::md::VoiceEngine> m_voices;
+    std::unique_ptr<mnm::md::MixEngine> m_mixer;
     juce::CriticalSection m_engineLock;
     std::atomic<bool> m_engineReady{false};
 
     std::array<Track, kTracks> m_tracks;
+    std::array<std::array<std::atomic<float>*, 8>, 4> m_masterFx{};
+    std::array<std::array<int, 8>, 4> m_masterSent{};
+    bool m_masterSnap = true;
+    double m_tempoSent = 0.0;
     std::atomic<float>* m_master = nullptr;
+    std::atomic<double> m_hostBpm{120.0};
     std::array<std::atomic<bool>, kTracks> m_audition{};
     std::array<std::atomic<float>, kTracks> m_activity{};
     std::array<std::atomic<bool>, kTracks> m_machineChanged{};   // message thread: load that machine's defaults
 
-    // engine-rate (44.1 kHz) output FIFO and the host-rate resampler
-    std::vector<float> m_fifoL, m_fifoR;
+    // engine-rate (44.1 kHz) output FIFO: the six DAC channels, and their host-rate resamplers
+    static constexpr int kDac = mnm::md::MixEngine::kChannels;
+    std::array<std::vector<float>, kDac> m_fifo;
     int m_fifoLen = 0;
     double m_hostRate = 44100.0;
-    juce::LagrangeInterpolator m_interpL, m_interpR;
+    std::array<juce::LagrangeInterpolator, kDac> m_interp;
     struct PendingTrig { int track; double enginePos; };   // engine frames from the current FIFO read point
     std::vector<PendingTrig> m_pending;
     mnm::md::VoiceEngine::Block m_block{};
+    mnm::md::MixEngine::Output m_out{};
 };
 
 } // namespace mnm::plugin::md

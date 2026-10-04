@@ -1,6 +1,7 @@
-// Monomodule MD parameters: 16 tracks, each with a machine, the machine's eight synthesis knobs (raw 0..127, as on
-// the hardware), level and pan; a master volume. The machine list is the stock synthesis machines of Machinedrum
-// OS 1.63 (the IDs the OS offers; the names and knob labels shown come from the user's OS file at run time).
+// Monomodule MD parameters, as the Machinedrum's pages: per track the machine and its eight SYNTHESIS knobs, the eight
+// EFFECTS knobs, ROUTING (DIST VOL PAN DEL REV), the kit LEVEL and the output; the four master effects; an output
+// volume. Every knob is raw 0..127 as on the hardware (PAN shown -64..63). The machine list is the stock synthesis
+// machines of OS 1.63 (names and knob labels shown come from the user's OS file at run time).
 #pragma once
 #include <array>
 #include <juce_audio_processors/juce_audio_processors.h>
@@ -49,11 +50,40 @@ constexpr DefaultTrack kDefaultKit[kTracks] = {
     {60, {64, 96, 0, 0, 0, 0, 64, 64}},      // E12-TA
 };
 
+// Track effects (DSP1 Y:0x200+0x40*t +0..7) and routing, as on the Machinedrum's EFFECTS and ROUTING pages
+constexpr const char* kFxLabels[8] = {"AMD", "AMF", "EQF", "EQG", "FLTF", "FLTW", "FLTQ", "SRR"};
+constexpr int kFxDefaults[8] = {0, 0, 64, 64, 0, 127, 0, 0};
+constexpr const char* kRouteLabels[6] = {"DIST", "VOL", "PAN", "DEL", "REV", "LEV"};
+constexpr int kNumRoutes = 7;   // OUT: A B C D E F MAIN (the DSP1 route numbers 0..6)
+constexpr const char* kRouteNames[kNumRoutes] = {"A", "B", "C", "D", "E", "F", "MAIN"};
+
+// Master effects, in the ColdFire's section order (md::ControlCpu::MasterFx)
+constexpr const char* kMasterFxNames[4] = {"REVERB", "DELAY", "EQ", "DYNAMIX"};
+constexpr const char* kMasterFxLabels[4][8] = {
+    {"DVOL", "PRED", "DEC", "DAMP", "HP", "LP", "GATE", "LEV"},
+    {"TIME", "MOD", "MFRQ", "FB", "FLTF", "FLTW", "MONO", "LEV"},
+    {"LF", "LG", "HF", "HG", "PF", "PG", "PQ", "GAIN"},
+    {"ATCK", "REL", "TRHD", "RTIO", "KNEE", "HP", "OUTG", "MIX"},
+};
+constexpr int kMasterFxDefaults[4][8] = {
+    {127, 0, 64, 64, 0, 127, 0, 127},
+    {24, 0, 0, 32, 0, 127, 0, 127},
+    {64, 64, 64, 64, 64, 64, 64, 64},
+    {0, 64, 127, 0, 0, 0, 64, 0},
+};
+
 inline juce::String tp(int t) { return "t" + juce::String(t + 1); }
 inline juce::String machineId(int t) { return tp(t) + "mach"; }
 inline juce::String knobId(int t, int k) { return tp(t) + "p" + juce::String(k + 1); }
-inline juce::String levelId(int t) { return tp(t) + "lev"; }
+inline juce::String fxId(int t, int k) { return tp(t) + "fx" + juce::String(k + 1); }
+inline juce::String distId(int t) { return tp(t) + "dist"; }
+inline juce::String volId(int t) { return tp(t) + "vol"; }
 inline juce::String panId(int t) { return tp(t) + "pan"; }
+inline juce::String delId(int t) { return tp(t) + "del"; }
+inline juce::String revId(int t) { return tp(t) + "rev"; }
+inline juce::String levelId(int t) { return tp(t) + "lev"; }
+inline juce::String routeId(int t) { return tp(t) + "out"; }
+inline juce::String masterFxId(int fx, int k) { static const char* p[4] = {"rv", "dl", "eq", "dx"}; return juce::String(p[fx]) + juce::String(k + 1); }
 inline juce::String masterId() { return "master"; }
 
 inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
@@ -66,11 +96,26 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
         g->addChild(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{machineId(t), 1}, "MACHINE", names, machineIndexOf(kDefaultKit[t].id)));
         for (int k = 0; k < 8; ++k)
             g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{knobId(t, k), 1}, "SYN " + juce::String(k + 1), 0, 127, kDefaultKit[t].knobs[size_t(k)]));
-        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{levelId(t), 1}, "LEVEL", 0, 127, 100));
-        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{panId(t), 1}, "PAN", -64, 63, 0));
+        for (int k = 0; k < 8; ++k)
+            g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{fxId(t, k), 1}, kFxLabels[k], 0, 127, kFxDefaults[k]));
+        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{distId(t), 1}, "DIST", 0, 127, 0));
+        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{volId(t), 1}, "VOL", 0, 127, 100));
+        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{panId(t), 2}, "PAN", -64, 63, 0));
+        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{delId(t), 1}, "DEL", 0, 127, 0));
+        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{revId(t), 1}, "REV", 0, 127, 0));
+        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{levelId(t), 2}, "LEVEL", 0, 127, 127));
+        juce::StringArray routes;
+        for (auto* r : kRouteNames) routes.add(r);
+        g->addChild(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{routeId(t), 1}, "OUT", routes, kNumRoutes - 1));
         layout.add(std::move(g));
     }
-    layout.add(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{masterId(), 1}, "MASTER", 0, 127, 100));
+    for (int fx = 0; fx < 4; ++fx) {
+        auto g = std::make_unique<juce::AudioProcessorParameterGroup>(juce::String(kMasterFxNames[fx]).toLowerCase(), kMasterFxNames[fx], " ");
+        for (int k = 0; k < 8; ++k)
+            g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{masterFxId(fx, k), 1}, kMasterFxLabels[fx][k], 0, 127, kMasterFxDefaults[fx][k]));
+        layout.add(std::move(g));
+    }
+    layout.add(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{masterId(), 1}, "VOLUME", 0, 127, 80));
     return layout;
 }
 

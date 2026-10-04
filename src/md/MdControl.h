@@ -22,6 +22,16 @@ public:
     int convert(uint32_t handler, int dspType, const std::array<uint16_t, 8>& raw, std::array<uint32_t, kMaxPacket>& packet);
     static uint16_t rawFromValue(int value) { return uint16_t(value < 0 ? 0 : value > 127 ? 127 << 7 : value << 7); }
 
+    // Master effects: the OS converts the eight raw knob words of each effect inline in its per-tick task
+    // (MainOS 0x20B440..0x20BAB2); each effect's section is run on its own, from its entry to the common join
+    // 0x20BA4C, and its result read from the DSP1 parameter mirror in internal SRAM.
+    enum class MasterFx { Reverb = 0, Delay, Eq, Dynamics };
+    static constexpr int kNumMasterFx = 4;
+    struct MasterFxSection { uint32_t entry, rawAddr, mirror, dspAddr; int words; };
+    static const MasterFxSection& masterFxSection(MasterFx fx);
+    // words: the DSP1 words for Y:dspAddr.. (count = section.words). Returns false on a runaway section.
+    bool convertMasterFx(MasterFx fx, const std::array<uint16_t, 8>& raw, std::array<uint32_t, 16>& words);
+
     void setTempo(double bpm) { m_tempo = uint32_t(bpm * 24.0 + 0.5); }   // BPM x 24, as the OS keeps it
     const char* lastError() const { return m_error; }
     uint32_t lastPc() const { return m_lastPc; }

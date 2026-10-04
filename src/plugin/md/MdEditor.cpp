@@ -8,11 +8,12 @@ juce::Colour ink() { return skin::inkColour(); }
 juce::Colour paper() { return skin::paperColour(); }
 juce::Font lcdFont(float h, bool bold = true) { return juce::Font(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(), h, bold ? juce::Font::bold : juce::Font::plain)); }
 
-constexpr int kW = 980, kH = 440;
+constexpr int kW = 980, kH = 360;
 constexpr int kMargin = 16;
 constexpr int kHeaderH = 44;
 constexpr int kPadsY = kHeaderH + 10, kPadH = 64;
 constexpr int kPanelY = kPadsY + kPadH + 18;
+constexpr int kMixW = 140;
 
 const char* familyOf(int id)
 {
@@ -23,6 +24,7 @@ const char* familyOf(int id)
     if (id < 64) return "E12";
     return "P-I";
 }
+constexpr const char* kPageNames[4] = {"SYNTH", "EFFECTS", "ROUTING", "MASTER FX"};
 }
 
 // ---------------------------------------------------------------------------------------------- look and feel
@@ -41,27 +43,20 @@ void MdLookAndFeel::refreshColours()
     setColour(juce::PopupMenu::highlightedBackgroundColourId, ink());
     setColour(juce::PopupMenu::highlightedTextColourId, paper());
     setColour(juce::TextButton::buttonColourId, paper());
+    setColour(juce::TextButton::buttonOnColourId, ink());
     setColour(juce::TextButton::textColourOffId, ink());
     setColour(juce::TextButton::textColourOnId, paper());
     setColour(juce::Label::textColourId, ink());
-    setColour(juce::Slider::textBoxTextColourId, ink());
-    setColour(juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
-    setColour(juce::Slider::textBoxBackgroundColourId, juce::Colours::transparentBlack);
-    setColour(juce::TextEditor::backgroundColourId, paper());
-    setColour(juce::TextEditor::textColourId, ink());
-    setColour(juce::TextEditor::highlightColourId, ink().withAlpha(0.25f));
-    setColour(juce::CaretComponent::caretColourId, ink());
 }
 
 void MdLookAndFeel::drawRotarySlider(juce::Graphics& g, int x, int y, int w, int h, float pos, float start, float end, juce::Slider& s)
 {
-    // value readout under the knob (the slider has no text box)
     auto area = juce::Rectangle<int>(x, y, w, h);
     const auto valueRow = area.removeFromBottom(18);
     if (s.isEnabled()) {
         g.setColour(ink());
         g.setFont(lcdFont(14.0f));
-        g.drawText(juce::String(int(std::lround(s.getValue()))), valueRow, juce::Justification::centred);
+        g.drawText(s.getTextFromValue(s.getValue()), valueRow, juce::Justification::centred);
     }
     const auto bounds = area.toFloat().reduced(4.0f);
     const float r = std::min(bounds.getWidth(), bounds.getHeight()) * 0.5f;
@@ -72,13 +67,12 @@ void MdLookAndFeel::drawRotarySlider(juce::Graphics& g, int x, int y, int w, int
     g.setColour(ink().withAlpha(0.2f * alpha));
     g.strokePath(track, juce::PathStrokeType(3.0f));
     const float angle = start + pos * (end - start);
-    const bool bipolar = s.getMinimum() < 0.0;
-    const float from = bipolar ? (start + end) * 0.5f : start;
+    const float from = s.getMinimum() < 0.0 ? (start + end) * 0.5f : start;
     juce::Path value;
     value.addCentredArc(c.x, c.y, r - 3.0f, r - 3.0f, 0.0f, std::min(from, angle), std::max(from, angle), true);
     g.setColour(ink().withAlpha(alpha));
     g.strokePath(value, juce::PathStrokeType(3.0f));
-    g.fillEllipse(juce::Rectangle<float>(r * 1.0f, r * 1.0f).withCentre(c));
+    g.fillEllipse(juce::Rectangle<float>(r, r).withCentre(c));
     g.setColour(paper());
     g.drawLine({c, c.getPointOnCircumference(r * 0.45f, angle)}, 2.0f);
 }
@@ -95,22 +89,23 @@ void MdLookAndFeel::drawComboBox(juce::Graphics& g, int w, int h, bool, int, int
 void MdLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& b, const juce::Colour&, bool over, bool down)
 {
     const auto r = b.getLocalBounds();
-    g.setColour(down ? ink() : paper()); g.fillRect(r);
-    if (over && !down) { g.setColour(ink().withAlpha(0.08f)); g.fillRect(r); }
-    g.setColour(ink()); g.drawRect(r, 2);
+    const bool on = down || b.getToggleState();
+    g.setColour(on ? ink() : paper()); g.fillRect(r);
+    if (over && !on) { g.setColour(ink().withAlpha(0.08f)); g.fillRect(r); }
+    g.setColour(on ? paper() : ink()); g.drawRect(r, on ? 0 : 2);
+    if (!on) { g.setColour(ink()); g.drawRect(r, 2); }
+}
+
+void MdLookAndFeel::drawButtonText(juce::Graphics& g, juce::TextButton& b, bool, bool down)
+{
+    g.setColour((down || b.getToggleState()) ? paper() : ink());
+    g.setFont(lcdFont(14.0f));
+    g.drawText(b.getButtonText(), b.getLocalBounds(), juce::Justification::centred);
 }
 
 juce::Font MdLookAndFeel::getComboBoxFont(juce::ComboBox&) { return lcdFont(17.0f); }
 juce::Font MdLookAndFeel::getPopupMenuFont() { return lcdFont(15.0f); }
 juce::Font MdLookAndFeel::getTextButtonFont(juce::TextButton&, int) { return lcdFont(14.0f); }
-
-juce::Label* MdLookAndFeel::createSliderTextBox(juce::Slider& s)
-{
-    auto* l = LookAndFeel_V4::createSliderTextBox(s);
-    l->setFont(lcdFont(14.0f));
-    l->setJustificationType(juce::Justification::centred);
-    return l;
-}
 
 // ---------------------------------------------------------------------------------------------- editor
 
@@ -123,6 +118,18 @@ MdEditor::MdEditor(MdProcessor& p) : AudioProcessorEditor(p), m_proc(p)
     m_osButton.onClick = [this] { chooseOsFile(); };
     addAndMakeVisible(m_osButton);
 
+    for (int i = 0; i < 4; ++i) {
+        auto& b = m_pageButtons[size_t(i)];
+        b.setButtonText(kPageNames[i]);
+        b.setClickingTogglesState(false);
+        b.onClick = [this, i] { showPage(Page(i)); };
+        addAndMakeVisible(b);
+        auto& f = m_fxButtons[size_t(i)];
+        f.setButtonText(kMasterFxNames[i]);
+        f.onClick = [this, i] { m_masterFx = i; attachKnobs(); };
+        addChildComponent(f);
+    }
+
     // machine list grouped by family; item ids follow the parameter's choice order (ComboBoxAttachment)
     juce::String family;
     for (int i = 0; i < kNumMachines; ++i) {
@@ -132,22 +139,19 @@ MdEditor::MdEditor(MdProcessor& p) : AudioProcessorEditor(p), m_proc(p)
     }
     addAndMakeVisible(m_machine);
 
-    auto setupKnob = [this](juce::Slider& s, juce::Label& l, const juce::String& text) {
+    auto setupKnob = [this](juce::Slider& s, juce::Label& l) {
         s.setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
         s.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
-        s.setVelocityBasedMode(false);
         s.setMouseDragSensitivity(200);
         s.setRotaryParameters(juce::MathConstants<float>::pi * 1.25f, juce::MathConstants<float>::pi * 2.75f, true);
         addAndMakeVisible(s);
-        l.setText(text, juce::dontSendNotification);
         l.setFont(lcdFont(15.0f));
         l.setJustificationType(juce::Justification::centred);
         addAndMakeVisible(l);
     };
-    for (int k = 0; k < 8; ++k) setupKnob(m_knobs[size_t(k)], m_knobLabels[size_t(k)], "");
-    setupKnob(m_level, m_levelLabel, "LEV");
-    setupKnob(m_pan, m_panLabel, "PAN");
-    setupKnob(m_master, m_masterLabel, "MASTER");
+    for (int k = 0; k < 8; ++k) setupKnob(m_knobs[size_t(k)], m_knobLabels[size_t(k)]);
+    setupKnob(m_master, m_masterLabel);
+    m_masterLabel.setText("VOLUME", juce::dontSendNotification);
     m_masterAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(m_proc.apvts, masterId(), m_master);
 
     selectTrack(0);
@@ -167,33 +171,75 @@ juce::Rectangle<int> MdEditor::padBounds(int t) const
     return {kMargin + t * (w + 4), kPadsY, w, kPadH};
 }
 
+juce::Rectangle<int> MdEditor::panelBounds() const { return {kMargin, kPanelY, kW - 2 * kMargin - kMixW - 10, kH - kPanelY - kMargin}; }
+
 void MdEditor::selectTrack(int t)
 {
     m_track = t;
     m_machineAttach.reset();
-    for (auto& a : m_knobAttach) a.reset();
-    m_levelAttach.reset(); m_panAttach.reset();
     m_machineAttach = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(m_proc.apvts, machineId(t), m_machine);
-    for (int k = 0; k < 8; ++k)
-        m_knobAttach[size_t(k)] = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(m_proc.apvts, knobId(t, k), m_knobs[size_t(k)]);
-    m_levelAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(m_proc.apvts, levelId(t), m_level);
-    m_panAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(m_proc.apvts, panId(t), m_pan);
+    attachKnobs();
+}
+
+void MdEditor::showPage(Page p)
+{
+    m_page = p;
+    for (int i = 0; i < 4; ++i) m_pageButtons[size_t(i)].setToggleState(i == int(p), juce::dontSendNotification);
+    attachKnobs();
+    resized();
+}
+
+// Points the eight knobs at the current page's parameters
+void MdEditor::attachKnobs()
+{
+    for (auto& a : m_knobAttach) a.reset();
+    const bool master = m_page == Page::Master;
+    m_machine.setVisible(m_page == Page::Synth);
+    for (int i = 0; i < 4; ++i) {
+        m_fxButtons[size_t(i)].setVisible(master);
+        m_fxButtons[size_t(i)].setToggleState(i == m_masterFx, juce::dontSendNotification);
+    }
+    for (int k = 0; k < 8; ++k) {
+        juce::String id;
+        switch (m_page) {
+        case Page::Synth: id = knobId(m_track, k); break;
+        case Page::Effects: id = fxId(m_track, k); break;
+        case Page::Routing: {
+            static juce::String (* const ids[7])(int) = {distId, volId, panId, delId, revId, levelId, routeId};
+            if (k < 7) id = ids[k](m_track);
+            break;
+        }
+        case Page::Master: id = masterFxId(m_masterFx, k); break;
+        }
+        auto& s = m_knobs[size_t(k)];
+        s.setVisible(id.isNotEmpty());
+        m_knobLabels[size_t(k)].setVisible(id.isNotEmpty());
+        if (id.isNotEmpty()) m_knobAttach[size_t(k)] = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(m_proc.apvts, id, s);
+    }
     m_shownMachine = -1;
-    refreshTrackPanel();
+    refreshLabels();
+    for (int i = 0; i < 4; ++i) m_pageButtons[size_t(i)].setToggleState(i == int(m_page), juce::dontSendNotification);
     repaint();
 }
 
-void MdEditor::refreshTrackPanel()
+void MdEditor::refreshLabels()
 {
     const int id = m_proc.machineIdOf(m_track);
-    if (id == m_shownMachine) return;
+    if (m_page == Page::Synth && id == m_shownMachine) return;
     m_shownMachine = id;
     const auto* m = m_proc.machineInfo(id);
     for (int k = 0; k < 8; ++k) {
-        const juce::String label = m ? juce::String(m->labels[size_t(k)]) : (id == 0 ? juce::String() : "SYN" + juce::String(k + 1));
+        juce::String label;
+        switch (m_page) {
+        case Page::Synth: label = m ? juce::String(m->labels[size_t(k)]) : (id == 0 ? juce::String() : "SYN" + juce::String(k + 1)); break;
+        case Page::Effects: label = kFxLabels[k]; break;
+        case Page::Routing: label = k < 6 ? juce::String(kRouteLabels[k]) : (k == 6 ? juce::String("OUT") : juce::String()); break;
+        case Page::Master: label = kMasterFxLabels[m_masterFx][k]; break;
+        }
         m_knobLabels[size_t(k)].setText(label, juce::dontSendNotification);
-        m_knobs[size_t(k)].setEnabled(label.isNotEmpty());
-        m_knobs[size_t(k)].setAlpha(label.isNotEmpty() ? 1.0f : 0.35f);
+        const bool on = label.isNotEmpty();
+        m_knobs[size_t(k)].setEnabled(on);
+        m_knobs[size_t(k)].setAlpha(on ? 1.0f : 0.35f);
         m_knobs[size_t(k)].repaint();
     }
     repaint();
@@ -206,7 +252,7 @@ void MdEditor::chooseOsFile()
         current.existsAsFile() ? current.getParentDirectory() : juce::File::getSpecialLocation(juce::File::userHomeDirectory), "*.syx");
     m_chooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles, [this](const juce::FileChooser& fc) {
         const auto f = fc.getResult();
-        if (f.existsAsFile()) { m_proc.setFirmwarePath(f.getFullPathName()); m_shownMachine = -1; refreshTrackPanel(); repaint(); }
+        if (f.existsAsFile()) { m_proc.setFirmwarePath(f.getFullPathName()); m_shownMachine = -1; refreshLabels(); repaint(); }
     });
 }
 
@@ -217,7 +263,7 @@ void MdEditor::timerCallback()
         const float a = juce::jlimit(0.0f, 1.0f, m_proc.trackActivity(t) * 4.0f);
         if (std::abs(a - m_lights[size_t(t)]) > 0.02f) { m_lights[size_t(t)] = a; dirty = true; }
     }
-    refreshTrackPanel();
+    if (m_page == Page::Synth) refreshLabels();
     if (dirty) repaint(juce::Rectangle<int>(0, kPadsY, kW, kPadH));
 }
 
@@ -227,6 +273,7 @@ void MdEditor::mouseDown(const juce::MouseEvent& e)
         if (padBounds(t).contains(e.getPosition())) {
             if (t != m_track) selectTrack(t);
             m_proc.auditionTrack(t);
+            repaint();
             return;
         }
 }
@@ -235,14 +282,12 @@ void MdEditor::paint(juce::Graphics& g)
 {
     g.fillAll(paper());
     g.setColour(ink());
-    // header
     g.fillRect(0, 0, kW, kHeaderH);
     g.setColour(paper());
     g.setFont(lcdFont(22.0f));
     g.drawText("MONOMODULE MD", kMargin, 0, 300, kHeaderH, juce::Justification::centredLeft);
     g.setFont(lcdFont(13.0f, false));
-    g.drawText(m_proc.statusText().toUpperCase(), 300, 0, kW - 300 - 130, kHeaderH, juce::Justification::centredRight);
-    // pads
+    g.drawText(m_proc.statusText().toUpperCase(), 300, 0, kW - 300 - 140, kHeaderH, juce::Justification::centredRight);
     for (int t = 0; t < kTracks; ++t) {
         const auto r = padBounds(t);
         const bool sel = t == m_track;
@@ -256,44 +301,42 @@ void MdEditor::paint(juce::Graphics& g)
         g.setFont(lcdFont(12.0f));
         g.drawText(name.upToFirstOccurrenceOf("-", false, false), r.withTrimmedTop(20).withHeight(16), juce::Justification::centred);
         g.drawText(name.fromFirstOccurrenceOf("-", false, false).trimCharactersAtStart("-"), r.withTrimmedTop(34).withHeight(16), juce::Justification::centred);
-        // trig light
         const auto light = juce::Rectangle<int>(r.getRight() - 14, r.getY() + 6, 8, 8).toFloat();
         g.setColour(fg.withAlpha(0.25f + 0.75f * m_lights[size_t(t)]));
         if (m_lights[size_t(t)] > 0.05f) g.fillEllipse(light); else g.drawEllipse(light, 1.5f);
     }
-    // track panel frame and title
-    const auto panel = juce::Rectangle<int>(kMargin, kPanelY, kW - 2 * kMargin - 150, kH - kPanelY - kMargin);
+    const auto panel = panelBounds();
     g.setColour(ink()); g.drawRect(panel, 2);
     g.fillRect(panel.withHeight(30));
     g.setColour(paper()); g.setFont(lcdFont(17.0f));
-    g.drawText("TRACK " + juce::String(m_track + 1) + "  /  NOTE " + juce::String(kTrackNotes[m_track]), panel.withHeight(30).reduced(10, 0), juce::Justification::centredLeft);
-    const auto masterPanel = juce::Rectangle<int>(kW - kMargin - 140, kPanelY, 140, kH - kPanelY - kMargin);
-    g.setColour(ink()); g.drawRect(masterPanel, 2);
-    g.fillRect(masterPanel.withHeight(30));
+    const juce::String title = m_page == Page::Master ? juce::String("MASTER FX") : "TRACK " + juce::String(m_track + 1);
+    g.drawText(title, panel.withHeight(30).reduced(10, 0), juce::Justification::centredLeft);
+    const auto mix = juce::Rectangle<int>(kW - kMargin - kMixW, kPanelY, kMixW, kH - kPanelY - kMargin);
+    g.setColour(ink()); g.drawRect(mix, 2);
+    g.fillRect(mix.withHeight(30));
     g.setColour(paper());
-    g.drawText("MIX", masterPanel.withHeight(30), juce::Justification::centred);
+    g.drawText("OUT", mix.withHeight(30), juce::Justification::centred);
 }
 
 void MdEditor::resized()
 {
-    m_osButton.setBounds(kW - kMargin - 110, 9, 110, 26);
-    const auto panel = juce::Rectangle<int>(kMargin, kPanelY, kW - 2 * kMargin - 150, kH - kPanelY - kMargin);
-    m_machine.setBounds(panel.getX() + 260, panel.getY() + 3, 200, 24);
-    const int knobW = 72, knobH = 92;
-    const int x0 = panel.getX() + 14, y0 = panel.getY() + 44;
+    m_osButton.setBounds(kW - kMargin - 120, 9, 120, 26);
+    const auto panel = panelBounds();
+    // page tabs along the bottom of the panel, the machine / effect selector in the title bar
+    const int tabW = 116;
+    for (int i = 0; i < 4; ++i) m_pageButtons[size_t(i)].setBounds(panel.getX() + 10 + i * (tabW + 6), panel.getBottom() - 34, tabW, 26);
+    m_machine.setBounds(panel.getX() + 130, panel.getY() + 3, 190, 24);
+    for (int i = 0; i < 4; ++i) m_fxButtons[size_t(i)].setBounds(panel.getX() + 130 + i * 96, panel.getY() + 3, 92, 24);
+    const int knobW = 76, knobH = 96;
+    const int x0 = panel.getX() + 12, y0 = panel.getY() + 40;
     for (int k = 0; k < 8; ++k) {
-        const int x = x0 + k * (knobW + 8);
+        const int x = x0 + k * (knobW + 22);
         m_knobLabels[size_t(k)].setBounds(x, y0, knobW, 18);
         m_knobs[size_t(k)].setBounds(x, y0 + 18, knobW, knobH);
     }
-    const int y1 = y0 + 18 + knobH + 16;
-    m_levelLabel.setBounds(x0, y1, knobW, 18);
-    m_level.setBounds(x0, y1 + 18, knobW, knobH - 10);
-    m_panLabel.setBounds(x0 + knobW + 8, y1, knobW, 18);
-    m_pan.setBounds(x0 + knobW + 8, y1 + 18, knobW, knobH - 10);
-    const auto masterPanel = juce::Rectangle<int>(kW - kMargin - 140, kPanelY, 140, kH - kPanelY - kMargin);
-    m_masterLabel.setBounds(masterPanel.getX() + 10, masterPanel.getY() + 44, 120, 18);
-    m_master.setBounds(masterPanel.getX() + 25, masterPanel.getY() + 62, 90, 110);
+    const auto mix = juce::Rectangle<int>(kW - kMargin - kMixW, kPanelY, kMixW, kH - kPanelY - kMargin);
+    m_masterLabel.setBounds(mix.getX() + 10, mix.getY() + 40, kMixW - 20, 18);
+    m_master.setBounds(mix.getX() + 25, mix.getY() + 58, kMixW - 50, 110);
 }
 
 } // namespace mnm::plugin::md
