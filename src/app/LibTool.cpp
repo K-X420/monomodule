@@ -16,6 +16,7 @@
 //                                (the app's PreviewPlayer: render thread, cache, streaming) and reports its progress
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "Store.h"
+#include "LibraryModel.h"
 #include "MidiExport.h"
 #include "Transfer.h"
 #include "LibraryComponent.h"
@@ -35,6 +36,15 @@ static std::vector<uint8_t> readAll(const juce::File& f)
     juce::MemoryBlock mb;
     f.loadFileAsData(mb);
     return std::vector<uint8_t>(static_cast<const uint8_t*>(mb.getData()), static_cast<const uint8_t*>(mb.getData()) + mb.getSize());
+}
+
+static void mt_setenv(const char* name, const juce::String& value)   // value empty = unset
+{
+#ifdef _WIN32
+    _putenv_s(name, value.toRawUTF8());
+#else
+    if (value.isNotEmpty()) setenv(name, value.toRawUTF8(), 1); else unsetenv(name);
+#endif
 }
 
 static int verify(const juce::File& f)
@@ -337,6 +347,77 @@ int main(int argc, char** argv)
         }
         tmp.deleteRecursively();
         std::printf("SELFTEST %s\n", fails == 0 ? "OK" : "FAIL");
+        return fails == 0 ? 0 : 1;
+    }
+
+    if (cmd == "mdselftest" && args.size() == 2) {
+        // Machinedrum projects end to end on a throw-away library: import -> an MD project (lossless), a saved edit,
+        // a whole export (byte-identical), restore, similarity, a partial export, saved MD sounds and kits, and the
+        // shared model's MD catalog beside the Monomachine one
+        const auto src = juce::File::getCurrentWorkingDirectory().getChildFile(args[1]);
+        const auto tmp = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("mnm-libtool-md-" + newId());
+        const auto srcBytes = readAll(src);
+        int fails = 0;
+        auto check = [&](bool ok, const char* what) { if (!ok) { ++fails; std::printf("  FAIL: %s\n", what); } };
+        namespace md = mnm::mddump;
+        {
+            Store store(tmp);
+            ProjectInfo pj;
+            check(store.importSysexFile(src, ImportMode::NewProject, {}, &pj).wasOk(), "import");
+            check(pj.isMd() && pj.versions.size() == 1, "an MD project with one version");
+            md::Dump v1;
+            check(store.loadMdVersion(pj.id, 1, v1), "load v1");
+            check(md::encodeDump(v1) == srcBytes, "v1 re-encodes to the source bytes");
+            md::Dump edited = v1;
+            int used = -1; for (int i = 0; i < 128 && used < 0; ++i) if (mnm::mdproject::patternInUse(edited, i)) used = i;
+            check(used >= 0, "a used pattern");
+            mnm::mdproject::clearPattern(edited, used);
+            check(store.addMdVersion(pj.id, edited, "saved", "Edited: 1 change", {"cleared a pattern"}, "", 1).wasOk(), "add v2");
+            const auto exp = tmp.getChildFile("whole.syx");
+            check(store.exportVersion(pj.id, 1, exp, nullptr, nullptr).wasOk() && readAll(exp) == srcBytes, "the whole export of v1 is the source, byte for byte");
+            check(store.restoreVersion(pj.id, 1).wasOk(), "restore v1");
+            md::Dump cur; check(store.loadProject(pj.id, pj) && store.loadMdVersion(pj.id, pj.current()->n, cur) && mnm::mdproject::diffDumps(cur, v1).identical(), "the restored state equals v1");
+            md::Dump v2; check(store.loadMdVersion(pj.id, 2, v2) && mnm::mdproject::diffDumps(v2, v1).patterns.size() == 1, "v2 differs from v1 in one pattern");
+            const auto sim = store.findSimilarMd(edited);
+            check(sim && sim->projectId == pj.id && sim->diff.similarity() > 0.95, "the edited dump is recognised as this project");
+            const auto part = tmp.getChildFile("part.syx");
+            const std::vector<int> kits{v1.patternAt(used)->kit}, pats{used};
+            check(store.exportVersion(pj.id, 1, part, &kits, &pats).wasOk(), "partial export");
+            const auto pb = readAll(part); const auto pd = md::parseDump(pb.data(), pb.size(), "part");
+            check(pd.kits.size() == 1 && pd.patterns.size() == 1 && pd.numDamaged == 0, "the partial export holds one kit and one pattern");
+            ProjectInfo again;
+            check(store.importSysexFile(src, ImportMode::NewVersion, pj.id, &again).wasOk() && again.current()->changes.joinIntoString(" ").contains("Identical"), "a re-import is a new version, identical");
+            SavedMdItem sound; sound.name = "MY KICK"; sound.savedFrom = "Monomodule MD"; sound.sound = mnm::mdcatalog::Sound::fromKit(v1.kits[0], 0);
+            SavedMdItem kit; kit.name = "MY KIT"; kit.savedFrom = "Monomodule MD"; kit.isKit = true; kit.kit = v1.kits[1];
+            check(store.saveMdItem(sound).wasOk() && store.saveMdItem(kit).wasOk(), "save MD items");
+            const auto items = store.listSavedMdItems();
+            int sounds = 0, kitsSaved = 0;
+            for (const auto& i : items) { sounds += i.isKit ? 0 : 1; kitsSaved += i.isKit ? 1 : 0; }
+            check(sounds == 1 && kitsSaved == 1, "saved MD items round trip");
+            for (const auto& i : items)
+                if (i.isKit) check(md::encodeKit(i.kit) == md::encodeKit(v1.kits[1]), "the saved kit is lossless");
+                else check(mnm::mdcatalog::Catalog::soundHash(i.sound) == mnm::mdcatalog::Catalog::soundHash(sound.sound), "the saved sound is the same sound");
+            check(store.listSavedItems().empty(), "MD items are not Monomachine items");
+            std::printf("  MD project %s: %zu versions\n", pj.id.toRawUTF8(), pj.versions.size());
+        }
+        {   // the shared model: the MD catalog
+            mt_setenv("MNM_LIBRARY_DIR", tmp.getFullPathName());
+            mnm::library::LibraryModel model;
+            model.refresh(true);
+            const auto& c = model.mdCatalog();
+            std::printf("  MD catalog: %zu sounds, %zu kits, %zu patterns; Monomachine catalog: %zu kits\n", c.sounds.size(), c.kits.size(), c.patterns.size(), model.catalog().kits.size());
+            check(!c.kits.empty() && !c.sounds.empty() && !c.patterns.empty(), "the MD catalog has kits, sounds and patterns");
+            check(model.catalog().kits.empty(), "nothing of the MD project in the Monomachine catalog");
+            bool savedName = false;
+            for (const auto& s : c.sounds) savedName = savedName || (s.saved && s.name == "MY KICK");
+            check(savedName, "the saved sound keeps the user's name in the catalog");
+            int linked = 0;
+            for (const auto& p : c.patterns) linked += p.kitId.empty() ? 0 : 1;
+            check(linked > 0, "patterns resolve their kits");
+            mt_setenv("MNM_LIBRARY_DIR", {});
+        }
+        tmp.deleteRecursively();
+        std::printf("MD SELFTEST %s\n", fails == 0 ? "OK" : "FAIL");
         return fails == 0 ? 0 : 1;
     }
 

@@ -5,6 +5,7 @@
 #pragma once
 #include "Store.h"
 #include "library/Catalog.h"
+#include "MdCatalog.h"
 
 namespace mnm::library {
 
@@ -18,6 +19,9 @@ public:
     const UserData& user() const { return m_user; }
     const mnm::dump::Dump* state(const juce::String& projectId) const { auto it = m_states.find(projectId); return it == m_states.end() ? nullptr : &it->second; }
     int revision() const { return m_revision; }   // bumps with every rebuild: views compare it
+    // Machinedrum projects and the sounds saved from Monomodule MD, in a catalog of their own
+    const mnm::mdcatalog::Catalog& mdCatalog() const { return m_mdCatalog; }
+    const mnm::mddump::Dump* mdState(const juce::String& projectId) const { auto it = m_mdStates.find(projectId); return it == m_mdStates.end() ? nullptr : &it->second; }
 
     // Where a catalogued preset / kit sits in a project (its first project source), if anywhere.
     struct Slot { juce::String projectId, projectName; int kit = -1, track = -1; bool valid() const { return projectId.isNotEmpty(); } };
@@ -32,6 +36,14 @@ public:
     juce::Result saveKit(const mnm::dump::Kit& kit, const juce::String& name, const juce::String& parentId,
                          const juce::String& savedFrom, const Slot& into, juce::String* kitIdOut = nullptr);
 
+    // Monomodule MD: the same, for a Machinedrum sound (one track) or kit; `into` names a slot of an MD project.
+    Slot projectSlotOfMdSound(const std::string& soundId) const;
+    Slot projectSlotOfMdKit(const std::string& kitId) const;
+    juce::Result saveMdSound(const mnm::mdcatalog::Sound& sound, const juce::String& name, const juce::String& parentId,
+                             const juce::String& savedFrom, const Slot& into, juce::String* soundIdOut = nullptr);
+    juce::Result saveMdKit(const mnm::mddump::Kit& kit, const juce::String& name, const juce::String& parentId,
+                           const juce::String& savedFrom, const Slot& into, juce::String* kitIdOut = nullptr);
+
 private:
     Store m_store;
     std::vector<ProjectInfo> m_projects;
@@ -40,6 +52,9 @@ private:
     std::vector<SavedItem> m_saved;
     UserData m_user;
     mnm::catalog::Catalog m_catalog;
+    std::map<juce::String, mnm::mddump::Dump> m_mdStates;
+    std::vector<SavedMdItem> m_mdSaved;
+    mnm::mdcatalog::Catalog m_mdCatalog;
     juce::int64 m_stamp = -1;
     int m_revision = 0;
 };

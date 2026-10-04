@@ -8,6 +8,9 @@
 //   <root>/projects/<id>/versions/<nnnn>/export.syx     exports: the bytes that were written
 //   <root>/items/presets/<id>.json, items/kits/<id>.json   sounds saved from the plugins (name, tags, parent, the kit)
 //   <root>/user.json                               favourites and tags, keyed by catalog id
+//   Machinedrum projects (project.json "device": "MD") have the same projects and versions; a version's state is
+//   state.syx (the dump, encoded losslessly by MdDump) instead of dump.json. Sounds and kits saved from Monomodule MD
+//   are items/mdsounds/<id>.json and items/mdkits/<id>.json.
 //
 // A PROJECT is one Monomachine's memory over time. Its VERSIONS are immutable: an import, a saved edit session, an
 // export and a restore each add one; nothing is ever rewritten, so every earlier state stays reachable. Exports and
@@ -21,6 +24,9 @@
 #include <juce_core/juce_core.h>
 #include "library/MnmDump.h"
 #include "library/Project.h"
+#include "MdCatalog.h"
+#include "MdDump.h"
+#include "MdProject.h"
 #include <map>
 #include <optional>
 #include <vector>
@@ -43,12 +49,23 @@ struct VersionInfo {
 };
 
 struct ProjectInfo {
-    juce::String id, name, device;
+    juce::String id, name, device;           // device "MD" = a Machinedrum project, else a Monomachine one
     bool pack = false;                       // sounds only: not shown as a unit's memory
     std::vector<VersionInfo> versions;       // newest first
     juce::File dir;
     const VersionInfo* current() const { return versions.empty() ? nullptr : &versions.front(); }
     const VersionInfo* version(int n) const { for (const auto& v : versions) if (v.n == n) return &v; return nullptr; }
+    bool isMd() const { return device == "MD"; }
+};
+
+// A sound or kit saved from Monomodule MD.
+struct SavedMdItem {
+    juce::String id, name, parent, savedFrom;
+    juce::StringArray tags;
+    juce::Time time;
+    bool isKit = false;
+    mnm::mdcatalog::Sound sound;   // !isKit
+    mnm::mddump::Kit kit;          // isKit
 };
 
 enum class ImportMode { NewProject, NewVersion, Pack };
@@ -102,6 +119,15 @@ public:
                                const std::vector<int>* patterns, VersionInfo* out = nullptr);
     int lastExportedOrImported(const ProjectInfo& p) const;   // the version a "changed since" export compares with
 
+    // Machinedrum projects: their states (follows stateOf), new versions, and the project a fresh dump resembles.
+    bool loadMdVersion(const juce::String& projectId, int n, mnm::mddump::Dump& out) const;
+    juce::Result addMdVersion(const juce::String& projectId, const mnm::mddump::Dump& state, const juce::String& kind, const juce::String& title,
+                              const juce::StringArray& changes, const juce::String& note, int parent, VersionInfo* out = nullptr);
+    struct SimilarMd { juce::String projectId, projectName; int version = 0; mnm::mdproject::DumpDiff diff; };
+    std::optional<SimilarMd> findSimilarMd(const mnm::mddump::Dump& dump);
+    juce::Result saveMdItem(const SavedMdItem& item, juce::String* idOut = nullptr);
+    std::vector<SavedMdItem> listSavedMdItems() const;
+
     // Sounds saved from the plugins.
     juce::Result saveItem(const SavedItem& item, juce::String* idOut = nullptr);
     std::vector<SavedItem> listSavedItems() const;
@@ -118,6 +144,12 @@ private:
     juce::File versionDir(const juce::String& id, int n) const { return projectDir(id).getChildFile("versions").getChildFile(juce::String(n).paddedLeft('0', 4)); }
     bool readVersion(const juce::File& dir, VersionInfo& out) const;
     juce::Result writeVersion(const juce::String& projectId, VersionInfo& v, const mnm::dump::Dump* state);
+    juce::Result writeMdVersion(const juce::String& projectId, VersionInfo& v, const mnm::mddump::Dump* state);
+    juce::Result writeVersionRecord(const juce::String& projectId, VersionInfo& v);   // version.json, after the state
+    juce::Result importMdSysexData(const void* data, size_t size, const juce::String& name, const juce::String& sourceFile,
+                                   ImportMode mode, const juce::String& projectId, ProjectInfo* out);
+    juce::Result exportMdVersion(const juce::String& projectId, int n, const juce::File& dest, const std::vector<int>* kits,
+                                 const std::vector<int>* patterns, VersionInfo* out);
     int nextVersionNumber(const juce::String& projectId) const;
     void migrateLegacyLayout();
     void migrateImports();

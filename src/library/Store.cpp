@@ -583,6 +583,11 @@ juce::Result Store::writeVersion(const juce::String& projectId, VersionInfo& v, 
         fillCounts(v, *state);
         if (!v.dir.getChildFile("dump.json").replaceWithText(juce::JSON::toString(dumpToJson(*state), false))) return juce::Result::fail("Could not write dump.json");
     }
+    return writeVersionRecord(projectId, v);
+}
+
+juce::Result Store::writeVersionRecord(const juce::String& projectId, VersionInfo& v)
+{
     if (v.time == juce::Time()) v.time = juce::Time::getCurrentTime();
     auto* o = new juce::DynamicObject();
     o->setProperty("n", v.n); o->setProperty("kind", v.kind); o->setProperty("title", v.title); o->setProperty("note", v.note);
@@ -605,6 +610,8 @@ juce::Result Store::importSysexFile(const juce::File& syx, ImportMode mode, cons
 juce::Result Store::importSysexData(const void* data, size_t size, const juce::String& name, const juce::String& sourceFile,
                                     ImportMode mode, const juce::String& projectId, ProjectInfo* out)
 {
+    if (mnm::mddump::isMachinedrumSysex(static_cast<const uint8_t*>(data), size))   // a Machinedrum dump: an MD project
+        return importMdSysexData(data, size, name, sourceFile, mode, projectId, out);
     auto d = parseDump(static_cast<const uint8_t*>(data), size, name.toStdString());
     if (d.messages.empty() || (d.kits.empty() && d.patterns.empty() && d.numSongs == 0 && d.numGlobals == 0 && d.numDamaged == 0))
         return juce::Result::fail(name + " does not look like a Monomachine sysex dump.");
@@ -646,7 +653,7 @@ std::optional<Store::Similar> Store::findSimilar(const Dump& dump)
 {
     std::optional<Similar> best;
     for (const auto& p : listProjects()) {
-        if (p.pack) continue;
+        if (p.pack || p.isMd()) continue;
         Dump cur;
         if (!loadVersion(p.id, p.versions.front().n, cur)) continue;
         auto diff = mnm::project::diffDumps(cur, dump);
@@ -705,6 +712,7 @@ int Store::lastExportedOrImported(const ProjectInfo& p) const
 juce::Result Store::exportVersion(const juce::String& projectId, int n, const juce::File& dest, const std::vector<int>* kits,
                                   const std::vector<int>* patterns, VersionInfo* out)
 {
+    if (ProjectInfo pi; loadProject(projectId, pi) && pi.isMd()) return exportMdVersion(projectId, n, dest, kits, patterns, out);
     VersionInfo src;
     Dump d;
     if (!readVersion(versionDir(projectId, n), src) || !loadVersion(projectId, n, d)) return juce::Result::fail("No such version");
@@ -777,7 +785,7 @@ std::vector<SavedItem> Store::listSavedItems() const
 bool Store::deleteItem(const juce::String& id)
 {
     bool any = false;
-    for (const char* sub : {"presets", "kits"}) any = m_root.getChildFile("items").getChildFile(sub).getChildFile(id + ".json").deleteFile() || any;
+    for (const char* sub : {"presets", "kits", "mdsounds", "mdkits"}) any = m_root.getChildFile("items").getChildFile(sub).getChildFile(id + ".json").deleteFile() || any;
     return any;
 }
 
@@ -809,7 +817,7 @@ juce::int64 Store::changeStamp() const
     auto touch = [&](const juce::File& f) { if (f.exists()) stamp = std::max(stamp, f.getLastModificationTime().toMilliseconds()); };
     touch(m_root.getChildFile("projects")); touch(m_root.getChildFile("user.json"));
     for (const auto& d : m_root.getChildFile("projects").findChildFiles(juce::File::findDirectories, false)) { touch(d.getChildFile("project.json")); touch(d.getChildFile("versions")); }
-    for (const char* sub : {"presets", "kits"}) touch(m_root.getChildFile("items").getChildFile(sub));
+    for (const char* sub : {"presets", "kits", "mdsounds", "mdkits"}) touch(m_root.getChildFile("items").getChildFile(sub));
     return stamp;
 }
 
