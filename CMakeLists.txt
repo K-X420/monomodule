@@ -32,6 +32,8 @@ set(MNM_OS_SYX "" CACHE FILEPATH "Optional: path to Elektron_SFX6-60_OS1.32B.syx
 include(cmake/dsp56300.cmake)
 
 add_subdirectory(src/core)
+add_subdirectory(ext/musashi)
+add_subdirectory(src/md)
 add_subdirectory(src/cli)
 if(MNM_BUILD_TESTS)
   enable_testing()   # after the emulator: its own add_test() calls stay out of ctest

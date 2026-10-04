@@ -89,6 +89,40 @@ foreach(t MnmOne MnmSix MnmFx)
     PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 endforeach()
 
+# Monomodule MD: the Machinedrum's synthesis voices from the user's MD OS file (src/md). 16 tracks on the MD's
+# trig notes, knobs converted by the OS's own control handlers.
+juce_add_plugin(MnmMd
+  PRODUCT_NAME "Monomodule MD"
+  COMPANY_NAME "Shnolk"
+  BUNDLE_ID "world.shnolk.mnm.md"
+  PLUGIN_MANUFACTURER_CODE Shnk
+  PLUGIN_CODE MnmD
+  FORMATS AU VST3 Standalone
+  IS_SYNTH TRUE
+  NEEDS_MIDI_INPUT TRUE
+  NEEDS_MIDI_OUTPUT FALSE
+  IS_MIDI_EFFECT FALSE
+  EDITOR_WANTS_KEYBOARD_FOCUS FALSE
+  COPY_PLUGIN_AFTER_BUILD ${MNM_COPY_PLUGINS}
+  AU_MAIN_TYPE kAudioUnitType_MusicDevice
+  HARDENED_RUNTIME_ENABLED TRUE
+  HARDENED_RUNTIME_OPTIONS ${MNM_HARDENED_OPTS}
+  MICROPHONE_PERMISSION_ENABLED FALSE)
+target_sources(MnmMd PRIVATE md/MdProcessor.cpp md/MdEditor.cpp)
+target_include_directories(MnmMd PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(MnmMd PUBLIC
+  JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_VST3_CAN_REPLACE_VST2=0 JUCE_DISPLAY_SPLASH_SCREEN=0)
+target_link_libraries(MnmMd PRIVATE mdcore juce::juce_audio_utils juce::juce_audio_devices
+  PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
+
+# Headless check of Monomodule MD (a development tool, not installed)
+juce_add_console_app(MnmMdTest PRODUCT_NAME "md-plugintest")
+target_sources(MnmMdTest PRIVATE md/MdPluginTest.cpp md/MdProcessor.cpp md/MdEditor.cpp)
+target_include_directories(MnmMdTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/md)
+target_compile_definitions(MnmMdTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=0
+  JucePlugin_Name="Monomodule MD" JUCE_STANDALONE_APPLICATION=1)
+target_link_libraries(MnmMdTest PRIVATE mdcore juce::juce_audio_utils juce::juce_recommended_config_flags)
+
 # Offscreen editor renderer for UI review (a development tool, not installed)
 juce_add_console_app(MnmUiSnapshot PRODUCT_NAME "mnm-uisnapshot")
 target_sources(MnmUiSnapshot PRIVATE UiSnapshot.cpp Overlays.cpp ${MNM_ONE_SOURCES})

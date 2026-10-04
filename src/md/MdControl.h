@@ -1,0 +1,36 @@
+// Runs the Machinedrum OS's own ColdFire control handlers (68020-compatible code, Musashi core) to turn a machine's
+// eight raw knob words into the packet DSP2 receives at Y:0x800 + 0x40*t + 1.. . The handlers are pure functions
+// of the raw words and a few globals (the tempo at 0x100150C), so they are called on demand, not per block.
+//   int handler(u32* packet, const u16* raw)   -> packet word count including packet[0] (the type slot)
+// The raw word of a knob is about value << 7 (0..16256); the OS slews it between knob positions.
+#pragma once
+#include <array>
+#include <cstdint>
+#include <memory>
+#include <vector>
+
+namespace mnm::md {
+
+class ControlCpu {
+public:
+    static constexpr int kMaxPacket = 24;
+    explicit ControlCpu(const std::vector<uint8_t>& mainOs);
+    ~ControlCpu();
+
+    // packet[1..n-1] are the DSP words (24 bits used). Returns n (0 on failure: bad handler or runaway code).
+    // packet[0] is the type slot the OS fills before the call (some handlers send nothing while it is zero).
+    int convert(uint32_t handler, int dspType, const std::array<uint16_t, 8>& raw, std::array<uint32_t, kMaxPacket>& packet);
+    static uint16_t rawFromValue(int value) { return uint16_t(value < 0 ? 0 : value > 127 ? 127 << 7 : value << 7); }
+
+    void setTempo(double bpm) { m_tempo = uint32_t(bpm * 24.0 + 0.5); }   // BPM x 24, as the OS keeps it
+    const char* lastError() const { return m_error; }
+    uint32_t lastPc() const { return m_lastPc; }
+
+private:
+    std::vector<uint8_t> m_ram;   // 0x000000.. : MainOS at 0x200000, globals after it, the call frame at the top
+    uint32_t m_tempo = 120 * 24;
+    const char* m_error = "";
+    uint32_t m_lastPc = 0;
+};
+
+} // namespace mnm::md

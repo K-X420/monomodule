@@ -15,6 +15,11 @@ The build downloads the libraries (JUCE and dsp56300); none of them is copied in
 | [VST3 SDK](https://github.com/steinbergmedia/vst3sdk), © Steinberg Media Technologies GmbH (bundled with JUCE) | VST3 plugin format | GNU GPL v3 (dual-licensed: Steinberg VST3 licence or GPLv3; used under the GPLv3) |
 | [AudioUnitSDK](https://github.com/apple/AudioUnitSDK), © Apple Inc. (bundled with JUCE, macOS only) | Audio Unit plugin format | Apache 2.0 |
 | Other JUCE dependencies (zlib, libpng, jpeglib, FLAC, Ogg Vorbis, HarfBuzz, SheenBidi and others) | as listed in JUCE's `LICENSE.md` | as listed there |
+| [Musashi](https://github.com/kstenerud/Musashi) (commit 313ebf1, in `ext/musashi`), © Karl Stenerud; SoftFloat © John R. Hauser | 68020 core that runs the Machinedrum OS's control handlers (Monomodule MD) | MIT; SoftFloat under its own permissive licence (`ext/musashi/softfloat/README.txt`) |
+
+Monomodule MD was written with the help of [machinedrum-kit](https://github.com/janne808/machinedrum-kit)
+(© janne808, GPL v3), whose reverse-engineering documentation of the Machinedrum OS (machine descriptors, control
+handler ABI, DSP2 voice ABI, DSP1 audio path) the engine follows. No code from it is included.
 
 The GNU GPL v3 and the GNU AGPL v3 may be combined (section 13 of each), and the combined work is distributed under
 the AGPL v3.
