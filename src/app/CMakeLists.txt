@@ -1,5 +1,5 @@
 # Monomodule Library: the standalone library app, and mnm-libtool (terminal front end + test driver).
-set(MNM_APP_VIEW_SOURCES LibraryViews.cpp ProjectViews.cpp LibraryComponent.cpp
+set(MNM_APP_VIEW_SOURCES LibraryViews.cpp ProjectViews.cpp LibraryComponent.cpp MdViews.cpp
   ${CMAKE_SOURCE_DIR}/src/plugin/one/Lcd.cpp ${CMAKE_SOURCE_DIR}/src/plugin/one/SkinDialog.cpp ${CMAKE_SOURCE_DIR}/src/plugin/one/SpecData.cpp ${CMAKE_SOURCE_DIR}/src/plugin/one/RomArt.cpp)
 set(MNM_APP_INCLUDES ${CMAKE_SOURCE_DIR}/src/plugin ${CMAKE_SOURCE_DIR}/src/plugin/one)
 set(MNM_APP_DEFS JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_DISPLAY_SPLASH_SCREEN=0 JucePlugin_VersionString="${PROJECT_VERSION}")

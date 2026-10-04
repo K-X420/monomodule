@@ -11,6 +11,8 @@
 #pragma once
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "LibraryViews.h"
+#include "MdViews.h"
+#include "MdProject.h"
 #include "ProjectViews.h"
 #include "Store.h"
 #include "PreviewPlayer.h"
@@ -47,7 +49,9 @@ private:
         mnm::dump::Dump state;
         juce::StringArray changes;
         std::set<int> changedPat, changedKit;
-        struct Undo { mnm::dump::Dump state; juce::StringArray changes; std::set<int> changedPat, changedKit; };
+        bool md = false;                 // a Machinedrum project: mdState is the edited state
+        mnm::mddump::Dump mdState;
+        struct Undo { mnm::dump::Dump state; mnm::mddump::Dump mdState; juce::StringArray changes; std::set<int> changedPat, changedKit; };
         std::vector<Undo> undo;
     };
 
@@ -56,7 +60,12 @@ private:
     const mnm::library::ProjectInfo* project(const juce::String& id) const;
     const mnm::library::ProjectInfo* currentProject() const { return m_nav.nav.startsWith("project:") ? project(m_nav.nav.substring(8)) : nullptr; }
     const mnm::dump::Dump* shownState();                      // the edit session, the viewed version, or the current one
-    const mnm::dump::Dump* currentState(const juce::String& projectId);
+    const mnm::dump::Dump* currentState(const juce::String& projectId);   // null for a Machinedrum project
+    // Machinedrum projects: their states, and whether the shown project is one
+    const mnm::mddump::Dump* shownMdState();
+    const mnm::mddump::Dump* currentMdState(const juce::String& projectId);
+    bool isMdProject() const { const auto* p = currentProject(); return p && p->isMd(); }
+    static bool isMdNav(const juce::String& nav) { return nav.startsWith("md-"); }
     // navigation
     void setNav(const juce::String& nav, bool push = true);
     void navigateItem(const juce::String& kind, const juce::String& id, bool push = true);
@@ -65,6 +74,7 @@ private:
     void refresh();            // everything from the state: rail, panes, visibility
     void refreshRail();
     void refreshProject();
+    void refreshMdProject();
     void refreshBrowser();
     void rebuildList();
     void showItem();
@@ -100,6 +110,14 @@ private:
     Card patternCard(const mnm::catalog::PatternItem& p) const;
     Card kitCard(const mnm::catalog::KitItem& k, const juce::String& note = {}) const;
     Card presetCard(const mnm::catalog::PresetItem& p, const juce::String& note = {}) const;
+    Card mdPatternCard(const mnm::mdcatalog::PatternItem& p) const;
+    Card mdKitCard(const mnm::mdcatalog::KitItem& k, const juce::String& note = {}) const;
+    Card mdSoundCard(const mnm::mdcatalog::SoundItem& s, const juce::String& note = {}) const;
+    std::vector<LinkList::Row> mdSourceLinks(const std::vector<mnm::mdcatalog::Source>& sources, bool kits) const;
+    juce::String mdSourceText(const std::vector<mnm::mdcatalog::Source>& sources) const;
+    bool passesMdSource(const std::vector<mnm::mdcatalog::Source>& sources) const;
+    void appendMdRows(std::vector<LcdList::Row>& rows, bool collection, const juce::String& wantTag);
+    void showMdItem(int width, juce::Component*& c, int& pref);
     std::vector<LinkList::Row> sourceLinks(const std::vector<mnm::catalog::Source>& sources, bool kits) const;
     juce::String sourceText(const std::vector<mnm::catalog::Source>& sources) const;
     bool passesSource(const std::vector<mnm::catalog::Source>& sources) const;
@@ -138,6 +156,10 @@ private:
     int m_viewedVersion = 0;
     juce::String m_viewedProject;
     std::vector<mnm::library::SavedItem> m_saved;
+    std::map<juce::String, std::pair<int, mnm::mddump::Dump>> m_mdStates;   // Machinedrum projects
+    mnm::mddump::Dump m_mdViewed;
+    std::vector<mnm::library::SavedMdItem> m_mdSaved;
+    mnm::mdcatalog::Catalog m_mdCatalog;
     mnm::library::UserData m_user;
     mnm::catalog::Catalog m_catalog;
     NavState m_nav;
@@ -161,6 +183,7 @@ private:
     KitGrid m_kitGrid;
     HistoryView m_history;
     KitView m_slotKitView;
+    MdKitView m_mdSlotKitView;
     Tray m_tray;
     ChangesView m_changes;
     juce::Rectangle<int> m_mainBounds, m_projectBar, m_tabsRow, m_bodyBounds;
@@ -171,6 +194,9 @@ private:
     PresetView m_presetView;
     KitView m_kitView;
     PatternView m_patternView;
+    MdSoundView m_mdSoundView;
+    MdKitView m_mdKitView;
+    MdPatternView m_mdPatternView;
     // dialogs
     ModalLayer m_modal;
     FormDialog m_form;
@@ -178,7 +204,8 @@ private:
     juce::String m_dialog;                      // which dialog the form shows
     juce::StringArray m_importQueue;
     juce::String m_importFile, m_importSimilar;
-    struct ExportState { juce::String projectId; int version = 0, step = 0, base = 0; juce::String what = "all", how = "file"; mnm::dump::Dump state; mnm::project::DumpDiff diff; std::set<juce::String> kits, patterns; } m_export;
+    struct ExportState { juce::String projectId; int version = 0, step = 0, base = 0; juce::String what = "all", how = "file"; mnm::dump::Dump state; mnm::project::DumpDiff diff; std::set<juce::String> kits, patterns;
+                         bool md = false; mnm::mddump::Dump mdState; mnm::mdproject::DumpDiff mdDiff; } m_export;
     int m_dialogVersion = 0;
     // preview
     std::unique_ptr<mnm::library::PreviewPlayer> m_player;

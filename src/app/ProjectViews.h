@@ -99,14 +99,15 @@ class KitGrid : public SlotGridBase {
 public:
     KitGrid() : SlotGridBase("kit") {}
     static constexpr int kRowH = 24, kCols = 4, kPad = 8;
-    void set(const std::array<SlotInfo, 128>& slots, bool edit, int selected, int fillTarget);
-    int preferredHeight() const { return 2 * kPad + 32 * kRowH; }
+    void set(const std::array<SlotInfo, 128>& slots, bool edit, int selected, int fillTarget, int count = 128);   // count: 64 on a Machinedrum
+    int preferredHeight() const { return 2 * kPad + ((m_count + kCols - 1) / kCols) * kRowH; }
     void paint(juce::Graphics&) override;
 private:
     int slotAt(juce::Point<int> p) const override;
     juce::Rectangle<int> slotBounds(int pos) const override;
     juce::Rectangle<int> glyphZone(int pos) const override { auto r = slotBounds(pos); r.removeFromRight(m_edit ? 22 : 0); return r.removeFromRight(22); }
     juce::Rectangle<int> clearZone(int pos) const override { return slotBounds(pos).removeFromRight(22); }
+    int m_count = 128, m_digits = 3;
 };
 
 class Tray : public juce::Component {

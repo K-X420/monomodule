@@ -234,9 +234,9 @@ void BankGrid::paint(juce::Graphics& g)
 
 // ---- KitGrid
 
-void KitGrid::set(const std::array<SlotInfo, 128>& slots, bool edit, int selected, int fillTarget)
+void KitGrid::set(const std::array<SlotInfo, 128>& slots, bool edit, int selected, int fillTarget, int count)
 {
-    m_slots = slots; m_edit = edit; m_selected = selected; m_fill = fillTarget;
+    m_slots = slots; m_edit = edit; m_selected = selected; m_fill = fillTarget; m_count = juce::jlimit(1, 128, count); m_digits = count > 99 ? 3 : 2;
     repaint();
 }
 
@@ -251,13 +251,13 @@ int KitGrid::slotAt(juce::Point<int> p) const
     const int w = (getWidth() - 2 * kPad) / kCols;
     if (p.x < kPad || p.y < kPad || w <= 0) return -1;
     const int col = (p.x - kPad) / w, row = (p.y - kPad) / kRowH, pos = row * kCols + col;
-    return col < kCols && pos >= 0 && pos < 128 ? pos : -1;
+    return col < kCols && pos >= 0 && pos < m_count ? pos : -1;
 }
 
 void KitGrid::paint(juce::Graphics& g)
 {
     const auto clip = g.getClipBounds();
-    for (int pos = 0; pos < 128; ++pos) {
+    for (int pos = 0; pos < m_count; ++pos) {
         const auto r = slotBounds(pos);
         if (!r.intersects(clip)) continue;
         const auto& sl = m_slots[size_t(pos)];
@@ -269,7 +269,7 @@ void KitGrid::paint(juce::Graphics& g)
         g.setColour(lcd::ink.withAlpha(0.12f));
         for (int x = r.getX(); x < r.getRight(); x += 4) g.fillRect(x, r.getBottom() - 1, 2, 1);
         g.setColour(col.withMultipliedAlpha(0.65f)); g.setFont(ui::font(false, 11.0f));
-        g.drawText(pad3(pos), r.getX() + 6, r.getY(), 26, kRowH, juce::Justification::centredLeft, false);
+        g.drawText(juce::String(pos + 1).paddedLeft('0', m_digits), r.getX() + 6, r.getY(), 26, kRowH, juce::Justification::centredLeft, false);
         g.setColour(col); g.setFont(ui::font(false, 13.0f));
         const int nameW = r.getWidth() - 38 - (hover ? 46 : 8) - (pos == m_playing && ui::transport().shown() ? 22 : 0);
         g.drawText(sl.used ? sl.name : m_edit ? juce::String() : juce::String("-"), r.getX() + 36, r.getY(), nameW, kRowH, juce::Justification::centredLeft, true);

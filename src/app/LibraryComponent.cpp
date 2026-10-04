@@ -5,6 +5,7 @@
 #include "Transfer.h"
 #include "preview/Preview.h"
 #include <algorithm>
+#include "MdNames.h"
 
 namespace mnm::app {
 
@@ -29,6 +30,25 @@ juce::String pad3(int pos) { return juce::String(pos + 1).paddedLeft('0', 3); }
 juce::String slotName(const juce::String& kind, int pos) { return kind == "pat" ? "Pattern " + juce::String(patternSlotName(pos)) : "Kit " + pad3(pos); }
 juce::String plural(int n, const char* one) { return juce::String(n) + " " + one + (n == 1 ? "" : "s"); }
 int usedTracks(const Pattern& p) { int n = 0; for (int t = 0; t < 6; ++t) if (p.noteTrigCount(t) > 0) ++n; return n; }
+// Machinedrum
+namespace md = mnm::mddump;
+using MdCatalog = mnm::mdcatalog::Catalog;
+juce::String pad2(int pos) { return juce::String(pos + 1).paddedLeft('0', 2); }
+juce::String mdSlotName(const juce::String& kind, int pos) { return kind == "pat" ? "Pattern " + juce::String(md::patternSlotName(pos)) : "Kit " + pad2(pos); }
+int mdUsedTracks(const md::Pattern& p) { int n = 0; for (int t = 0; t < md::kTracks; ++t) if (p.trigCount(t) > 0) ++n; return n; }
+std::string mdPatternIdIn(const md::Dump& d, const md::Pattern& p)
+{
+    const auto* k = d.kitAt(p.kit);
+    return MdCatalog::patternHash(p, k && !k->isEmptySlot() ? MdCatalog::kitHash(*k) : std::string());
+}
+const char* kMdGroups[9] = {"ALL", "GND", "TRX", "EFM", "E12", "P-I", "INP", "ROM", "RAM"};
+juce::String mdGroupOf(int machine)
+{
+    const juce::String n(mnm::mdnames::machineName(machine));
+    return n.startsWith("P-I") ? juce::String("P-I") : n.substring(0, 3);
+}
+juce::String mdMachineName(int machine) { return juce::String(mnm::mdnames::machineName(machine)); }
+
 std::string patternIdIn(const Dump& d, const Pattern& p)
 {
     const auto* k = d.kitAt(p.kit);
@@ -152,6 +172,33 @@ LibraryComponent::LibraryComponent(std::unique_ptr<Store> store, bool audio) : m
     for (auto* grid : {&m_kitView.patterns().grid, &m_presetView.versions().grid, &m_presetView.kits().grid, &m_presetView.patterns().grid, &m_patternView.kitSection().grid})
         grid->onPlay = [this](const Card& c) { playCatalog(tagKind(c.tag), tagId(c.tag), -1); };
 
+    // Machinedrum pages
+    m_mdSlotKitView.onLink = [this](const juce::var& v) { onLink(v); };
+    m_mdSlotKitView.onTrack = [this](int t) { if (const auto* d = shownMdState()) if (const auto* k = d->kitAt(m_nav.selKit)) { const auto id = MdCatalog::soundHash(mnm::mdcatalog::Sound::fromKit(*k, t)); if (m_mdCatalog.sound(id)) navigateItem("mdsound", juce::String(id)); } };
+    m_mdSlotKitView.onPlayKit = [this] { playSlot("kit", m_nav.selKit); };
+    m_mdSlotKitView.onPlayTrack = [this](int) { playSlot("kit", m_nav.selKit); };
+    m_mdKitView.onLink = [this](const juce::var& v) { onLink(v); };
+    m_mdKitView.onTrack = [this](int t) { if (const auto* k = m_mdCatalog.kit(m_nav.itemId.toStdString()); k && !k->soundIds[t].empty()) navigateItem("mdsound", juce::String(k->soundIds[t])); };
+    m_mdKitView.onPlayKit = [this] { playCatalog("mdkit", m_nav.itemId, -1); };
+    m_mdKitView.onPlayTrack = [this](int t) { playCatalog("mdkit", m_nav.itemId, t); };
+    m_mdKitView.onDragKit = [this] { dragKit(m_nav.itemId, &m_mdKitView); };
+    m_mdKitView.onDragTrack = [this](int t) { if (const auto* k = m_mdCatalog.kit(m_nav.itemId.toStdString()); k && !k->soundIds[t].empty()) dragPreset(juce::String(k->soundIds[t]), &m_mdKitView); };
+    m_mdSoundView.onLink = [this](const juce::var& v) { onLink(v); };
+    m_mdSoundView.onPlay = [this] { playCatalog("mdsound", m_nav.itemId, -1); };
+    m_mdSoundView.onFavourite = [this] { toggleFavourite(); };
+    m_mdSoundView.onTag = [this] { showTagDialog(); };
+    m_mdSoundView.onDrag = [this] { dragPreset(m_nav.itemId, &m_mdSoundView); };
+    m_mdPatternView.onLink = [this](const juce::var& v) { onLink(v); };
+    m_mdPatternView.onSound = [this](int t) {
+        if (const auto* p = m_mdCatalog.pattern(m_nav.itemId.toStdString())) if (const auto* k = m_mdCatalog.kit(p->kitId); k && !k->soundIds[t].empty()) navigateItem("mdsound", juce::String(k->soundIds[t]));
+    };
+    m_mdPatternView.onPlayPattern = [this] { playCatalog("mdpattern", m_nav.itemId, -1); };
+    m_mdPatternView.onPlayTrack = [this](int t) { playCatalog("mdpattern", m_nav.itemId, t); };
+    m_mdPatternView.onDragPattern = [this] { dragPatternMidi(m_nav.itemId, -1, &m_mdPatternView); };
+    m_mdPatternView.onDragTrack = [this](int t) { dragPatternMidi(m_nav.itemId, t, &m_mdPatternView); };
+    for (auto* grid : {&m_mdKitView.patterns().grid, &m_mdSoundView.versions().grid, &m_mdSoundView.kits().grid, &m_mdSoundView.patterns().grid, &m_mdPatternView.kitSection().grid, &m_mdSlotKitView.patterns().grid})
+        grid->onPlay = [this](const Card& c) { playCatalog(tagKind(c.tag), tagId(c.tag), -1); };
+
     // dialogs
     addChildComponent(m_modal);
     m_modal.onEscape = [this] { closeDialog(); };
@@ -193,7 +240,7 @@ const mnm::library::ProjectInfo* LibraryComponent::project(const juce::String& i
 const Dump* LibraryComponent::currentState(const juce::String& projectId)
 {
     const auto* p = project(projectId);
-    if (!p || !p->current() || !m_store) return nullptr;
+    if (!p || !p->current() || !m_store || p->isMd()) return nullptr;
     auto it = m_states.find(projectId);
     if (it != m_states.end() && it->second.first == p->current()->n) return &it->second.second;
     Dump d;
@@ -203,10 +250,38 @@ const Dump* LibraryComponent::currentState(const juce::String& projectId)
     return &slot.second;
 }
 
+const md::Dump* LibraryComponent::currentMdState(const juce::String& projectId)
+{
+    const auto* p = project(projectId);
+    if (!p || !p->current() || !m_store || !p->isMd()) return nullptr;
+    auto it = m_mdStates.find(projectId);
+    if (it != m_mdStates.end() && it->second.first == p->current()->n) return &it->second.second;
+    md::Dump d;
+    if (!m_store->loadMdVersion(projectId, p->current()->n, d)) return nullptr;
+    auto& slot = m_mdStates[projectId];
+    slot = {p->current()->n, std::move(d)};
+    return &slot.second;
+}
+
+const md::Dump* LibraryComponent::shownMdState()
+{
+    const auto* p = currentProject();
+    if (!p || !p->isMd()) return nullptr;
+    if (m_edit.active && m_edit.md && m_edit.projectId == p->id) return &m_edit.mdState;
+    if (m_nav.viewVersion > 0 && p->current() && m_nav.viewVersion != p->current()->n) {
+        if (m_viewedProject != p->id || m_viewedVersion != m_nav.viewVersion) {
+            if (!m_store->loadMdVersion(p->id, m_nav.viewVersion, m_mdViewed)) return currentMdState(p->id);
+            m_viewedProject = p->id; m_viewedVersion = m_nav.viewVersion;
+        }
+        return &m_mdViewed;
+    }
+    return currentMdState(p->id);
+}
+
 const Dump* LibraryComponent::shownState()
 {
     const auto* p = currentProject();
-    if (!p) return nullptr;
+    if (!p || p->isMd()) return nullptr;
     if (m_edit.active && m_edit.projectId == p->id) return &m_edit.state;
     if (m_nav.viewVersion > 0 && p->current() && m_nav.viewVersion != p->current()->n) {
         if (m_viewedProject != p->id || m_viewedVersion != m_nav.viewVersion) {
@@ -221,10 +296,17 @@ const Dump* LibraryComponent::shownState()
 void LibraryComponent::rebuildCatalog()
 {
     std::vector<mnm::catalog::Input> inputs;
-    for (const auto& p : m_projects) if (const auto* d = currentState(p.id)) inputs.push_back({p.id.toStdString(), p.name.toStdString(), d});
+    std::vector<mnm::mdcatalog::Input> mdInputs;
+    for (const auto& p : m_projects) {
+        if (p.isMd()) { if (const auto* d = currentMdState(p.id)) mdInputs.push_back({p.id.toStdString(), p.name.toStdString(), d}); continue; }
+        if (const auto* d = currentState(p.id)) inputs.push_back({p.id.toStdString(), p.name.toStdString(), d});
+    }
     std::vector<mnm::catalog::SavedInput> saved;
     for (const auto& s : m_saved) saved.push_back({s.id.toStdString(), s.name.toStdString(), s.parent.toStdString(), s.savedFrom.toStdString(), s.time.formatted("%d %b %Y").toStdString(), s.isKit, s.track, s.kit});
     m_catalog.build(inputs, saved);
+    std::vector<mnm::mdcatalog::SavedInput> mdSaved;
+    for (const auto& s : m_mdSaved) mdSaved.push_back({s.id.toStdString(), s.name.toStdString(), s.parent.toStdString(), s.savedFrom.toStdString(), s.time.formatted("%d %b %Y").toStdString(), s.isKit, s.sound, s.kit});
+    m_mdCatalog.build(mdInputs, mdSaved);
 }
 
 void LibraryComponent::reload()
@@ -232,13 +314,16 @@ void LibraryComponent::reload()
     if (!m_store) return;
     m_projects = m_store->listProjects();
     for (auto it = m_states.begin(); it != m_states.end();) it = project(it->first) ? std::next(it) : m_states.erase(it);
+    for (auto it = m_mdStates.begin(); it != m_mdStates.end();) it = project(it->first) ? std::next(it) : m_mdStates.erase(it);
     m_saved = m_store->listSavedItems();
+    m_mdSaved = m_store->listSavedMdItems();
     m_user = m_store->loadUser();
     m_stamp = m_store->changeStamp();
     rebuildCatalog();
     if (m_nav.nav.startsWith("project:") && !currentProject()) { m_nav.nav = m_projects.empty() ? juce::String("presets") : "project:" + m_projects.front().id; m_nav.viewVersion = 0; }
     int packs = 0; for (const auto& p : m_projects) packs += p.pack ? 1 : 0;
-    m_status = plural(int(m_projects.size()) - packs, "project") + " - " + plural(int(m_catalog.presets.size()), "preset") + " - " + plural(int(m_catalog.kits.size()), "kit") + " - " + plural(int(m_catalog.patterns.size()), "pattern");
+    m_status = plural(int(m_projects.size()) - packs, "project") + " - " + plural(int(m_catalog.presets.size()), "preset") + " - " + plural(int(m_catalog.kits.size()), "kit") + " - " + plural(int(m_catalog.patterns.size()), "pattern")
+             + (m_mdCatalog.kits.empty() && m_mdCatalog.sounds.empty() ? juce::String() : "   Machinedrum: " + plural(int(m_mdCatalog.sounds.size()), "sound") + " - " + plural(int(m_mdCatalog.kits.size()), "kit") + " - " + plural(int(m_mdCatalog.patterns.size()), "pattern"));
     refresh();
 }
 
@@ -259,7 +344,7 @@ void LibraryComponent::setNav(const juce::String& nav, bool push)
 void LibraryComponent::navigateItem(const juce::String& kind, const juce::String& id, bool push)
 {
     if (push) pushBack();
-    m_nav.nav = kind == "preset" ? "presets" : kind == "kit" ? "kits" : "patterns";
+    m_nav.nav = kind == "preset" ? "presets" : kind == "kit" ? "kits" : kind == "pattern" ? "patterns" : kind == "mdsound" ? "md-sounds" : kind == "mdkit" ? "md-kits" : "md-patterns";
     m_nav.group = "ALL"; m_nav.source = "all"; m_nav.favOnly = false;
     m_nav.itemKind = kind; m_nav.itemId = id;
     m_search.setText({}, false);
@@ -314,20 +399,30 @@ void LibraryComponent::refreshRail()
     for (const auto& p : m_projects) {
         const auto* v = p.current();
         const bool editing = m_edit.active && m_edit.projectId == p.id;
-        items.push_back({K::Entry, "project:" + p.id, p.name + (editing ? "   (editing)" : ""), (p.pack ? juce::String("sound pack - ") : juce::String()) + (v ? v->label() + " - " + v->kind + " - " + v->time.formatted("%d %b %Y") : juce::String())});
+        items.push_back({K::Entry, "project:" + p.id, p.name + (editing ? "   (editing)" : ""), (p.isMd() ? juce::String("Machinedrum - ") : juce::String()) + (p.pack ? juce::String("sound pack - ") : juce::String()) + (v ? v->label() + " - " + v->kind + " - " + v->time.formatted("%d %b %Y") : juce::String())});
     }
     items.push_back({K::Entry, "import", "+ Import a sysex dump..."});
     items.push_back({K::Header, {}, "LIBRARY"});
     items.push_back({K::Entry, "presets", "Presets", {}, juce::String(m_catalog.presets.size())});
     items.push_back({K::Entry, "kits", "Kits", {}, juce::String(m_catalog.kits.size())});
     items.push_back({K::Entry, "patterns", "Patterns", {}, juce::String(m_catalog.patterns.size())});
+    bool anyMd = !m_mdCatalog.sounds.empty() || !m_mdCatalog.kits.empty();
+    for (const auto& p : m_projects) anyMd = anyMd || p.isMd();
+    if (anyMd) {
+        items.push_back({K::Header, {}, "MACHINEDRUM"});
+        items.push_back({K::Entry, "md-sounds", "Sounds", {}, juce::String(m_mdCatalog.sounds.size())});
+        items.push_back({K::Entry, "md-kits", "Kits", {}, juce::String(m_mdCatalog.kits.size())});
+        items.push_back({K::Entry, "md-patterns", "Patterns", {}, juce::String(m_mdCatalog.patterns.size())});
+    }
     items.push_back({K::Header, {}, "COLLECTIONS"});
     int saved = 0; for (const auto& p : m_catalog.presets) saved += p.saved ? 1 : 0; for (const auto& k : m_catalog.kits) saved += k.saved ? 1 : 0;
+    for (const auto& s : m_mdCatalog.sounds) saved += s.saved ? 1 : 0; for (const auto& k : m_mdCatalog.kits) saved += k.saved ? 1 : 0;
     items.push_back({K::Entry, "favourites", "Favourites", {}, juce::String(m_user.favourites.size())});
     items.push_back({K::Entry, "saved", "Saved from plugins", {}, juce::String(saved)});
     for (const auto& t : m_user.allTags()) { K it{K::Entry, "tag:" + t, "# " + t}; it.indent = 14; items.push_back(it); }
     items.push_back({K::Header, {}, "DEVICE"});
     items.push_back({K::Note, {}, "Monomachine", "not connected - MIDI transfer is a later stage"});
+    if (anyMd) items.push_back({K::Note, {}, "Machinedrum", "not connected - MIDI transfer is a later stage"});
     m_rail.set(std::move(items), {m_nav.nav});
     m_rail.setSize(m_railView.getWidth() - m_railView.getScrollBarThickness(), juce::jmax(m_railView.getHeight(), m_rail.preferredHeight()));
 }
@@ -345,6 +440,7 @@ void LibraryComponent::selectBank(int b)
 
 void LibraryComponent::refreshProject()
 {
+    if (isMdProject()) { refreshMdProject(); return; }
     const auto* p = currentProject();
     const auto* d = shownState();
     if (!p || !d) return;
@@ -360,7 +456,7 @@ void LibraryComponent::refreshProject()
     if (edit) { for (int pos : m_edit.changedPat) pats[size_t(pos)].changed = true; for (int pos : m_edit.changedKit) kits[size_t(pos)].changed = true; }
     const int fillPat = m_edit.fill.startsWith("pat:") ? m_edit.fill.substring(4).getIntValue() : -1, fillKit = m_edit.fill.startsWith("kit:") ? m_edit.fill.substring(4).getIntValue() : -1;
     m_bankGrid.set(pats, m_nav.bank, edit, m_selPat, fillPat);
-    m_kitGrid.set(kits, edit, m_nav.selKit, fillKit);
+    m_kitGrid.set(kits, edit, m_nav.selKit, fillKit, 128);
     m_kitGrid.setSize(m_kitGridView.getWidth() - m_kitGridView.getScrollBarThickness(), m_kitGrid.preferredHeight());
     if (m_nav.tab == "kits" && !edit) showSlotKit();
     if (m_nav.tab == "history") {
@@ -379,8 +475,69 @@ void LibraryComponent::refreshProject()
     repaint();
 }
 
+void LibraryComponent::refreshMdProject()
+{
+    const auto* p = currentProject();
+    const auto* d = shownMdState();
+    if (!p || !d) return;
+    const bool edit = m_edit.active && m_edit.md && m_edit.projectId == p->id;
+    std::array<SlotInfo, 128> pats{}, kits{};
+    for (const auto& pat : d->patterns) {
+        if (pat.position < 0 || pat.position > 127 || pat.empty()) continue;
+        auto& s = pats[size_t(pat.position)];
+        const auto* k = d->kitAt(pat.kit);
+        s.used = true; s.name = k && !k->isEmptySlot() ? juce::String(k->name) : "kit " + pad2(pat.kit); s.tracks = mdUsedTracks(pat); s.steps = pat.length;
+    }
+    for (const auto& k : d->kits) { if (k.position < 0 || k.position > 63 || k.isEmptySlot()) continue; auto& s = kits[size_t(k.position)]; s.used = true; s.name = juce::String(k.name); }
+    if (edit) { for (int pos : m_edit.changedPat) pats[size_t(pos)].changed = true; for (int pos : m_edit.changedKit) kits[size_t(pos)].changed = true; }
+    const int fillPat = m_edit.fill.startsWith("pat:") ? m_edit.fill.substring(4).getIntValue() : -1, fillKit = m_edit.fill.startsWith("kit:") ? m_edit.fill.substring(4).getIntValue() : -1;
+    m_bankGrid.set(pats, m_nav.bank, edit, m_selPat, fillPat);
+    m_kitGrid.set(kits, edit, juce::jmin(m_nav.selKit, 63), fillKit, md::kKitSlots);
+    m_kitGrid.setSize(m_kitGridView.getWidth() - m_kitGridView.getScrollBarThickness(), m_kitGrid.preferredHeight());
+    if (m_nav.tab == "kits" && !edit) showSlotKit();
+    if (m_nav.tab == "history") {
+        m_history.setSize(m_historyView.getWidth() - m_historyView.getScrollBarThickness(), 100);
+        m_history.set(*p, edit, m_edit.changes);
+        m_history.setSize(m_history.getWidth(), juce::jmax(m_historyView.getHeight(), m_history.preferredHeight()));
+    }
+    if (edit) {
+        const bool patTab = m_nav.tab != "kits";
+        m_tray.set(patTab ? "LIBRARY PATTERNS" : "LIBRARY KITS", trayCards(patTab ? "pat" : "kit"));
+        const juce::String want = patTab ? "pat:" : "kit:";
+        m_tray.setHint(m_edit.fill.startsWith(want) ? "CLICK ONE FOR " + mdSlotName(patTab ? "pat" : "kit", m_edit.fill.substring(4).getIntValue()).toUpperCase() : juce::String("DRAG INTO A SLOT TO FILL OR REPLACE IT"));
+        m_changes.set(m_edit.changes);
+    }
+    refreshPlaying();
+    repaint();
+}
+
 void LibraryComponent::showSlotKit()
 {
+    if (isMdProject()) {   // the Machinedrum kit page
+        const auto* d = shownMdState();
+        const auto* k = d ? d->kitAt(m_nav.selKit) : nullptr;
+        if (!k || k->isEmptySlot()) { m_slotKitViewport.setVisible(false); return; }
+        if (m_slotKitViewport.getViewedComponent() != &m_mdSlotKitView) m_slotKitViewport.setViewedComponent(&m_mdSlotKitView, false);
+        m_slotKitViewport.setVisible(true);
+        std::array<juce::String, 16> names;
+        for (int t = 0; t < md::kTracks; ++t) if (const auto* s = m_mdCatalog.sound(MdCatalog::soundHash(mnm::mdcatalog::Sound::fromKit(*k, t)))) names[size_t(t)] = juce::String(s->name);
+        std::vector<Card> cards;
+        for (const auto& pat : d->patterns)
+            if (!pat.empty() && pat.kit == k->position) {
+                const auto id = mdPatternIdIn(*d, pat);
+                Card c;
+                c.label = md::patternSlotName(pat.position); c.name = juce::String(k->name); c.metaLeft = juce::String(mdUsedTracks(pat)) + " tr"; c.metaRight = juce::String(int(pat.length)) + " st";
+                if (m_mdCatalog.pattern(id)) { c.tag = tag("mdpattern", juce::String(id)); c.playKey = "mdpattern:" + juce::String(id); }
+                cards.push_back(c);
+            }
+        const int w = m_slotKitViewport.getWidth() - m_slotKitViewport.getScrollBarThickness();
+        m_mdSlotKitView.setSize((w / kScale) * kScale, 100);
+        m_mdSlotKitView.set(*k, names, std::move(cards), {});
+        m_mdSlotKitView.setTitle("KIT " + pad2(k->position) + "  " + juce::String(k->name));
+        m_mdSlotKitView.setSize(m_mdSlotKitView.getWidth(), juce::jmax(m_slotKitViewport.getHeight(), m_mdSlotKitView.preferredHeight()));
+        return;
+    }
+    if (m_slotKitViewport.getViewedComponent() != &m_slotKitView) m_slotKitViewport.setViewedComponent(&m_slotKitView, false);
     const auto* d = shownState();
     const auto* k = d ? d->kitAt(m_nav.selKit) : nullptr;
     if (!k || k->isEmptySlot()) { m_slotKitViewport.setVisible(false); return; }
@@ -405,6 +562,15 @@ void LibraryComponent::showSlotKit()
 
 void LibraryComponent::openSlot(const juce::String& kind, int pos)
 {
+    if (isMdProject()) {
+        const auto* d = shownMdState();
+        const auto* p = d && kind == "pat" ? d->patternAt(pos) : nullptr;
+        if (!p) return;
+        const auto id = mdPatternIdIn(*d, *p);
+        if (m_mdCatalog.pattern(id)) navigateItem("mdpattern", juce::String(id));
+        else toast("This version's " + juce::String(md::patternSlotName(pos)) + " differs from the current one: RESTORE the version to work with it");
+        return;
+    }
     const auto* d = shownState();
     if (!d || kind != "pat") return;
     const auto* p = d->patternAt(pos);
@@ -418,6 +584,17 @@ void LibraryComponent::openSlot(const juce::String& kind, int pos)
 
 void LibraryComponent::beginEdit()
 {
+    if (isMdProject()) {
+        const auto* p = currentProject();
+        const auto* d = currentMdState(p->id);
+        if (!d || !p->current()) return;
+        m_edit = {};
+        m_edit.active = true; m_edit.md = true; m_edit.projectId = p->id; m_edit.baseVersion = p->current()->n; m_edit.mdState = *d;
+        m_nav.viewVersion = 0;
+        if (m_nav.tab != "patterns" && m_nav.tab != "kits" && m_nav.tab != "history") m_nav.tab = "patterns";
+        refresh();
+        return;
+    }
     const auto* p = currentProject();
     const auto* d = p ? currentState(p->id) : nullptr;
     if (!p || !d || !p->current()) return;
@@ -430,7 +607,7 @@ void LibraryComponent::beginEdit()
 
 void LibraryComponent::pushUndo()
 {
-    m_edit.undo.push_back({m_edit.state, m_edit.changes, m_edit.changedPat, m_edit.changedKit});
+    m_edit.undo.push_back({m_edit.state, m_edit.mdState, m_edit.changes, m_edit.changedPat, m_edit.changedKit});
     if (m_edit.undo.size() > 25) m_edit.undo.erase(m_edit.undo.begin());
 }
 
@@ -441,7 +618,7 @@ void LibraryComponent::undoEdit()
     if (m_edit.undo.empty()) return;
     auto u = std::move(m_edit.undo.back());
     m_edit.undo.pop_back();
-    m_edit.state = std::move(u.state); m_edit.changes = u.changes; m_edit.changedPat = u.changedPat; m_edit.changedKit = u.changedKit;
+    m_edit.state = std::move(u.state); m_edit.mdState = std::move(u.mdState); m_edit.changes = u.changes; m_edit.changedPat = u.changedPat; m_edit.changedKit = u.changedKit;
     m_edit.fill.clear();
     refreshProject();
 }
@@ -449,6 +626,27 @@ void LibraryComponent::undoEdit()
 void LibraryComponent::clearSlot(const juce::String& kind, int pos)
 {
     if (!m_edit.active) return;
+    if (m_edit.md) {
+        auto& d = m_edit.mdState;
+        if (kind == "pat") {
+            if (!mnm::mdproject::patternInUse(d, pos)) return;
+            pushUndo();
+            const auto* k = d.kitAt(d.patternAt(pos)->kit);
+            const juce::String was = k && !k->isEmptySlot() ? juce::String(k->name) : juce::String("-");
+            mnm::mdproject::clearPattern(d, pos);
+            m_edit.changedPat.insert(pos);
+            noteChange(mdSlotName(kind, pos) + " cleared (was on kit " + was + ")");
+        } else {
+            if (!mnm::mdproject::kitInUse(d, pos)) return;
+            pushUndo();
+            const juce::String was = d.kitAt(pos)->name;
+            int users = 0; for (const auto& p : d.patterns) if (!p.empty() && p.kit == pos) ++users;
+            mnm::mdproject::clearKit(d, pos);
+            m_edit.changedKit.insert(pos);
+            noteChange(mdSlotName(kind, pos) + " cleared, was " + was + (users ? " - " + plural(users, "pattern") + " still point" + (users == 1 ? "s" : "") + " to this slot" : juce::String()));
+        }
+        return;
+    }
     if (kind == "pat") {
         if (!mnm::project::patternInUse(m_edit.state, pos)) return;
         pushUndo();
@@ -482,6 +680,18 @@ void LibraryComponent::dropOnSlot(const juce::String& kind, const juce::String& 
     if (source.startsWith("lib:")) { placeLibraryItem(kind, source.substring(4), pos); return; }
     const int from = source.fromFirstOccurrenceOf(":", false, false).getIntValue();
     if (from == pos) return;
+    if (m_edit.md) {
+        auto& d = m_edit.mdState;
+        const bool targetUsed = kind == "pat" ? mnm::mdproject::patternInUse(d, pos) : mnm::mdproject::kitInUse(d, pos);
+        pushUndo();
+        const juce::String to = kind == "pat" ? juce::String(md::patternSlotName(pos)) : pad2(pos);
+        if (kind == "pat") { if (copy) mnm::mdproject::copyPattern(d, from, pos); else mnm::mdproject::swapPatterns(d, from, pos); m_edit.changedPat.insert(pos); if (!copy) m_edit.changedPat.insert(from); m_selPat = pos; }
+        else { if (copy) mnm::mdproject::copyKit(d, from, pos); else mnm::mdproject::swapKits(d, from, pos); m_edit.changedKit.insert(pos); if (!copy) m_edit.changedKit.insert(from); m_nav.selKit = pos; }
+        noteChange(copy ? mdSlotName(kind, from) + " copied to " + to + (targetUsed ? " (replaced what was there)" : "")
+                        : targetUsed ? mdSlotName(kind, from) + " and " + to + " swapped" + (kind == "kit" ? " - the patterns using them follow" : "")
+                                     : mdSlotName(kind, from) + " moved to " + to + (kind == "kit" ? " - the patterns using it follow" : ""));
+        return;
+    }
     auto& d = m_edit.state;
     const bool targetUsed = kind == "pat" ? mnm::project::patternInUse(d, pos) : mnm::project::kitInUse(d, pos);
     pushUndo();
@@ -496,6 +706,36 @@ void LibraryComponent::dropOnSlot(const juce::String& kind, const juce::String& 
 void LibraryComponent::placeLibraryItem(const juce::String& kind, const juce::String& id, int pos)
 {
     if (!m_edit.active) return;
+    if (m_edit.md) {
+        auto& d = m_edit.mdState;
+        if (kind == "pat") {
+            const auto* item = m_mdCatalog.pattern(id.toStdString());
+            if (!item) return;
+            const bool had = mnm::mdproject::patternInUse(d, pos);
+            pushUndo();
+            juce::String kitNote;
+            int kitSlot = -1;
+            if (const auto* kitItem = m_mdCatalog.kit(item->kitId)) {   // its kit: the slot that already holds it, else the first free one
+                for (int i = 0; i < md::kKitSlots && kitSlot < 0; ++i) if (mnm::mdproject::kitInUse(d, i) && MdCatalog::kitHash(*d.kitAt(i)) == kitItem->id) kitSlot = i;
+                if (kitSlot >= 0) kitNote = " (kit " + juce::String(kitItem->name) + ", slot " + pad2(kitSlot) + ")";
+                else if ((kitSlot = mnm::mdproject::firstFreeKitSlot(d)) >= 0) { mnm::mdproject::putKit(d, kitSlot, kitItem->kit); m_edit.changedKit.insert(kitSlot); kitNote = " - its kit " + juce::String(kitItem->name) + " placed in kit slot " + pad2(kitSlot); }
+                else kitNote = " - no free kit slot for its kit " + juce::String(kitItem->name);
+            }
+            mnm::mdproject::putPattern(d, pos, item->pattern, kitSlot);
+            m_edit.changedPat.insert(pos); m_selPat = pos;
+            noteChange(mdSlotName(kind, pos) + (had ? " replaced by " : " filled with ") + juce::String(item->name) + kitNote);
+        } else {
+            const auto* item = m_mdCatalog.kit(id.toStdString());
+            if (!item) return;
+            const bool had = mnm::mdproject::kitInUse(d, pos);
+            const juce::String was = had ? juce::String(d.kitAt(pos)->name) : juce::String();
+            pushUndo();
+            mnm::mdproject::putKit(d, pos, item->kit);
+            m_edit.changedKit.insert(pos); m_nav.selKit = pos;
+            noteChange(mdSlotName(kind, pos) + (had ? " replaced by " + juce::String(item->name) + ", was " + was : " filled with " + juce::String(item->name)));
+        }
+        return;
+    }
     auto& d = m_edit.state;
     if (kind == "pat") {
         const auto* item = m_catalog.pattern(id.toStdString());
@@ -538,6 +778,15 @@ std::vector<Card> LibraryComponent::trayCards(const juce::String& kind) const
         for (const auto& s : sources) if (juce::String(s.importId) == m_edit.projectId) return 0;
         return saved ? 2 : 1;
     };
+    if (m_edit.md) {
+        auto mdGroup = [this](const std::vector<mnm::mdcatalog::Source>& sources, bool saved) {
+            for (const auto& s : sources) if (juce::String(s.importId) == m_edit.projectId) return 0;
+            return saved ? 2 : 1;
+        };
+        if (kind == "pat") for (const auto& p : m_mdCatalog.patterns) { auto c = mdPatternCard(p); c.group = mdGroup(p.sources, false); v.push_back(c); }
+        else for (const auto& k : m_mdCatalog.kits) { auto c = mdKitCard(k); c.group = mdGroup(k.sources, k.saved); v.push_back(c); }
+        return v;
+    }
     if (kind == "pat") for (const auto& p : m_catalog.patterns) { auto c = patternCard(p); c.group = groupOf(p.sources, false); v.push_back(c); }
     else for (const auto& k : m_catalog.kits) { auto c = kitCard(k); c.group = groupOf(k.sources, k.saved); v.push_back(c); }
     return v;
@@ -604,6 +853,61 @@ std::vector<LinkList::Row> LibraryComponent::sourceLinks(const std::vector<mnm::
     return rows;
 }
 
+Card LibraryComponent::mdPatternCard(const mnm::mdcatalog::PatternItem& p) const
+{
+    Card c;
+    const auto* k = m_mdCatalog.kit(p.kitId);
+    c.label = md::patternSlotName(p.pattern.position); c.name = k ? juce::String(k->name) : juce::String("-");
+    c.metaLeft = juce::String(mdUsedTracks(p.pattern)) + " tr"; c.metaRight = juce::String(int(p.pattern.length)) + " st";
+    c.tag = tag("mdpattern", juce::String(p.id)); c.playKey = "mdpattern:" + juce::String(p.id);
+    return c;
+}
+
+Card LibraryComponent::mdKitCard(const mnm::mdcatalog::KitItem& k, const juce::String& note) const
+{
+    Card c;
+    int tracks = 0; for (int t = 0; t < md::kTracks; ++t) tracks += k.kit.model(t) ? 1 : 0;
+    c.label = k.saved && (k.sources.empty() || k.sources.front().saved()) ? juce::String("SAVED") : pad2(k.sources.empty() ? k.kit.position : k.sources.front().slot);
+    c.name = juce::String(k.name); c.metaLeft = note.isNotEmpty() ? note : plural(tracks, "track"); c.metaRight = k.patternIds.empty() ? juce::String() : juce::String(k.patternIds.size()) + "P";
+    c.tag = tag("mdkit", juce::String(k.id)); c.playKey = "mdkit:" + juce::String(k.id);
+    return c;
+}
+
+Card LibraryComponent::mdSoundCard(const mnm::mdcatalog::SoundItem& s, const juce::String& note) const
+{
+    Card c;
+    c.label = mdMachineName(s.sound.machine()); c.name = juce::String(s.name); c.metaLeft = note;
+    c.tag = tag("mdsound", juce::String(s.id)); c.playKey = "mdsound:" + juce::String(s.id);
+    return c;
+}
+
+std::vector<LinkList::Row> LibraryComponent::mdSourceLinks(const std::vector<mnm::mdcatalog::Source>& sources, bool kits) const
+{
+    std::vector<LinkList::Row> rows;
+    for (const auto& s : sources) {
+        if (s.saved()) { rows.push_back({juce::String(s.importName), {}, {}}); continue; }
+        rows.push_back({"Project " + juce::String(s.importName), (kits ? "kit " + pad2(s.slot) : "pattern " + juce::String(md::patternSlotName(s.slot))) + (s.track >= 0 ? "  T" + juce::String(s.track + 1) : juce::String()),
+                        tag("project", juce::String(s.importId))});
+    }
+    return rows;
+}
+
+juce::String LibraryComponent::mdSourceText(const std::vector<mnm::mdcatalog::Source>& sources) const
+{
+    if (sources.empty()) return "-";
+    const auto& s = sources.front();
+    juce::String t = s.saved() ? juce::String(s.importName) : "Project " + juce::String(s.importName);
+    if (sources.size() > 1) t += " +" + juce::String(sources.size() - 1);
+    return t;
+}
+
+bool LibraryComponent::passesMdSource(const std::vector<mnm::mdcatalog::Source>& sources) const
+{
+    if (m_nav.source == "all") return true;
+    for (const auto& s : sources) if (m_nav.source == "saved" ? s.saved() : "project:" + juce::String(s.importId) == m_nav.source) return true;
+    return false;
+}
+
 void LibraryComponent::refreshBrowser()
 {
     const auto& nav = m_nav.nav;
@@ -621,10 +925,20 @@ void LibraryComponent::refreshBrowser()
         }
         sel.insert("group:" + m_nav.group);
     }
+    if (nav == "md-sounds") {
+        items.push_back({K::Header, {}, "MACHINE"});
+        for (const char* g : kMdGroups) {
+            int n = 0;
+            for (const auto& s : m_mdCatalog.sounds) if (juce::String(g) == "ALL" || mdGroupOf(s.sound.machine()) == g) ++n;
+            items.push_back({K::Entry, "group:" + juce::String(g), g, {}, juce::String(n)});
+        }
+        sel.insert("group:" + m_nav.group);
+    }
     items.push_back({K::Header, {}, "SOURCE"});
     items.push_back({K::Entry, "source:all", "All sources"});
-    for (const auto& p : m_projects) items.push_back({K::Entry, "source:project:" + p.id, (p.pack ? "Pack " : "Project ") + p.name});
-    if (nav != "patterns") items.push_back({K::Entry, "source:saved", "Saved from plugins"});
+    const bool mdNav = isMdNav(nav);
+    for (const auto& p : m_projects) if (p.isMd() == mdNav || nav == "favourites" || nav == "saved" || nav.startsWith("tag:")) items.push_back({K::Entry, "source:project:" + p.id, (p.pack ? "Pack " : "Project ") + p.name});
+    if (nav != "patterns" && nav != "md-patterns") items.push_back({K::Entry, "source:saved", "Saved from plugins"});
     sel.insert("source:" + m_nav.source);
     items.push_back({K::Header, {}, "SHOW"});
     items.push_back({K::Entry, "fav", "Favourites only"});
@@ -652,6 +966,18 @@ void LibraryComponent::rebuildList()
         return false;
     };
     const bool collection = nav == "favourites" || nav == "saved" || wantTag.isNotEmpty();
+    if (isMdNav(nav)) {   // the Machinedrum items: their own rows
+        std::vector<LcdList::Row> mdRows;
+        appendMdRows(mdRows, false, {});
+        int keep = -1;
+        for (int i = 0; i < int(mdRows.size()); ++i) if (mdRows[size_t(i)].selectable && tagKind(mdRows[size_t(i)].tag) == m_nav.itemKind && tagId(mdRows[size_t(i)].tag) == m_nav.itemId) { keep = i; break; }
+        if (keep < 0) for (int i = 0; i < int(mdRows.size()); ++i) if (mdRows[size_t(i)].selectable) { keep = i; m_nav.itemKind = tagKind(mdRows[size_t(i)].tag); m_nav.itemId = tagId(mdRows[size_t(i)].tag); break; }
+        if (keep < 0) { m_nav.itemKind.clear(); m_nav.itemId.clear(); }
+        m_list.setRows(std::move(mdRows), keep);
+        if (keep >= 0) m_list.scrollTo(keep);
+        showItem();
+        return;
+    }
     std::vector<LcdList::Row> rows;
     auto heading = [&](const juce::String& text, int n) { LcdList::Row h; h.text = text; h.right = juce::String(n); h.selectable = false; h.tag = tag("header", text); rows.push_back(h); };
     if (nav == "presets" || collection) {
@@ -698,6 +1024,7 @@ void LibraryComponent::rebuildList()
             rows.push_back(r);
         }
     }
+    if (collection) appendMdRows(rows, true, wantTag);   // favourites, saved and tags hold Machinedrum items too
     int keep = -1;
     for (int i = 0; i < int(rows.size()); ++i) if (rows[size_t(i)].selectable && tagKind(rows[size_t(i)].tag) == m_nav.itemKind && tagId(rows[size_t(i)].tag) == m_nav.itemId) { keep = i; break; }
     if (keep < 0) for (int i = 0; i < int(rows.size()); ++i) if (rows[size_t(i)].selectable) { keep = i; m_nav.itemKind = tagKind(rows[size_t(i)].tag); m_nav.itemId = tagId(rows[size_t(i)].tag); break; }
@@ -705,6 +1032,106 @@ void LibraryComponent::rebuildList()
     m_list.setRows(std::move(rows), keep);
     if (keep >= 0) m_list.scrollTo(keep);
     showItem();
+}
+
+void LibraryComponent::appendMdRows(std::vector<LcdList::Row>& rows, bool collection, const juce::String& wantTag)
+{
+    const auto& nav = m_nav.nav;
+    const juce::String q = m_search.getText().trim();
+    auto pass = [&](const std::string& id, const std::vector<mnm::mdcatalog::Source>& sources, bool saved, std::initializer_list<juce::String> fields) {
+        const juce::String jid(id);
+        if (nav == "favourites" && !m_user.isFavourite(jid)) return false;
+        if (nav == "saved" && !saved) return false;
+        if (wantTag.isNotEmpty()) { auto it = m_user.tags.find(jid); if (it == m_user.tags.end() || !it->second.contains(wantTag)) return false; }
+        if (m_nav.favOnly && !m_user.isFavourite(jid)) return false;
+        if (!passesMdSource(sources)) return false;
+        if (q.isEmpty()) return true;
+        for (const auto& f : fields) if (f.containsIgnoreCase(q)) return true;
+        return false;
+    };
+    auto heading = [&](const juce::String& text, int n) { LcdList::Row h; h.text = text; h.right = juce::String(n); h.selectable = false; h.tag = tag("header", text); rows.push_back(h); };
+    if (nav == "md-sounds" || collection) {
+        std::vector<const mnm::mdcatalog::SoundItem*> v;
+        for (const auto& s : m_mdCatalog.sounds) {
+            if (nav == "md-sounds" && m_nav.group != "ALL" && mdGroupOf(s.sound.machine()) != m_nav.group) continue;
+            if (pass(s.id, s.sources, s.saved, {juce::String(s.name), mdMachineName(s.sound.machine())})) v.push_back(&s);
+        }
+        std::sort(v.begin(), v.end(), [](const auto* a, const auto* b) { return a->sound.machine() != b->sound.machine() ? a->sound.machine() < b->sound.machine() : a->saved != b->saved ? a->saved : a->name < b->name; });
+        if (collection && !v.empty()) heading("MACHINEDRUM SOUNDS", int(v.size()));
+        int last = -1;
+        for (size_t i = 0; i < v.size(); ++i) {
+            const auto* s = v[i];
+            if (!collection && s->sound.machine() != last) { last = s->sound.machine(); int n = 0; for (size_t j = i; j < v.size() && v[j]->sound.machine() == last; ++j) ++n; heading(mdMachineName(last), n); }
+            LcdList::Row r;
+            r.text = juce::String(s->name) + (m_user.isFavourite(juce::String(s->id)) ? "  *" : ""); r.right = s->saved ? juce::String("SAVED") : mdSourceText(s->sources);
+            r.indent = 10; r.playable = m_player != nullptr; r.tag = tag("mdsound", juce::String(s->id));
+            rows.push_back(r);
+        }
+    }
+    if (nav == "md-kits" || collection) {
+        std::vector<const mnm::mdcatalog::KitItem*> v;
+        for (const auto& k : m_mdCatalog.kits) { juce::String machines; for (int t = 0; t < md::kTracks; ++t) machines += mdMachineName(k.kit.model(t)) + " "; if (pass(k.id, k.sources, k.saved, {juce::String(k.name), machines})) v.push_back(&k); }
+        std::sort(v.begin(), v.end(), [](const auto* a, const auto* b) { return a->name != b->name ? a->name < b->name : a->id < b->id; });
+        if (collection && !v.empty()) heading("MACHINEDRUM KITS", int(v.size()));
+        for (const auto* k : v) {
+            LcdList::Row r;
+            r.text = juce::String(k->name) + (m_user.isFavourite(juce::String(k->id)) ? "  *" : ""); r.right = juce::String(k->patternIds.size()) + "P - " + (k->saved ? juce::String("SAVED") : mdSourceText(k->sources));
+            r.indent = 10; r.playable = m_player != nullptr; r.tag = tag("mdkit", juce::String(k->id));
+            rows.push_back(r);
+        }
+    }
+    if (nav == "md-patterns" || (collection && nav != "saved")) {
+        std::vector<const mnm::mdcatalog::PatternItem*> v;
+        for (const auto& p : m_mdCatalog.patterns) { const auto* k = m_mdCatalog.kit(p.kitId); if (pass(p.id, p.sources, false, {juce::String(p.name), k ? juce::String(k->name) : juce::String()})) v.push_back(&p); }
+        std::sort(v.begin(), v.end(), [](const auto* a, const auto* b) { const auto& sa = a->sources.front(); const auto& sb = b->sources.front(); return sa.importName != sb.importName ? sa.importName < sb.importName : sa.slot != sb.slot ? sa.slot < sb.slot : a->id < b->id; });
+        if (collection && !v.empty()) heading("MACHINEDRUM PATTERNS", int(v.size()));
+        for (const auto* p : v) {
+            const auto* k = m_mdCatalog.kit(p->kitId);
+            LcdList::Row r;
+            r.text = juce::String(p->name) + (m_user.isFavourite(juce::String(p->id)) ? "  *" : ""); r.right = k ? juce::String(k->name) : juce::String("-");
+            r.indent = 10; r.playable = m_player != nullptr; r.tag = tag("mdpattern", juce::String(p->id));
+            rows.push_back(r);
+        }
+    }
+}
+
+void LibraryComponent::showMdItem(int w, juce::Component*& c, int& pref)
+{
+    const auto id = m_nav.itemId.toStdString();
+    if (m_nav.itemKind == "mdsound") {
+        if (const auto* s = m_mdCatalog.sound(id)) {
+            std::vector<Card> versions, kits, patterns;
+            if (const auto* parent = s->parentId.empty() ? nullptr : m_mdCatalog.sound(s->parentId)) { versions.push_back(mdSoundCard(*s, "this one - " + juce::String(s->savedAt))); versions.push_back(mdSoundCard(*parent, "made from")); }
+            for (const auto& child : m_mdCatalog.sounds) if (child.parentId == s->id) { if (versions.empty()) versions.push_back(mdSoundCard(*s, "this one")); versions.push_back(mdSoundCard(child, "saved " + juce::String(child.savedAt))); }
+            for (const auto& kid : s->kitIds) if (const auto* k = m_mdCatalog.kit(kid)) { int tr = 0; for (int t = 0; t < md::kTracks; ++t) if (k->soundIds[t] == s->id) { tr = t; break; } kits.push_back(mdKitCard(*k, "track " + juce::String(tr + 1))); }
+            for (const auto& pid : s->patternIds) if (const auto* pat = m_mdCatalog.pattern(pid)) patterns.push_back(mdPatternCard(*pat));
+            auto it = m_user.tags.find(m_nav.itemId);
+            m_mdSoundView.setSize(w, 100);
+            m_mdSoundView.set(*s, mdSourceText(s->sources), it == m_user.tags.end() ? juce::StringArray() : it->second, m_user.isFavourite(m_nav.itemId), std::move(versions), std::move(kits), std::move(patterns));
+            c = &m_mdSoundView; pref = m_mdSoundView.preferredHeight();
+        }
+    } else if (m_nav.itemKind == "mdkit") {
+        if (const auto* k = m_mdCatalog.kit(id)) {
+            std::array<juce::String, 16> names;
+            for (int t = 0; t < md::kTracks; ++t) if (const auto* s = m_mdCatalog.sound(k->soundIds[t])) names[size_t(t)] = juce::String(s->name);
+            std::vector<Card> cards;
+            for (const auto& pid : k->patternIds) if (const auto* pat = m_mdCatalog.pattern(pid)) cards.push_back(mdPatternCard(*pat));
+            m_mdKitView.setSize(w, 100);
+            auto shown = k->kit; shown.name = k->name;
+            m_mdKitView.setTitle({});
+            m_mdKitView.set(shown, names, std::move(cards), mdSourceLinks(k->sources, true));
+            c = &m_mdKitView; pref = m_mdKitView.preferredHeight();
+        }
+    } else if (m_nav.itemKind == "mdpattern") {
+        if (const auto* p = m_mdCatalog.pattern(id)) {
+            const auto* k = m_mdCatalog.kit(p->kitId);
+            std::array<juce::String, 16> names;
+            if (k) for (int t = 0; t < md::kTracks; ++t) if (const auto* s = m_mdCatalog.sound(k->soundIds[t])) names[size_t(t)] = juce::String(s->name);
+            m_mdPatternView.setSize(w, 100);
+            m_mdPatternView.set(*p, k ? &k->kit : nullptr, names, k ? std::vector<Card>{mdKitCard(*k)} : std::vector<Card>{}, mdSourceLinks(p->sources, false));
+            c = &m_mdPatternView; pref = m_mdPatternView.preferredHeight();
+        }
+    }
 }
 
 void LibraryComponent::showItem()
@@ -749,6 +1176,8 @@ void LibraryComponent::showItem()
             m_patternView.set(p->pattern, k ? &k->kit : nullptr, info, k ? std::vector<Card>{kitCard(*k)} : std::vector<Card>{}, sourceLinks(p->sources, false));
             c = &m_patternView; pref = m_patternView.preferredHeight();
         }
+    } else if (m_nav.itemKind.startsWith("md")) {
+        showMdItem(w, c, pref);
     }
     if (m_detail.getViewedComponent() != c) { m_detail.setViewedComponent(c, false); m_detail.setViewPosition(0, 0); }
     if (c) c->setSize(w, juce::jmax(pref, m_detail.getHeight()));
@@ -798,24 +1227,40 @@ void LibraryComponent::nextImport()
     const juce::File f(m_importFile);
     juce::MemoryBlock mb;
     if (!f.loadFileAsData(mb)) { m_importFile.clear(); info("IMPORT SYSEX", "Could not read " + f.getFileName()); return; }
-    const auto d = parseDump(static_cast<const uint8_t*>(mb.getData()), mb.getSize(), f.getFileNameWithoutExtension().toStdString());
-    if (d.kits.empty() && d.patterns.empty()) { m_importFile.clear(); info("IMPORT SYSEX", f.getFileName() + " does not look like a Monomachine sysex dump."); return; }
-    int named = 0, used = 0; for (const auto& k : d.kits) named += k.isEmptySlot() ? 0 : 1; for (const auto& p : d.patterns) used += p.empty() ? 0 : 1;
-    const auto similar = m_store->findSimilar(d);
+    const bool isMd = md::isMachinedrumSysex(static_cast<const uint8_t*>(mb.getData()), mb.getSize());
+    const auto device = isMd ? juce::String("Machinedrum") : juce::String("Monomachine");
+    int named = 0, used = 0, songs = 0, globals = 0;
+    // what resembles it: the same kind of project, compared slot by slot
+    struct Sim { juce::String projectId, projectName; int version = 0; bool identical = false; int kitsSame = 0, kitsCompared = 0, patternsSame = 0, patternsCompared = 0; std::vector<int> kits, patterns; };
+    std::optional<Sim> similar;
+    if (isMd) {
+        const auto d = md::parseDump(static_cast<const uint8_t*>(mb.getData()), mb.getSize(), f.getFileNameWithoutExtension().toStdString());
+        if (d.kits.empty() && d.patterns.empty()) { m_importFile.clear(); info("IMPORT SYSEX", f.getFileName() + " does not look like a Machinedrum sysex dump."); return; }
+        for (const auto& k : d.kits) named += k.isEmptySlot() ? 0 : 1; for (const auto& p : d.patterns) used += p.empty() ? 0 : 1;
+        songs = int(d.songs.size()); globals = d.numGlobals;
+        if (const auto sm = m_store->findSimilarMd(d)) similar = Sim{sm->projectId, sm->projectName, sm->version, sm->diff.identical(), sm->diff.kitsSame, sm->diff.kitsCompared, sm->diff.patternsSame, sm->diff.patternsCompared, sm->diff.kits, sm->diff.patterns};
+    } else {
+        const auto d = parseDump(static_cast<const uint8_t*>(mb.getData()), mb.getSize(), f.getFileNameWithoutExtension().toStdString());
+        if (d.kits.empty() && d.patterns.empty()) { m_importFile.clear(); info("IMPORT SYSEX", f.getFileName() + " does not look like a Monomachine or Machinedrum sysex dump."); return; }
+        for (const auto& k : d.kits) named += k.isEmptySlot() ? 0 : 1; for (const auto& p : d.patterns) used += p.empty() ? 0 : 1;
+        songs = d.numSongs; globals = d.numGlobals;
+        if (const auto sm = m_store->findSimilar(d)) similar = Sim{sm->projectId, sm->projectName, sm->version, sm->diff.identical(), sm->diff.kitsSame, sm->diff.kitsCompared, sm->diff.patternsSame, sm->diff.patternsCompared, sm->diff.kits, sm->diff.patterns};
+    }
     m_importSimilar = similar ? similar->projectId : juce::String();
     DialogSpec s;
-    s.title = "IMPORT SYSEX"; s.sub = f.getFileName() + " - " + plural(named, "named kit") + ", " + plural(used, "used pattern") + ", " + plural(d.numSongs, "song") + ", " + plural(d.numGlobals, "global");
+    s.title = "IMPORT SYSEX"; s.sub = f.getFileName() + " - " + device + " - " + plural(named, "named kit") + ", " + plural(used, "used pattern") + ", " + plural(songs, "song") + ", " + plural(globals, "global");
     using R = DialogSpec::Row;
+    auto kitLabel = [isMd](int k) { return isMd ? pad2(k) : pad3(k); };
     if (similar) {
-        const auto& df = similar->diff;
+        struct { bool identical() const { return id; } bool id; int kitsSame, kitsCompared, patternsSame, patternsCompared; std::vector<int> kits, patterns; } df{similar->identical, similar->kitsSame, similar->kitsCompared, similar->patternsSame, similar->patternsCompared, similar->kits, similar->patterns};
         s.rows.push_back({R::Bold, {}, df.identical() ? "This is identical to project " + similar->projectName + " (v" + juce::String(similar->version) + ")."
                                                       : "This looks like a newer state of project " + similar->projectName + ". " + juce::String(df.kitsSame) + " of " + juce::String(df.kitsCompared) + " used kit slots and " + juce::String(df.patternsSame) + " of " + juce::String(df.patternsCompared) + " used pattern slots are identical to its v" + juce::String(similar->version) + "."});
         juce::StringArray ks, ps;
-        for (int k : df.kits) ks.add(pad3(k)); for (int p : df.patterns) ps.add(juce::String(patternSlotName(p)));
+        for (int k : df.kits) ks.add(kitLabel(k)); for (int p : df.patterns) ps.add(juce::String(patternSlotName(p)));
         if (!df.identical()) s.rows.push_back({R::Dim, {}, "Different on the unit: " + (ks.isEmpty() ? juce::String() : "kits " + ks.joinIntoString(", ") + "  ") + (ps.isEmpty() ? juce::String() : "patterns " + ps.joinIntoString(", "))});
         s.rows.push_back({R::Option, "version", "Add as a new version of " + similar->projectName + " (recommended)", "Its history keeps every earlier version. The dump becomes the project's current state."});
     } else s.rows.push_back({R::Text, {}, "No project in the library resembles this dump."});
-    s.rows.push_back({R::Option, "project", "Create a new project", "A separate Monomachine memory with its own history."});
+    s.rows.push_back({R::Option, "project", "Create a new project", "A separate " + device + " memory with its own history."});
     s.rows.push_back({R::Option, "pack", "Only add its presets, kits and patterns to the library", "A sound pack: a source of items, not a unit's memory."});
     s.rows.push_back({R::Dim, {}, "The file is always archived byte for byte, whatever you choose."});
     s.selected = similar ? "version" : "project";
@@ -864,7 +1309,9 @@ void LibraryComponent::showSaveDialog()
     m_form.onButton = [this](const juce::String& b) {
         if (b == "cancel") { closeDialog(); return; }
         if (b == "save" && !m_edit.changes.isEmpty()) {
-            const auto r = m_store->addVersion(m_edit.projectId, m_edit.state, "saved", "Edited in the Library: " + plural(m_edit.changes.size(), "change"), m_edit.changes, m_form.field("note").trim(), m_edit.baseVersion);
+            const auto title = "Edited in the Library: " + plural(m_edit.changes.size(), "change");
+            const auto r = m_edit.md ? m_store->addMdVersion(m_edit.projectId, m_edit.mdState, "saved", title, m_edit.changes, m_form.field("note").trim(), m_edit.baseVersion)
+                                     : m_store->addVersion(m_edit.projectId, m_edit.state, "saved", title, m_edit.changes, m_form.field("note").trim(), m_edit.baseVersion);
             if (r.failed()) { closeDialog(); info("SAVE PROJECT", r.getErrorMessage()); return; }
         }
         m_edit = {};
@@ -881,6 +1328,19 @@ void LibraryComponent::showExportDialog(int version)
     if (!p || !m_store) return;
     m_export = {};
     m_export.projectId = p->id; m_export.version = version;
+    if (p->isMd()) {   // a Machinedrum project: the same steps over its MD state
+        m_export.md = true;
+        if (!m_store->loadMdVersion(p->id, version, m_export.mdState)) return;
+        for (const auto& v : p->versions) if (v.n <= version && (v.kind == "exported" || v.kind == "imported")) { m_export.base = v.n; break; }
+        md::Dump base;
+        if (m_export.base > 0 && m_store->loadMdVersion(p->id, m_export.base, base)) m_export.mdDiff = mnm::mdproject::diffDumps(base, m_export.mdState);
+        m_export.what = m_export.mdDiff.identical() ? "all" : "changed";
+        for (int k : m_export.mdDiff.kits) m_export.kits.insert(juce::String(k));
+        for (int pp : m_export.mdDiff.patterns) m_export.patterns.insert(juce::String(pp));
+        m_dialog = "export";
+        refreshExportDialog();
+        return;
+    }
     if (!m_store->loadVersion(p->id, version, m_export.state)) return;
     // what changed since the unit last matched the library: the newest export or import at or before this version
     for (const auto& v : p->versions) if (v.n <= version && (v.kind == "exported" || v.kind == "imported")) { m_export.base = v.n; break; }
@@ -899,26 +1359,40 @@ void LibraryComponent::refreshExportDialog()
     if (!p) return;
     using R = DialogSpec::Row;
     auto& e = m_export;
+    // the device's lists: diff, used kit and pattern slots with their names, slot labels
+    const bool isMd = e.md;
+    const std::vector<int>& diffKits = isMd ? e.mdDiff.kits : e.diff.kits;
+    const std::vector<int>& diffPats = isMd ? e.mdDiff.patterns : e.diff.patterns;
+    const bool diffIdentical = isMd ? e.mdDiff.identical() : e.diff.identical();
+    auto kitLabel = [isMd](int k) { return isMd ? pad2(k) : pad3(k); };
+    std::vector<std::pair<int, juce::String>> usedKits, usedPats;
+    if (isMd) {
+        for (const auto& k : e.mdState.kits) if (!k.isEmptySlot()) usedKits.push_back({k.position, juce::String(k.name)});
+        for (const auto& pat : e.mdState.patterns) if (!pat.empty()) { const auto* k = e.mdState.kitAt(pat.kit); usedPats.push_back({pat.position, k ? juce::String(k->name) : juce::String()}); }
+    } else {
+        for (const auto& k : e.state.kits) if (!k.isEmptySlot()) usedKits.push_back({k.position, juce::String(k.name)});
+        for (const auto& pat : e.state.patterns) if (!pat.empty()) { const auto* k = e.state.kitAt(pat.kit); usedPats.push_back({pat.position, k ? juce::String(k->name) : juce::String()}); }
+    }
     DialogSpec s;
     s.title = "EXPORT SYSEX"; s.sub = "Project " + p->name + " - v" + juce::String(e.version);
     s.rows.push_back({R::Steps, {}, "1 WHAT|2 CHECK|3 SEND", juce::String(e.step)});
     std::map<juce::String, std::set<juce::String>> ticks;
     auto selection = [&](std::vector<int>& kits, std::vector<int>& pats) {
-        if (e.what == "changed") { kits = e.diff.kits; pats = e.diff.patterns; }
+        if (e.what == "changed") { kits = diffKits; pats = diffPats; }
         else if (e.what == "pick") { for (const auto& k : e.kits) kits.push_back(k.getIntValue()); for (const auto& pp : e.patterns) pats.push_back(pp.getIntValue()); }
         std::sort(kits.begin(), kits.end()); std::sort(pats.begin(), pats.end());
     };
     if (e.step == 0) {
         s.rows.push_back({R::Option, "all", "The whole project", "Every kit, pattern, song and global: the unit ends up exactly like this version. Messages that were never edited go out byte for byte as received."});
-        R ch{R::Option, "changed", "Only what changed since v" + juce::String(e.base) + " (" + plural(int(e.diff.kits.size()), "kit") + ", " + plural(int(e.diff.patterns.size()), "pattern") + ")", "Smaller and faster. Overwrites only those slots on the unit."};
-        ch.disabled = e.diff.identical();
+        R ch{R::Option, "changed", "Only what changed since v" + juce::String(e.base) + " (" + plural(int(diffKits.size()), "kit") + ", " + plural(int(diffPats.size()), "pattern") + ")", "Smaller and faster. Overwrites only those slots on the unit."};
+        ch.disabled = diffIdentical;
         s.rows.push_back(ch);
         s.rows.push_back({R::Option, "pick", "Selected slots...", "Choose the kits and patterns to send."});
         if (e.what == "pick") {
             R kt; kt.kind = R::Ticks; kt.id = "kits"; kt.a = "KITS";
-            for (const auto& k : e.state.kits) if (!k.isEmptySlot()) { kt.items.add(pad3(k.position) + " " + juce::String(k.name)); kt.itemIds.add(juce::String(k.position)); }
+            for (const auto& [pos, name] : usedKits) { kt.items.add(kitLabel(pos) + " " + name); kt.itemIds.add(juce::String(pos)); }
             R pt; pt.kind = R::Ticks; pt.id = "patterns"; pt.a = "PATTERNS";
-            for (const auto& pat : e.state.patterns) if (!pat.empty()) { const auto* k = e.state.kitAt(pat.kit); pt.items.add(juce::String(patternSlotName(pat.position)) + " " + (k ? juce::String(k->name) : juce::String())); pt.itemIds.add(juce::String(pat.position)); }
+            for (const auto& [pos, name] : usedPats) { pt.items.add(juce::String(patternSlotName(pos)) + " " + name); pt.itemIds.add(juce::String(pos)); }
             s.rows.push_back(kt); s.rows.push_back(pt);
             ticks["kits"] = e.kits; ticks["patterns"] = e.patterns;
         }
@@ -927,9 +1401,18 @@ void LibraryComponent::refreshExportDialog()
     } else if (e.step == 1) {
         std::vector<int> kits, pats;
         selection(kits, pats);
-        if (e.what == "all") { for (const auto& k : e.state.kits) if (!k.isEmptySlot()) kits.push_back(k.position); for (const auto& pat : e.state.patterns) if (!pat.empty()) pats.push_back(pat.position); }
-        const auto chk = mnm::project::checkExport(e.state, kits, pats, e.what == "all" ? std::vector<int>{} : e.diff.kits);
-        auto list = [](const std::vector<int>& v, bool pattern) { juce::StringArray a; for (int x : v) a.add(pattern ? juce::String(patternSlotName(x)) : pad3(x)); return a.joinIntoString(", "); };
+        if (e.what == "all") { for (const auto& k : usedKits) kits.push_back(k.first); for (const auto& pp : usedPats) pats.push_back(pp.first); }
+        mnm::project::ExportCheck chk;
+        if (isMd) {   // the same two checks over the Machinedrum state (no MKII-only machines there)
+            const std::vector<int> changedKits = e.what == "all" ? std::vector<int>{} : diffKits;
+            for (int pp : pats) {
+                const auto* pat = e.mdState.patternAt(pp);
+                if (!pat) continue;
+                if (!mnm::mdproject::kitInUse(e.mdState, pat->kit)) chk.patternsWithEmptyKit.push_back(pp);
+                else if (std::find(changedKits.begin(), changedKits.end(), int(pat->kit)) != changedKits.end() && std::find(kits.begin(), kits.end(), int(pat->kit)) == kits.end()) chk.patternsKitNotIncluded.push_back(pp);
+            }
+        } else chk = mnm::project::checkExport(e.state, kits, pats, e.what == "all" ? std::vector<int>{} : e.diff.kits);
+        auto list = [kitLabel](const std::vector<int>& v, bool pattern) { juce::StringArray a; for (int x : v) a.add(pattern ? juce::String(patternSlotName(x)) : kitLabel(x)); return a.joinIntoString(", "); };
         if (chk.patternsWithEmptyKit.empty()) s.rows.push_back({R::Check, {}, "OK", "Every exported pattern's kit slot holds a kit."});
         else s.rows.push_back({R::Check, {}, "!", "These patterns point to an empty kit slot and will play nothing: " + list(chk.patternsWithEmptyKit, true)});
         if (chk.patternsKitNotIncluded.empty()) s.rows.push_back({R::Check, {}, "OK", "Every exported pattern's kit is part of the export, or unchanged since v" + juce::String(e.base) + "."});
@@ -941,7 +1424,7 @@ void LibraryComponent::refreshExportDialog()
         s.buttons = {{"cancel", "CANCEL"}, {"back", "BACK"}, {"next", "NEXT"}};
     } else {
         s.rows.push_back({R::Option, "file", "Save a .syx file", "Send it to the unit with C6 or Elektron Transfer."});
-        R midi{R::Option, "midi", "Send to the Monomachine over MIDI", "A later stage: needs the MIDI transfer work."}; midi.disabled = true;
+        R midi{R::Option, "midi", isMd ? "Send to the Machinedrum over MIDI" : "Send to the Monomachine over MIDI", "A later stage: needs the MIDI transfer work."}; midi.disabled = true;
         s.rows.push_back(midi);
         s.rows.push_back({R::Dim, {}, "The export is recorded as a new version (EXPORTED) with the file kept beside it, so the history always says what is on the unit."});
         s.selected = "file";
@@ -962,7 +1445,7 @@ void LibraryComponent::refreshExportDialog()
             if (dest == juce::File()) return;
             auto& x = m_export;
             std::vector<int> kits, pats;
-            if (x.what == "changed") { kits = x.diff.kits; pats = x.diff.patterns; }
+            if (x.what == "changed") { kits = x.md ? x.mdDiff.kits : x.diff.kits; pats = x.md ? x.mdDiff.patterns : x.diff.patterns; }
             else if (x.what == "pick") { for (const auto& k : x.kits) kits.push_back(k.getIntValue()); for (const auto& pp : x.patterns) pats.push_back(pp.getIntValue()); }
             const auto r = m_store->exportVersion(x.projectId, x.version, dest.withFileExtension("syx"), x.what == "all" ? nullptr : &kits, x.what == "all" ? nullptr : &pats);
             closeDialog();
@@ -975,6 +1458,19 @@ void LibraryComponent::refreshExportDialog()
 
 void LibraryComponent::showCompare(int version)
 {
+    if (isMdProject()) {
+        const auto* p = currentProject();
+        md::Dump old;
+        const auto* cur = currentMdState(p->id);
+        if (!cur || !m_store->loadMdVersion(p->id, version, old)) return;
+        const auto diff = mnm::mdproject::diffDumps(old, *cur);
+        juce::String text = diff.identical() ? "v" + juce::String(version) + " and the current version hold the same kits and patterns."
+                                             : "Between v" + juce::String(version) + " and the current version " + p->current()->label() + ":";
+        for (int k : diff.kits) { const auto* a = old.kitAt(k); const auto* b = cur->kitAt(k); text += "\n- Kit " + pad2(k) + ": " + (a && !a->isEmptySlot() ? juce::String(a->name) : juce::String("empty")) + " -> " + (b && !b->isEmptySlot() ? juce::String(b->name) : juce::String("empty")); }
+        for (int pp : diff.patterns) text += "\n- Pattern " + juce::String(md::patternSlotName(pp)) + (mnm::mdproject::patternInUse(old, pp) ? (mnm::mdproject::patternInUse(*cur, pp) ? " changed" : " was cleared") : " was added");
+        info("COMPARE", text);
+        return;
+    }
     const auto* p = currentProject();
     Dump old;
     const auto* cur = p ? currentState(p->id) : nullptr;
@@ -1099,6 +1595,7 @@ void LibraryComponent::playTag(const juce::String& t, const juce::String& key, c
 
 void LibraryComponent::playCatalog(const juce::String& kind, const juce::String& id, int stem)
 {
+    if (kind.startsWith("md")) { toast("Machinedrum previews are not available yet"); return; }
     if (!m_player || id.isEmpty()) return;
     const auto opt = m_player->options();
     const juce::String t = kind + ":" + id + (stem >= 0 ? ":t" + juce::String(stem) : juce::String());
@@ -1119,6 +1616,7 @@ void LibraryComponent::playCatalog(const juce::String& kind, const juce::String&
 
 void LibraryComponent::playSlot(const juce::String& kind, int pos)
 {
+    if (isMdProject()) { toast("Machinedrum previews are not available yet"); return; }
     const auto* d = shownState();
     if (!m_player || !d) return;
     const auto opt = m_player->options();
@@ -1166,7 +1664,11 @@ void LibraryComponent::refreshPlaying()
     m_kitGrid.setPlayingSlot(t.startsWith("slot:kit:") ? t.substring(9).getIntValue() : -1);
     m_slotKitView.setPlaying(t == "slot:kit:" + juce::String(m_nav.selKit) ? -1 : -2);
     const juce::String cardKey = t.upToFirstOccurrenceOf(":t", false, false);
-    for (auto* grid : {&m_kitView.patterns().grid, &m_presetView.versions().grid, &m_presetView.kits().grid, &m_presetView.patterns().grid, &m_patternView.kitSection().grid, &m_slotKitView.patterns().grid}) grid->setPlayingKey(cardKey);
+    for (auto* grid : {&m_kitView.patterns().grid, &m_presetView.versions().grid, &m_presetView.kits().grid, &m_presetView.patterns().grid, &m_patternView.kitSection().grid, &m_slotKitView.patterns().grid,
+                       &m_mdKitView.patterns().grid, &m_mdSoundView.versions().grid, &m_mdSoundView.kits().grid, &m_mdSoundView.patterns().grid, &m_mdPatternView.kitSection().grid, &m_mdSlotKitView.patterns().grid}) grid->setPlayingKey(cardKey);
+    m_mdSoundView.setPlaying(t == page && m_nav.itemKind == "mdsound");
+    m_mdKitView.setPlaying(m_nav.itemKind == "mdkit" ? stemOf(page) : -2);
+    m_mdPatternView.setPlaying(m_nav.itemKind == "mdpattern" ? stemOf(page) : -2);
     m_tray.setPlayingKey(cardKey);
 }
 
@@ -1180,6 +1682,7 @@ void LibraryComponent::startFileDrag(const juce::File& f, juce::Component* sourc
 
 void LibraryComponent::dragPreset(const juce::String& id, juce::Component* source)
 {
+    if (m_nav.itemKind.startsWith("md") || isMdProject()) { toast("Dragging Machinedrum sounds into Monomodule MD comes with its library update"); return; }
     const auto* p = m_catalog.preset(id.toStdString());
     if (!p) return;
     startFileDrag(mnm::library::writeTrackDragFile(Catalog::kitForPreset(*p), 0, juce::String(p->name) + " " + machineDisplayName(p->model)), source);
@@ -1187,6 +1690,7 @@ void LibraryComponent::dragPreset(const juce::String& id, juce::Component* sourc
 
 void LibraryComponent::dragKit(const juce::String& id, juce::Component* source)
 {
+    if (m_nav.itemKind.startsWith("md") || isMdProject()) { toast("Dragging Machinedrum kits into Monomodule MD comes with its library update"); return; }
     const auto* k = m_catalog.kit(id.toStdString());
     if (!k) return;
     Kit kit = k->kit; kit.name = k->name;
@@ -1195,6 +1699,7 @@ void LibraryComponent::dragKit(const juce::String& id, juce::Component* source)
 
 void LibraryComponent::dragPatternMidi(const juce::String& id, int track, juce::Component* source)
 {
+    if (m_nav.itemKind.startsWith("md")) { toast("Machinedrum pattern MIDI is not available yet"); return; }
     const auto* p = m_catalog.pattern(id.toStdString());
     if (!p || p->sources.empty()) return;
     const auto* d = currentState(juce::String(p->sources.front().importId));
@@ -1208,7 +1713,7 @@ void LibraryComponent::dragPatternMidi(const juce::String& id, int track, juce::
 
 void LibraryComponent::importChooser()
 {
-    m_chooser = std::make_unique<juce::FileChooser>("Import Monomachine sysex dump", juce::File::getSpecialLocation(juce::File::userHomeDirectory), "*.syx;*.mid;*.bin");
+    m_chooser = std::make_unique<juce::FileChooser>("Import a Monomachine or Machinedrum sysex dump", juce::File::getSpecialLocation(juce::File::userHomeDirectory), "*.syx;*.mid;*.bin");
     m_chooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::canSelectMultipleItems,
         [this](const juce::FileChooser& fc) { juce::StringArray paths; for (const auto& f : fc.getResults()) paths.add(f.getFullPathName()); startImport(paths); });
 }
@@ -1302,7 +1807,7 @@ void LibraryComponent::showMenu()
         case 4: if (pj) { for (auto it = pj->versions.rbegin(); it != pj->versions.rend(); ++it) if (it->kind == "imported") { m_store->originalFile(pj->id, it->n).revealToUser(); break; } } break;
         case 5: if (m_store) { m_store->root().createDirectory(); m_store->root().revealToUser(); } break;
         case 6: info("MONOMODULE LIBRARY", juce::String("Monomodule Library ") + mnm::plugin::kPluginVersion + "\n" + mnm::plugin::kPluginTagline
-                    + "\n\nKeeps each Monomachine's memory as a project with a version history, decodes sysex dumps losslessly, and shares its presets, kits and patterns with the Monomodule plugins."
+                    + "\n\nKeeps each Monomachine's or Machinedrum's memory as a project with a version history, decodes sysex dumps losslessly, and shares its presets, kits and patterns with the Monomodule plugins."
                     + "\nAudio previews are rendered on demand with the emulated DSP from the Monomachine OS file."
                     + "\n\n" + mnm::plugin::kCredits + "\n" + mnm::plugin::kDisclaimer
                     + "\n\nContact: @shnolk on Instagram, shnolk@halftone.world"); break;
@@ -1370,6 +1875,8 @@ void LibraryComponent::paint(juce::Graphics& g)
         const int tx = m_projectBar.getX() + 8 + LcdCanvas::textWidth(spec::kFontBold8, title.toRawUTF8()) * 2 + 14;
         if (const auto* d = shownState()) { int kits = 0, pats = 0; for (const auto& k : d->kits) kits += k.isEmptySlot() ? 0 : 1; for (const auto& pt : d->patterns) pats += pt.empty() ? 0 : 1;
             ui::text(g, plural(kits, "kit") + " - " + plural(pats, "pattern"), tx, by, 30, lcd::paper.withAlpha(0.8f), ui::font(false, 12.0f)); }
+        if (const auto* d = shownMdState()) { int kits = 0, pats = 0; for (const auto& k : d->kits) kits += k.isEmptySlot() ? 0 : 1; for (const auto& pt : d->patterns) pats += pt.empty() ? 0 : 1;
+            ui::text(g, "MACHINEDRUM - " + plural(kits, "kit") + " - " + plural(pats, "pattern") + " - " + plural(int(d->songs.size()), "song"), tx, by, 30, lcd::paper.withAlpha(0.8f), ui::font(false, 12.0f)); }
         const auto* cur = p->current();
         const bool viewing = !edit && m_nav.viewVersion > 0 && cur && m_nav.viewVersion != cur->n;
         const juce::String rightText = edit ? "EDIT MODE - BASED ON V" + juce::String(m_edit.baseVersion) + " - " + plural(m_edit.changes.size(), "CHANGE").toUpperCase()
@@ -1390,14 +1897,14 @@ void LibraryComponent::paint(juce::Graphics& g)
         if (edit && (m_nav.tab == "patterns" || m_nav.tab == "kits")) { g.setColour(lcd::ink); for (int y = m_bodyBounds.getY(); y < m_bodyBounds.getBottom(); y += 4) g.fillRect(m_changes.getX() - 6, y, 1, 2); }
     } else {
         const auto& nav = m_nav.nav;
-        const juce::String name = nav == "presets" ? "PRESETS" : nav == "kits" ? "KITS" : nav == "patterns" ? "PATTERNS" : nav == "favourites" ? "FAVOURITES" : nav == "saved" ? "SAVED FROM PLUGINS" : "# " + nav.substring(4).toUpperCase();
+        const juce::String name = nav == "presets" ? "PRESETS" : nav == "kits" ? "KITS" : nav == "patterns" ? "PATTERNS" : nav == "md-sounds" ? "MACHINEDRUM SOUNDS" : nav == "md-kits" ? "MACHINEDRUM KITS" : nav == "md-patterns" ? "MACHINEDRUM PATTERNS" : nav == "favourites" ? "FAVOURITES" : nav == "saved" ? "SAVED FROM PLUGINS" : "# " + nav.substring(4).toUpperCase();
         const juce::String title = "LIBRARY  " + name;
         drawLcdText(g, spec::kFontBold8, title.toRawUTF8(), m_projectBar.getX() + 8, by + 7, 2, lcd::paper);
         int n = 0; for (const auto& r : m_list.rows()) n += r.selectable ? 1 : 0;
         ui::text(g, plural(n, "item") + ", identical items merged across projects", m_projectBar.getX() + 8 + LcdCanvas::textWidth(spec::kFontBold8, title.toRawUTF8()) * 2 + 14, by, 30, lcd::paper.withAlpha(0.8f), ui::font(false, 12.0f));
         g.setColour(lcd::ink);
         for (int y = m_bodyBounds.getY(); y < m_bodyBounds.getBottom(); y += 4) { g.fillRect(m_filterView.getRight() + 2, y, 1, 2); g.fillRect(m_list.getRight() + 5, y, 1, 2); }
-        if (m_projects.empty() && m_saved.empty()) ui::text(g, "Import a Monomachine sysex dump (.syx) to start your library, or drop one on this window.", m_detail.getX() + 8, m_detail.getY() + 6, ui::kLineH);
+        if (m_projects.empty() && m_saved.empty()) ui::text(g, "Import a Monomachine or Machinedrum sysex dump (.syx) to start your library, or drop one on this window.", m_detail.getX() + 8, m_detail.getY() + 6, ui::kLineH);
     }
 }
 
@@ -1461,8 +1968,10 @@ void LibraryComponent::show(const juce::String& what)
     if (w == "project" || w == "edit" || w == "save" || w == "export" || w == "compare") {
         if (m_projects.empty()) return;
         m_nav.nav = "project:" + m_projects.front().id;
-        const juce::String tab = parts.size() > 1 && !parts[1].containsOnly("0123456789") ? parts[1] : juce::String("patterns");
-        m_nav.tab = tab == "kits" || tab == "history" || tab == "songs" ? tab : juce::String("patterns");
+        if (parts.contains("md")) for (const auto& pj : m_projects) if (pj.isMd()) { m_nav.nav = "project:" + pj.id; break; }   // "project md kits": the first Machinedrum project
+        juce::String tab = "patterns";
+        for (const auto& part : parts) if (part == "kits" || part == "history" || part == "songs") tab = part;
+        m_nav.tab = tab;
         if (parts.contains("bank")) { m_nav.bank = juce::jlimit(0, 7, n); m_selPat = m_nav.bank * 16; }
         if (parts.contains("slot")) m_nav.selKit = n;
         refresh();
@@ -1478,7 +1987,7 @@ void LibraryComponent::show(const juce::String& what)
         return;
     }
     if (w == "import" && parts.size() > 1) { startImport({what.fromFirstOccurrenceOf(" ", false, false)}); return; }
-    m_nav.nav = w == "kits" || w == "patterns" ? w : juce::String("presets");
+    m_nav.nav = w == "kits" || w == "patterns" || isMdNav(w) ? w : juce::String("presets");
     refresh();
     int seen = -1;
     for (int i = 0; i < int(m_list.rows().size()); ++i) if (m_list.rows()[size_t(i)].selectable && ++seen == n) { m_list.select(i, true); break; }

@@ -42,11 +42,12 @@ struct Pattern {
     uint64_t trigs[kTracks] = {};
     uint32_t lockMasks[kTracks] = {};                  // bit j = param j of the track is locked
     uint64_t accent = 0, slide = 0, swing = 0;         // global step masks
-    uint32_t swingAmount = 0;
+    uint32_t swingAmount = 0;                          // (percent - 50) x 16384 / 50 (0 = 50%, no swing)
     uint8_t accentAmount = 0, length = 16, doubleTempo = 0, scale = 0, kit = 0, numLockedRows = 0;
     uint8_t locks[64][64] = {};                        // lock rows (row order = tracks, then params, of lockMasks) x steps
     uint32_t accentEditAll = 0, slideEditAll = 0, swingEditAll = 0;
     uint64_t accentPerTrack[kTracks] = {}, slidePerTrack[kTracks] = {}, swingPerTrack[kTracks] = {};
+    int swingPercent() const { return 50 + int((uint64_t(swingAmount) * 50 + 8192) / 16384); }
     int trigCount(int track) const;                    // within the length
     bool empty() const;                                // no trig on any track within the length
     // The lock row of (track, param), -1 when that param is not locked
