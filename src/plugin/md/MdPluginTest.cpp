@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <juce_audio_formats/juce_audio_formats.h>
 #include "MdProcessor.h"
+#include "MdEditor.h"
 
 int main(int argc, char** argv)
 {
@@ -138,6 +139,10 @@ int main(int argc, char** argv)
     }
     if (argc > 3) {
         std::unique_ptr<juce::AudioProcessorEditor> ed(proc.createEditor());
+        if (auto* med = dynamic_cast<MdEditor*>(ed.get())) {
+            med->refresh();
+            if (std::getenv("MD_UI_PICKER")) med->showMachinePicker();   // the machine picker open over the pages
+        }
         auto img = ed->createComponentSnapshot(ed->getLocalBounds(), true, 1.0f);
         juce::File png{juce::String(argv[3])};
         png.deleteFile();

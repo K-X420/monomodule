@@ -1,178 +1,292 @@
 #include "MdEditor.h"
-#include "Skin.h"
+#include <cmath>
+#include "ShnolkLogo.h"
+#include "ParamDisplay.h"
+#include "SharedSettings.h"
 
 namespace mnm::plugin::md {
 
+using one::kScale;
+using one::LcdCanvas;
+using one::KnobPage;
+namespace lcd = one::lcd;
+
 namespace {
-juce::Colour ink() { return skin::inkColour(); }
-juce::Colour paper() { return skin::paperColour(); }
-juce::Font lcdFont(float h, bool bold = true) { return juce::Font(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(), h, bold ? juce::Font::bold : juce::Font::plain)); }
 
-constexpr int kW = 980, kH = 420;
-constexpr int kMargin = 16;
-constexpr int kHeaderH = 44;
-constexpr int kPadsY = kHeaderH + 10, kPadH = 64;
-constexpr int kPanelY = kPadsY + kPadH + 18;
-constexpr int kMixW = 140;
-
-const char* familyOf(int id)
+// "TRX-BD" -> "TRX" / "BD"; "P-I-BD" -> "P-I" / "BD"; "GND---" -> "GND" / "---"
+juce::String familyOf(int index)
 {
-    if (id == 0) return "";
-    if (id < 16) return "GND";
-    if (id < 32) return "TRX";
-    if (id < 48) return "EFM";
-    if (id < 64) return "E12";
-    if (id < 80) return "P-I";
-    if (id < 128) return "INP";
-    if (id >= 160 && id <= 168) return "RAM";
-    return "ROM";
+    const juce::String n(kMachines[index].name);
+    return n.startsWith("P-I-") ? juce::String("P-I") : n.substring(0, 3);
 }
-constexpr const char* kPageNames[5] = {"SYNTH", "EFFECTS", "ROUTING", "LFO", "MASTER FX"};
+juce::String shortOf(int index)
+{
+    const juce::String n(kMachines[index].name);
+    const auto s = n.substring(familyOf(index).length() + 1);
+    return s.containsOnly("-") ? juce::String("---") : s;   // GND---: the empty machine
 }
 
-// ---------------------------------------------------------------------------------------------- look and feel
-
-MdLookAndFeel::MdLookAndFeel() { refreshColours(); }
-
-void MdLookAndFeel::refreshColours()
+void dottedFrame(LcdCanvas& cv, int x, int y, int w, int h)
 {
-    setColour(juce::ComboBox::backgroundColourId, paper());
-    setColour(juce::ComboBox::textColourId, ink());
-    setColour(juce::ComboBox::outlineColourId, ink());
-    setColour(juce::ComboBox::arrowColourId, ink());
-    setColour(juce::PopupMenu::backgroundColourId, paper());
-    setColour(juce::PopupMenu::textColourId, ink());
-    setColour(juce::PopupMenu::headerTextColourId, ink().withAlpha(0.55f));
-    setColour(juce::PopupMenu::highlightedBackgroundColourId, ink());
-    setColour(juce::PopupMenu::highlightedTextColourId, paper());
-    setColour(juce::TextButton::buttonColourId, paper());
-    setColour(juce::TextButton::buttonOnColourId, ink());
-    setColour(juce::TextButton::textColourOffId, ink());
-    setColour(juce::TextButton::textColourOnId, paper());
-    setColour(juce::Label::textColourId, ink());
+    cv.dotsH(x, x + w - 1, y); cv.dotsH(x, x + w - 1, y + h - 1);
+    cv.dotsV(x, y, y + h - 1); cv.dotsV(x + w - 1, y, y + h - 1);
 }
 
-void MdLookAndFeel::drawRotarySlider(juce::Graphics& g, int x, int y, int w, int h, float pos, float start, float end, juce::Slider& s)
+constexpr spec::Param numeric(const char* label, int def) { return {label, spec::Display::Numeric, false, uint8_t(def), 127, 128, spec::Icons::None, nullptr}; }
+constexpr spec::Param bipolar(const char* label, int def = 64) { return {label, spec::Display::Bipolar, false, uint8_t(def), 127, 128, spec::Icons::None, nullptr}; }
+constexpr spec::Param readout(const char* label, const char* const* names, int n, int def = 0)
 {
-    auto area = juce::Rectangle<int>(x, y, w, h);
-    const auto valueRow = area.removeFromBottom(18);
-    if (s.isEnabled()) {
-        g.setColour(ink());
-        g.setFont(lcdFont(14.0f));
-        g.drawText(s.getTextFromValue(s.getValue()), valueRow, juce::Justification::centred);
+    return {label, spec::Display::Readout, false, uint8_t(def), uint8_t(n - 1), uint8_t(n), spec::Icons::Switch, names};
+}
+constexpr spec::Param blank() { return {"", spec::Display::Blank, false, 0, 127, 128, spec::Icons::None, nullptr}; }
+
+constexpr const char* kTrackNames[kTracks] = {"T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11", "T12", "T13", "T14", "T15", "T16"};
+constexpr const char* kShapeNames[8] = {"0", "1", "2", "3", "4", "5", "6", "7"};
+constexpr const char* kVelNames[2] = {"VOLUME", "ACCENT"};
+
+const spec::Param kFxParams[8] = {numeric("AMD", 0), numeric("AMF", 0), numeric("EQF", 64), bipolar("EQG"),
+                                  numeric("FLTF", 0), numeric("FLTW", 127), numeric("FLTQ", 0), numeric("SRR", 0)};
+const spec::Param kRoutingParams[8] = {numeric("DIST", 0), numeric("VOL", 100), bipolar("PAN"), numeric("DEL", 0),
+                                       numeric("REV", 0), readout("OUT", kRouteNames, kNumRoutes, kNumRoutes - 1), blank(), blank()};
+const spec::Param kLfoParams[8] = {readout("TRK", kTrackNames, kTracks), readout("PARAM", kLfoParamNames, 24), readout("SHP1", kShapeNames, 8),
+                                   readout("SHP2", kShapeNames, 8), readout("TYPE", kLfoTypes, 3), numeric("SPD", 64), numeric("DEP", 0), numeric("MIX", 0)};
+const spec::Param kOutParams[8] = {numeric("VOL", 80), readout("VEL", kVelNames, 2), numeric("ACNT", 64), blank(), blank(), blank(), blank(), blank()};
+constexpr const char* kMasterTabs[4] = {"REV", "DEL", "EQ", "DYN"};
+
+const spec::Param& masterParam(int fx, int k)
+{
+    static const auto table = [] {
+        std::array<std::array<spec::Param, 8>, 4> t{};
+        for (int f = 0; f < 4; ++f)
+            for (int i = 0; i < 8; ++i) {
+                const bool gain = f == 2 && (i == 1 || i == 3 || i == 5 || i == 7);   // EQ: LG HG PG GAIN are centred
+                t[size_t(f)][size_t(i)] = gain ? bipolar(kMasterFxLabels[f][i], kMasterFxDefaults[f][i]) : numeric(kMasterFxLabels[f][i], kMasterFxDefaults[f][i]);
+            }
+        return t;
+    }();
+    return table[size_t(fx)][size_t(k)];
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------------------------- machine block
+
+MdMachineBlock::MdMachineBlock() { setMouseCursor(juce::MouseCursor::PointingHandCursor); }
+
+void MdMachineBlock::setMachine(int index)
+{
+    if (index == m_index) return;
+    m_index = index;
+    if (auto* p = getParentComponent()) p->resized();   // the block hugs its name
+    repaint();
+}
+
+int MdMachineBlock::preferredWidth() const
+{
+    const int w = 4 + LcdCanvas::textWidth(spec::kFontBold8, familyOf(m_index).toRawUTF8()) + 6
+                + LcdCanvas::textWidth(spec::kFontBold8, shortOf(m_index).toRawUTF8()) + 4 + 5 + 4;
+    return juce::jmax(64, w) * kScale;
+}
+
+void MdMachineBlock::paint(juce::Graphics& g)
+{
+    const int w = getWidth() / kScale, h = getHeight() / kScale;
+    LcdCanvas cv(w, h);
+    cv.fillRect(0, 0, w, h, true);
+    const auto fam = familyOf(m_index), name = shortOf(m_index);
+    const int ty = (h - spec::kFontBold8.h) / 2;
+    cv.text(spec::kFontBold8, fam.toRawUTF8(), 4, ty, false);
+    const int nameX = 4 + LcdCanvas::textWidth(spec::kFontBold8, fam.toRawUTF8()) + 6;
+    cv.text(spec::kFontBold8, name.toRawUTF8(), nameX, ty, false);
+    const int ax = nameX + LcdCanvas::textWidth(spec::kFontBold8, name.toRawUTF8()) + 4, ay = h / 2 - 1;
+    for (int r = 0; r < 3; ++r) {   // the picker arrow: down when closed, up while open
+        const int half = m_open ? r : 2 - r;
+        for (int c = 2 - half; c <= 2 + half; ++c) cv.set(ax + c, ay + r, false);
     }
-    const auto bounds = area.toFloat().reduced(4.0f);
-    const float r = std::min(bounds.getWidth(), bounds.getHeight()) * 0.5f;
-    const auto c = bounds.getCentre();
-    const float alpha = s.isEnabled() ? 1.0f : 0.25f;
-    juce::Path track;
-    track.addCentredArc(c.x, c.y, r - 3.0f, r - 3.0f, 0.0f, start, end, true);
-    g.setColour(ink().withAlpha(0.2f * alpha));
-    g.strokePath(track, juce::PathStrokeType(3.0f));
-    const float angle = start + pos * (end - start);
-    const float from = s.getMinimum() < 0.0 ? (start + end) * 0.5f : start;
-    juce::Path value;
-    value.addCentredArc(c.x, c.y, r - 3.0f, r - 3.0f, 0.0f, std::min(from, angle), std::max(from, angle), true);
-    g.setColour(ink().withAlpha(alpha));
-    g.strokePath(value, juce::PathStrokeType(3.0f));
-    g.fillEllipse(juce::Rectangle<float>(r, r).withCentre(c));
-    g.setColour(paper());
-    g.drawLine({c, c.getPointOnCircumference(r * 0.45f, angle)}, 2.0f);
+    cv.draw(g, 0, 0);
 }
 
-void MdLookAndFeel::drawComboBox(juce::Graphics& g, int w, int h, bool, int, int, int, int, juce::ComboBox&)
+// ---------------------------------------------------------------------------------------------- track keys
+
+MdTrackKeys::MdTrackKeys()
 {
-    g.setColour(paper()); g.fillRect(0, 0, w, h);
-    g.setColour(ink()); g.drawRect(0, 0, w, h, 2);
-    juce::Path arrow;
-    arrow.addTriangle(float(w - 18), float(h) * 0.4f, float(w - 8), float(h) * 0.4f, float(w - 13), float(h) * 0.65f);
-    g.fillPath(arrow);
+    setMouseCursor(juce::MouseCursor::PointingHandCursor);
+    setOpaque(true);
 }
 
-void MdLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& b, const juce::Colour&, bool over, bool down)
+juce::Rectangle<int> MdTrackKeys::keyRect(int t) const
 {
-    const auto r = b.getLocalBounds();
-    const bool on = down || b.getToggleState();
-    g.setColour(on ? ink() : paper()); g.fillRect(r);
-    if (over && !on) { g.setColour(ink().withAlpha(0.08f)); g.fillRect(r); }
-    g.setColour(on ? paper() : ink()); g.drawRect(r, on ? 0 : 2);
-    if (!on) { g.setColour(ink()); g.drawRect(r, 2); }
+    const int w = getWidth() / kScale, gap = 2;
+    const int kw = (w - (kTracks - 1) * gap) / kTracks;
+    const int extra = w - (kTracks * kw + (kTracks - 1) * gap);   // spread the remainder over the first keys
+    const int x = t * (kw + gap) + juce::jmin(t, extra);
+    return {x, 0, kw + (t < extra ? 1 : 0), kLcdH};
 }
 
-void MdLookAndFeel::drawButtonText(juce::Graphics& g, juce::TextButton& b, bool, bool down)
+void MdTrackKeys::paint(juce::Graphics& g)
 {
-    g.setColour((down || b.getToggleState()) ? paper() : ink());
-    g.setFont(lcdFont(14.0f));
-    g.drawText(b.getButtonText(), b.getLocalBounds(), juce::Justification::centred);
+    const int w = getWidth() / kScale, h = getHeight() / kScale;
+    LcdCanvas cv(w, h);
+    for (int t = 0; t < kTracks; ++t) {
+        const auto r = keyRect(t);
+        const bool sel = t == m_selected, ink = !sel;
+        if (sel) cv.fillRect(r.getX(), r.getY(), r.getWidth(), r.getHeight(), true);
+        else dottedFrame(cv, r.getX(), r.getY(), r.getWidth(), r.getHeight());
+        cv.text(spec::kFontBold8, juce::String(t + 1).toRawUTF8(), r.getX() + 3, r.getY() + 3, ink);
+        const int lx = r.getRight() - 7, ly = r.getY() + 4;   // activity LED: solid while the track sounds
+        if (m_active[size_t(t)]) cv.fillRect(lx, ly, 4, 4, ink);
+        else {
+            for (int c = 0; c < 4; ++c) { cv.set(lx + c, ly, ink); cv.set(lx + c, ly + 3, ink); }
+            cv.set(lx, ly + 1, ink); cv.set(lx, ly + 2, ink); cv.set(lx + 3, ly + 1, ink); cv.set(lx + 3, ly + 2, ink);
+        }
+        const int m = m_machine[size_t(t)];
+        cv.textCentred(spec::kFontTiny3x5, familyOf(m).toRawUTF8(), r.getX() + 1, r.getWidth() - 1, r.getY() + 13, ink);
+        cv.textCentred(spec::kFontTiny3x5, shortOf(m).toRawUTF8(), r.getX() + 1, r.getWidth() - 1, r.getY() + 19, ink);
+    }
+    cv.draw(g, 0, 0);
 }
 
-juce::Font MdLookAndFeel::getComboBoxFont(juce::ComboBox&) { return lcdFont(17.0f); }
-juce::Font MdLookAndFeel::getPopupMenuFont() { return lcdFont(15.0f); }
-juce::Font MdLookAndFeel::getTextButtonFont(juce::TextButton&, int) { return lcdFont(14.0f); }
+void MdTrackKeys::mouseDown(const juce::MouseEvent& e)
+{
+    const auto p = e.getPosition() / kScale;
+    for (int t = 0; t < kTracks; ++t)
+        if (keyRect(t).contains(p)) { if (onPress) onPress(t); return; }
+}
+
+// ---------------------------------------------------------------------------------------------- machine picker
+
+MdMachinePicker::MdMachinePicker()
+{
+    setOpaque(true);
+    auto add = [this](const juce::String& fam, int span = 1) { m_columns.push_back({fam, span, {}}); };
+    for (int i = 0; i < kNumMachines; ++i) {
+        const auto fam = familyOf(i);
+        if (m_columns.empty() || (m_columns.back().title != fam && !(fam == "ROM" && m_columns.back().title.isEmpty())))
+            add(fam);
+        if (fam == "ROM" && m_columns.back().items.size() == 16) add({});   // ROM continues in untitled columns
+        m_columns.back().items.push_back(i);
+    }
+    for (size_t c = 0; c < m_columns.size(); ++c)   // the ROM header spans its columns
+        if (m_columns[c].title == "ROM") for (size_t k = c + 1; k < m_columns.size() && m_columns[k].title.isEmpty(); ++k) ++m_columns[c].span;
+}
+
+void MdMachinePicker::layout()
+{
+    m_cells.clear(); m_heads.clear();
+    const int w = getWidth() / kScale, gap = 4, n = int(m_columns.size());
+    const int cw = juce::jmax(16, (w - 8 - (n - 1) * gap) / juce::jmax(1, n));
+    const int headY = 14, cellY = headY + 12, cellH = 8;
+    for (int c = 0; c < n; ++c) {
+        const auto& col = m_columns[size_t(c)];
+        const int x = 4 + c * (cw + gap);
+        if (col.title.isNotEmpty()) m_heads.push_back({col.title, {x, headY, col.span * cw + (col.span - 1) * gap, 10}});
+        for (size_t i = 0; i < col.items.size(); ++i) m_cells.push_back({col.items[i], {x, cellY + int(i) * cellH, cw, cellH}});
+    }
+}
+
+int MdMachinePicker::itemAt(juce::Point<int> lcd) const
+{
+    for (const auto& [idx, r] : m_cells) if (r.contains(lcd)) return idx;
+    return -1;
+}
+
+void MdMachinePicker::paint(juce::Graphics& g)
+{
+    const int w = getWidth() / kScale, h = getHeight() / kScale;
+    LcdCanvas cv(w, h);
+    dottedFrame(cv, 0, 0, w, h);
+    cv.text(spec::kFontBold8, "MACHINES", 4, 3);
+    for (const auto& [title, r] : m_heads) {
+        cv.fillRect(r.getX(), r.getY(), r.getWidth(), r.getHeight(), true);
+        cv.text(spec::kFontBold8, title.toRawUTF8(), r.getX() + 2, r.getY() + 1, false);
+    }
+    for (const auto& [idx, r] : m_cells) {
+        const bool cur = idx == m_current;
+        if (cur) cv.fillRect(r.getX(), r.getY(), r.getWidth(), r.getHeight(), true);
+        cv.text(spec::kFontSmall4x5, shortOf(idx).toRawUTF8(), r.getX() + 2, r.getY() + (r.getHeight() - spec::kFontSmall4x5.h) / 2, !cur);
+        if (hasSample && hasSample(idx)) cv.fillRect(r.getRight() - 4, r.getY() + 3, 2, 2, !cur);   // a ROM slot holding a sample
+        if (idx == m_hover && !cur) cv.invertRect(r.getX(), r.getY(), r.getWidth(), r.getHeight());
+    }
+    cv.draw(g, 0, 0);
+}
+
+void MdMachinePicker::mouseMove(const juce::MouseEvent& e)
+{
+    const int h = itemAt(e.getPosition() / kScale);
+    setMouseCursor(h >= 0 ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor);
+    if (h != m_hover) { m_hover = h; repaint(); }
+}
+
+void MdMachinePicker::mouseDown(const juce::MouseEvent& e)
+{
+    const int idx = itemAt(e.getPosition() / kScale);
+    if (idx >= 0 && onPick) onPick(idx);
+    close();
+}
+
+// ---------------------------------------------------------------------------------------------- badge button
+
+int MdBadgeButton::preferredWidth() const { return (LcdCanvas::textWidth(spec::kFontSmall4x5, getButtonText().toRawUTF8()) + 5) * kScale; }
+
+void MdBadgeButton::paintButton(juce::Graphics& g, bool highlighted, bool down)
+{
+    const int w = getWidth() / kScale, h = getHeight() / kScale;
+    LcdCanvas cv(w, h);
+    if (down) cv.fillRect(0, 0, w, h, true);
+    cv.text(spec::kFontSmall4x5, getButtonText().toRawUTF8(), 2, (h - spec::kFontSmall4x5.h) / 2, !down);
+    cv.draw(g, 0, 0);
+    if (highlighted && !down) { g.setColour(lcd::ink.withAlpha(0.15f)); g.fillRect(getLocalBounds()); }
+}
 
 // ---------------------------------------------------------------------------------------------- editor
 
-MdEditor::MdEditor(MdProcessor& p) : AudioProcessorEditor(p), m_proc(p)
+MdEditor::MdEditor(MdProcessor& p)
+    : AudioProcessorEditor(p), m_proc((skin::apply(skin::load()), p)),   // the skin first: m_lnf reads it when it is built
+      m_kitName(spec::kFontBold8, "", kScale, false, juce::Justification::centredRight),
+      m_footerVersion(spec::kFontSmall4x5, kPluginVersion, 2),
+      m_footerBy(spec::kFontSmall4x5, "BY SHNOLK", 2, false, juce::Justification::centredRight),
+      m_status(spec::kFontBold8, "NO MACHINEDRUM OS FILE", kScale),
+      m_syn(p.apvts, "SYNTHESIS"), m_fx(p.apvts, "EFFECTS"), m_routing(p.apvts, "ROUTING"),
+      m_lfo(p.apvts, "LFO"), m_master(p.apvts, "MASTER FX"), m_out(p.apvts, "OUTPUT")
 {
-    skin::apply(skin::load());
-    m_lnf.refreshColours();
     setLookAndFeel(&m_lnf);
+    m_artPath = loadSharedOsPath();   // the LCD fonts and dials come from the Monomachine OS file, when there is one
+    one::loadLcdArt(m_artPath);
 
-    m_osButton.onClick = [this] { chooseOsFile(); };
-    addAndMakeVisible(m_osButton);
+    addAndMakeVisible(m_machineBlock);
+    m_machineBlock.onOpen = [this] { if (m_picker.isVisible()) m_picker.close(); else { m_picker.open(m_machineIndex); m_machineBlock.setOpen(true); } };
+    m_picker.onPick = [this](int idx) { setMachine(idx); };
+    m_picker.onClosed = [this] { m_machineBlock.setOpen(false); };
+    m_picker.hasSample = [this](int idx) { const int id = kMachines[idx].id; return isRomMachine(id) && m_proc.sampleName(romSlotOf(id)).isNotEmpty(); };
+    addChildComponent(m_picker);
+
     m_kitButton.onClick = [this] { chooseKit(); };
-    addAndMakeVisible(m_kitButton);
-    m_sampleButton.onClick = [this] { sampleMenu(); };
-    addChildComponent(m_sampleButton);
+    m_menuButton.onClick = [this] { showMenu(); };
+    m_osButton.onClick = [this] { chooseOsFile(); };
+    for (juce::Component* c : {static_cast<juce::Component*>(&m_kitButton), static_cast<juce::Component*>(&m_menuButton),
+                               static_cast<juce::Component*>(&m_kitName), static_cast<juce::Component*>(&m_footerVersion),
+                               static_cast<juce::Component*>(&m_footerBy), static_cast<juce::Component*>(&m_level)})
+        addAndMakeVisible(c);
+    addChildComponent(m_status);
+    addChildComponent(m_osButton);
 
-    for (int i = 0; i < kNumPages; ++i) {
-        auto& b = m_pageButtons[size_t(i)];
-        b.setButtonText(kPageNames[i]);
-        b.onClick = [this, i] { showPage(Page(i)); };
-        addAndMakeVisible(b);
-    }
-    for (int i = 0; i < 4; ++i) {
-        auto& f = m_fxButtons[size_t(i)];
-        f.setButtonText(kMasterFxNames[i]);
-        f.onClick = [this, i] { m_masterFx = i; attachKnobs(); };
-        addChildComponent(f);
-    }
+    for (auto* pg : {&m_syn, &m_fx, &m_routing, &m_lfo, &m_master, &m_out}) addAndMakeVisible(pg);
+    m_master.setTabs({kMasterTabs[0], kMasterTabs[1], kMasterTabs[2], kMasterTabs[3]}, 0, [this](int tab) { bindMasterFx(tab); });
+    m_out.bind(kOutParams, [](int k) { return k == 0 ? masterId() : k == 1 ? velModeId() : k == 2 ? accentId() : juce::String(); });
+    bindMasterFx(0);
 
-    // machine list grouped by family; item ids follow the parameter's choice order (ComboBoxAttachment)
-    juce::String family;
-    for (int i = 0; i < kNumMachines; ++i) {
-        const juce::String f = familyOf(kMachines[i].id);
-        if (f != family && f.isNotEmpty()) { m_machine.addSectionHeading(f); family = f; }
-        m_machine.addItem(kMachines[i].name, i + 1);
-    }
-    addAndMakeVisible(m_machine);
+    m_sample.onClick = [this] { sampleMenu(); };
+    addChildComponent(m_sample);
 
-    auto setupKnob = [this](juce::Slider& s, juce::Label& l) {
-        s.setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
-        s.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
-        s.setMouseDragSensitivity(200);
-        s.setRotaryParameters(juce::MathConstants<float>::pi * 1.25f, juce::MathConstants<float>::pi * 2.75f, true);
-        addAndMakeVisible(s);
-        l.setFont(lcdFont(15.0f));
-        l.setJustificationType(juce::Justification::centred);
-        addAndMakeVisible(l);
-    };
-    for (int k = 0; k < 8; ++k) setupKnob(m_knobs[size_t(k)], m_knobLabels[size_t(k)]);
-    setupKnob(m_master, m_masterLabel);
-    m_masterLabel.setText("VOLUME", juce::dontSendNotification);
-    m_masterAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(m_proc.apvts, masterId(), m_master);
-    setupKnob(m_accent, m_accentLabel);
-    m_accentLabel.setText("ACCENT", juce::dontSendNotification);
-    m_accentAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(m_proc.apvts, accentId(), m_accent);
-    m_velButton.onClick = [this] {   // VEL: VOLUME <-> ACCENT
-        if (auto* p = m_proc.apvts.getParameter(velModeId())) p->setValueNotifyingHost(p->getValue() >= 0.5f ? 0.0f : 1.0f);
-    };
-    addAndMakeVisible(m_velButton);
+    m_keys.onPress = [this](int t) { if (t != m_track) selectTrack(t); m_proc.auditionTrack(t); };
+    addAndMakeVisible(m_keys);
 
     selectTrack(0);
-    setSize(kW, kH);
-    timerCallback();   // VEL button text, ACCENT state
-    startTimerHz(30);
+    const int levW = 19 * kScale, gap = 12;
+    setSize(20 + levW + 8 + 3 * KnobPage::kWidth + 2 * gap,
+            16 + 16 + 48 + 6 + 36 + 2 * KnobPage::kHeight + gap + gap + MdTrackKeys::kLcdH * kScale);
+    timerCallback();
+    startTimerHz(20);
 }
 
 MdEditor::~MdEditor()
@@ -181,85 +295,91 @@ MdEditor::~MdEditor()
     setLookAndFeel(nullptr);
 }
 
-juce::Rectangle<int> MdEditor::padBounds(int t) const
-{
-    const int w = (kW - 2 * kMargin - 15 * 4) / kTracks;
-    return {kMargin + t * (w + 4), kPadsY, w, kPadH};
-}
-
-juce::Rectangle<int> MdEditor::panelBounds() const { return {kMargin, kPanelY, kW - 2 * kMargin - kMixW - 10, kH - kPanelY - kMargin}; }
-
 void MdEditor::selectTrack(int t)
 {
     m_track = t;
-    m_machineAttach.reset();
-    m_machineAttach = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(m_proc.apvts, machineId(t), m_machine);
-    attachKnobs();
+    m_keys.setSelected(t);
+    bindTrackPages();
 }
 
-void MdEditor::showPage(Page p)
+// Binds the LEV column and the track pages to the selected track
+void MdEditor::bindTrackPages()
 {
-    m_page = p;
-    for (int i = 0; i < kNumPages; ++i) m_pageButtons[size_t(i)].setToggleState(i == int(p), juce::dontSendNotification);
-    attachKnobs();
-    resized();
+    const int t = m_track;
+    m_levelAttach.reset();
+    m_levelAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(m_proc.apvts, levelId(t), m_level);
+    m_level.setDoubleClickReturnValue(true, 127.0);
+    m_fx.bind(kFxParams, [t](int k) { return fxId(t, k); });
+    m_routing.bind(kRoutingParams, [t](int k) {
+        static juce::String (* const ids[6])(int) = {distId, volId, panId, delId, revId, routeId};
+        return k < 6 ? ids[k](t) : juce::String();
+    });
+    m_lfo.bind(kLfoParams, [t](int k) { return lfoId(t, k); });
+    m_shownMachineId = -2;
+    rebuildSynPage();
 }
 
-// Points the eight knobs at the current page's parameters
-void MdEditor::attachKnobs()
-{
-    for (auto& a : m_knobAttach) a.reset();
-    const bool master = m_page == Page::Master;
-    m_machine.setVisible(m_page == Page::Synth);
-    for (int i = 0; i < 4; ++i) {
-        m_fxButtons[size_t(i)].setVisible(master);
-        m_fxButtons[size_t(i)].setToggleState(i == m_masterFx, juce::dontSendNotification);
-    }
-    for (int k = 0; k < 8; ++k) {
-        juce::String id;
-        switch (m_page) {
-        case Page::Synth: id = knobId(m_track, k); break;
-        case Page::Effects: id = fxId(m_track, k); break;
-        case Page::Routing: {
-            static juce::String (* const ids[7])(int) = {distId, volId, panId, delId, revId, levelId, routeId};
-            if (k < 7) id = ids[k](m_track);
-            break;
-        }
-        case Page::Lfo: id = lfoId(m_track, k); break;
-        case Page::Master: id = masterFxId(m_masterFx, k); break;
-        }
-        auto& s = m_knobs[size_t(k)];
-        s.setVisible(id.isNotEmpty());
-        m_knobLabels[size_t(k)].setVisible(id.isNotEmpty());
-        if (id.isNotEmpty()) m_knobAttach[size_t(k)] = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(m_proc.apvts, id, s);
-    }
-    m_shownMachine = -1;
-    refreshLabels();
-    for (int i = 0; i < kNumPages; ++i) m_pageButtons[size_t(i)].setToggleState(i == int(m_page), juce::dontSendNotification);
-    repaint();
-}
-
-void MdEditor::refreshLabels()
+// The SYNTHESIS page follows the machine: its labels and defaults from the OS file's descriptor
+void MdEditor::rebuildSynPage()
 {
     const int id = m_proc.machineIdOf(m_track);
-    if (m_page == Page::Synth && id == m_shownMachine) return;
-    m_shownMachine = id;
+    if (id == m_shownMachineId) return;
+    m_shownMachineId = id;
     const auto* m = m_proc.machineInfo(id);
     for (int k = 0; k < 8; ++k) {
-        juce::String label;
-        switch (m_page) {
-        case Page::Synth: label = m ? juce::String(m->labels[size_t(k)]) : (id == 0 ? juce::String() : "SYN" + juce::String(k + 1)); break;
-        case Page::Effects: label = kFxLabels[k]; break;
-        case Page::Routing: label = k < 6 ? juce::String(kRouteLabels[k]) : (k == 6 ? juce::String("OUT") : juce::String()); break;
-        case Page::Lfo: label = kLfoLabels[k]; break;
-        case Page::Master: label = kMasterFxLabels[m_masterFx][k]; break;
-        }
-        m_knobLabels[size_t(k)].setText(label, juce::dontSendNotification);
-        const bool on = label.isNotEmpty();
-        m_knobs[size_t(k)].setEnabled(on);
-        m_knobs[size_t(k)].setAlpha(on ? 1.0f : 0.35f);
-        m_knobs[size_t(k)].repaint();
+        m_synLabels[size_t(k)] = m ? m->labels[size_t(k)] : std::string();
+        auto& p = m_synParams[size_t(k)];
+        p = m_synLabels[size_t(k)].empty() ? blank() : numeric("", m ? m->defaults[size_t(k)] : 0);
+        p.label = m_synLabels[size_t(k)].c_str();
     }
+    const int t = m_track;
+    m_syn.bind(m_synParams.data(), [t](int k) { return knobId(t, k); });
+}
+
+void MdEditor::bindMasterFx(int fx)
+{
+    m_masterTab = fx;
+    std::array<spec::Param, 8> params{};
+    for (int k = 0; k < 8; ++k) params[size_t(k)] = masterParam(fx, k);
+    m_master.bind(params.data(), [fx](int k) { return masterFxId(fx, k); });
+}
+
+void MdEditor::setMachine(int index)
+{
+    if (auto* p = m_proc.apvts.getParameter(machineId(m_track))) {
+        p->beginChangeGesture();
+        p->setValueNotifyingHost(p->convertTo0to1(float(index)));
+        p->endChangeGesture();
+    }
+    timerCallback();
+}
+
+void MdEditor::showMenu()
+{
+    juce::PopupMenu skins;
+    const auto current = skin::current().preset;
+    for (int i = 0; i < 3; ++i)   // the presets (CUSTOM colours are set from the One / Six editors)
+        skins.addItem(100 + i, skin::kPresetNames[i], true, int(current) == i);
+    juce::PopupMenu m;
+    m.addItem(1, "SELECT MACHINEDRUM OS FILE...");
+    m.addItem(2, "LOAD KIT...");
+    m.addSubMenu("SKIN", skins);
+    m.addSeparator();
+    m.addItem(3, m_proc.statusText().toUpperCase(), false);
+    m.addItem(4, juce::String("SAMPLE MEMORY USED ") + juce::String(int(std::lround(m_proc.sampleMemoryUsed() * 100.0))) + "%", false);
+    m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&m_menuButton), [this](int r) {
+        if (r == 1) chooseOsFile();
+        else if (r == 2) chooseKit();
+        else if (r >= 100) applySkin(skin::presetSkin(skin::Preset(r - 100)));
+    });
+}
+
+void MdEditor::applySkin(const skin::Skin& s)
+{
+    skin::apply(s);
+    skin::save(s);
+    m_lnf.applySkin();
+    sendLookAndFeelChange();
     repaint();
 }
 
@@ -270,7 +390,7 @@ void MdEditor::chooseOsFile()
         current.existsAsFile() ? current.getParentDirectory() : juce::File::getSpecialLocation(juce::File::userHomeDirectory), "*.syx");
     m_chooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles, [this](const juce::FileChooser& fc) {
         const auto f = fc.getResult();
-        if (f.existsAsFile()) { m_proc.setFirmwarePath(f.getFullPathName()); m_shownMachine = -1; refreshLabels(); repaint(); }
+        if (f.existsAsFile()) { m_proc.setFirmwarePath(f.getFullPathName()); m_shownMachineId = -2; timerCallback(); }
     });
 }
 
@@ -291,9 +411,9 @@ void MdEditor::chooseKit()
             const int emptied = m_proc.applyKit(m_kits[size_t(i)]);
             if (emptied > 0)
                 juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon, "Load Kit",
-                    juce::String(emptied) + " track(s) use ROM/RAM, MIDI, controller or input machines, which are not available yet; they were left empty.");
+                    juce::String(emptied) + " track(s) use MIDI or controller machines, which are not available yet; they were left empty.");
             selectTrack(m_track);
-            repaint();
+            timerCallback();
         };
         if (m_kits.size() == 1) { apply(0); return; }
         juce::PopupMenu menu;
@@ -309,11 +429,13 @@ void MdEditor::sampleMenu()
     if (!isRomMachine(id)) return;
     const int slot = romSlotOf(id);
     juce::PopupMenu m;
-    m.addItem(1, "Load Sample...");
-    m.addItem(2, "Clear Sample", m_proc.sampleName(slot).isNotEmpty());
+    m.addItem(1, "LOAD SAMPLE...");
+    m.addItem(2, "CLEAR SAMPLE", m_proc.sampleName(slot).isNotEmpty());
     m.addSeparator();
-    m.addItem(3, juce::String("Sample memory used: ") + juce::String(int(std::lround(m_proc.sampleMemoryUsed() * 100.0))) + "%", false);
-    m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&m_sampleButton), [this, slot](int r) {
+    if (m_proc.sampleName(slot).isNotEmpty())
+        m.addItem(3, m_proc.sampleName(slot).toUpperCase() + "  " + juce::String(m_proc.sampleSeconds(slot), 2) + " S", false);
+    m.addItem(4, juce::String("SAMPLE MEMORY USED ") + juce::String(int(std::lround(m_proc.sampleMemoryUsed() * 100.0))) + "%", false);
+    m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&m_sample), [this, slot](int r) {
         if (r == 2) { m_proc.clearSample(slot); return; }
         if (r != 1) return;
         m_chooser = std::make_unique<juce::FileChooser>("Load a sample into " + juce::String(kMachines[machineIndexOf(slot + 128)].name),
@@ -329,105 +451,97 @@ void MdEditor::sampleMenu()
 
 void MdEditor::timerCallback()
 {
-    bool dirty = false;
+    // the LCD artwork follows the Monomachine OS file the other Monomodule plugins use
+    if (const auto path = loadSharedOsPath(); path != m_artPath) {
+        m_artPath = path;
+        if (one::loadLcdArt(path)) { resized(); repaint(); }
+    }
+    const bool ready = m_proc.engineReady();
+    if (ready != m_ready) m_shownMachineId = -2;   // the labels come from the OS file
+    m_ready = ready;
+    m_status.setVisible(!ready);
+    m_osButton.setVisible(!ready);
+    // machines: the block, the keys, and the SYNTHESIS page when the selected track's machine changed
     for (int t = 0; t < kTracks; ++t) {
-        const float a = juce::jlimit(0.0f, 1.0f, m_proc.trackActivity(t) * 4.0f);
-        if (std::abs(a - m_lights[size_t(t)]) > 0.02f) { m_lights[size_t(t)] = a; dirty = true; }
+        const int idx = juce::jlimit(0, kNumMachines - 1, int(std::lround(m_proc.apvts.getRawParameterValue(machineId(t))->load())));
+        m_keys.setMachine(t, idx);
+        m_keys.setActive(t, m_proc.trackActivity(t) > 0.012f);
+        if (t == m_track && idx != m_machineIndex) { m_machineIndex = idx; m_machineBlock.setMachine(idx); }
     }
-    if (m_page == Page::Synth) refreshLabels();
-    {   // the sample of a ROM machine's slot
-        const int id = m_proc.machineIdOf(m_track);
-        const bool rom = m_page == Page::Synth && isRomMachine(id);
-        m_sampleButton.setVisible(rom);
-        if (rom) {
-            const auto name = m_proc.sampleName(romSlotOf(id));
-            const juce::String text = name.isEmpty() ? juce::String("LOAD SAMPLE...") : "SAMPLE: " + name.toUpperCase();
-            if (m_sampleButton.getButtonText() != text) m_sampleButton.setButtonText(text);
-        }
+    rebuildSynPage();
+    m_level.setMeter(juce::jlimit(0.0f, 1.0f, m_proc.trackActivity(m_track) * 4.0f));
+    // ROM machines: their sample slot in the SYNTHESIS title bar
+    const int id = m_proc.machineIdOf(m_track);
+    const bool rom = isRomMachine(id);
+    if (rom) {
+        // as much of the sample's name as fits beside the page title
+        const int room = KnobPage::kLcdW - LcdCanvas::textWidth(spec::kFontBold8, "SYNTHESIS") - 2 - 6 - 5;
+        juce::String text = m_proc.sampleName(romSlotOf(id)).toUpperCase();
+        if (text.isEmpty()) text = "LOAD SAMPLE";
+        while (text.length() > 1 && LcdCanvas::textWidth(spec::kFontSmall4x5, text.toRawUTF8()) > room) text = text.dropLastCharacters(1);
+        if (m_sample.getButtonText() != text) { m_sample.setButtonText(text); resized(); }
     }
-    const bool accentMode = m_proc.apvts.getRawParameterValue(velModeId())->load() >= 0.5f;
-    const juce::String vel = accentMode ? "VEL: ACCENT" : "VEL: VOLUME";
-    if (m_velButton.getButtonText() != vel) m_velButton.setButtonText(vel);
-    m_accent.setEnabled(accentMode);
-    if (dirty) repaint(juce::Rectangle<int>(0, kPadsY, kW, kPadH));
-}
-
-void MdEditor::mouseDown(const juce::MouseEvent& e)
-{
-    for (int t = 0; t < kTracks; ++t)
-        if (padBounds(t).contains(e.getPosition())) {
-            if (t != m_track) selectTrack(t);
-            m_proc.auditionTrack(t);
-            repaint();
-            return;
-        }
+    if (m_sample.isVisible() != rom) { m_sample.setVisible(rom); resized(); }
+    const auto kit = m_proc.kitName().toUpperCase();
+    if (kit != m_shownKit) { m_shownKit = kit; m_kitName.setText(kit); }
 }
 
 void MdEditor::paint(juce::Graphics& g)
 {
-    g.fillAll(paper());
-    g.setColour(ink());
-    g.fillRect(0, 0, kW, kHeaderH);
-    g.setColour(paper());
-    g.setFont(lcdFont(22.0f));
-    g.drawText("MONOMODULE MD", kMargin, 0, 300, kHeaderH, juce::Justification::centredLeft);
-    g.setFont(lcdFont(13.0f, false));
-    const auto kit = m_proc.kitName();
-    g.drawText((kit.isNotEmpty() ? "KIT " + kit + "   " : juce::String()) + m_proc.statusText().toUpperCase(), 250, 0, kW - 250 - 230, kHeaderH, juce::Justification::centredRight);
-    for (int t = 0; t < kTracks; ++t) {
-        const auto r = padBounds(t);
-        const bool sel = t == m_track;
-        g.setColour(sel ? ink() : paper()); g.fillRect(r);
-        g.setColour(ink()); g.drawRect(r, 2);
-        const auto fg = sel ? paper() : ink();
-        g.setColour(fg);
-        g.setFont(lcdFont(13.0f));
-        g.drawText(juce::String(t + 1), r.withHeight(20).reduced(5, 0), juce::Justification::centredLeft);
-        const auto name = juce::String(kMachines[machineIndexOf(m_proc.machineIdOf(t))].name);
-        g.setFont(lcdFont(12.0f));
-        g.drawText(name.upToFirstOccurrenceOf("-", false, false), r.withTrimmedTop(20).withHeight(16), juce::Justification::centred);
-        g.drawText(name.fromFirstOccurrenceOf("-", false, false).trimCharactersAtStart("-"), r.withTrimmedTop(34).withHeight(16), juce::Justification::centred);
-        const auto light = juce::Rectangle<int>(r.getRight() - 14, r.getY() + 6, 8, 8).toFloat();
-        g.setColour(fg.withAlpha(0.25f + 0.75f * m_lights[size_t(t)]));
-        if (m_lights[size_t(t)] > 0.05f) g.fillEllipse(light); else g.drawEllipse(light, 1.5f);
-    }
-    const auto panel = panelBounds();
-    g.setColour(ink()); g.drawRect(panel, 2);
-    g.fillRect(panel.withHeight(30));
-    g.setColour(paper()); g.setFont(lcdFont(17.0f));
-    const juce::String title = m_page == Page::Master ? juce::String("MASTER FX") : "TRACK " + juce::String(m_track + 1);
-    g.drawText(title, panel.withHeight(30).reduced(10, 0), juce::Justification::centredLeft);
-    const auto mix = juce::Rectangle<int>(kW - kMargin - kMixW, kPanelY, kMixW, kH - kPanelY - kMargin);
-    g.setColour(ink()); g.drawRect(mix, 2);
-    g.fillRect(mix.withHeight(30));
-    g.setColour(paper());
-    g.drawText("OUT", mix.withHeight(30), juce::Justification::centred);
+    g.fillAll(lcd::paper);
+    drawShnolkLogo(g, m_logoBounds.toFloat(), lcd::ink);
 }
 
 void MdEditor::resized()
 {
-    m_osButton.setBounds(kW - kMargin - 120, 9, 120, 26);
-    m_kitButton.setBounds(kW - kMargin - 120 - 90, 9, 84, 26);
-    const auto panel = panelBounds();
-    // page tabs along the bottom of the panel, the machine / effect selector in the title bar
-    const int tabW = 116;
-    for (int i = 0; i < kNumPages; ++i) m_pageButtons[size_t(i)].setBounds(panel.getX() + 10 + i * (tabW + 6), panel.getBottom() - 34, tabW, 26);
-    m_machine.setBounds(panel.getX() + 130, panel.getY() + 3, 190, 24);
-    m_sampleButton.setBounds(panel.getX() + 330, panel.getY() + 3, 300, 24);
-    for (int i = 0; i < 4; ++i) m_fxButtons[size_t(i)].setBounds(panel.getX() + 130 + i * 96, panel.getY() + 3, 92, 24);
-    const int knobW = 76, knobH = 96;
-    const int x0 = panel.getX() + 12, y0 = panel.getY() + 40;
-    for (int k = 0; k < 8; ++k) {
-        const int x = x0 + k * (knobW + 22);
-        m_knobLabels[size_t(k)].setBounds(x, y0, knobW, 18);
-        m_knobs[size_t(k)].setBounds(x, y0 + 18, knobW, knobH);
+    auto r = getLocalBounds().reduced(10, 8);
+    auto footer = r.removeFromBottom(16);
+    m_footerVersion.setBounds(footer.removeFromLeft(200));
+    m_footerBy.setBounds(footer.removeFromRight(240));
+
+    const int levW = 19 * kScale, top = r.getY(), gap = 12;
+    auto header = r.removeFromTop(48);
+    m_logoBounds = header.removeFromLeft(levW).withY(top).withHeight(18 * kScale);
+    header.removeFromLeft(8);
+    m_machineBlock.setBounds(header.getX(), top, m_machineBlock.preferredWidth(), MdMachineBlock::kLcdH * kScale);
+    auto headerTop = header.removeFromTop(30);
+    m_menuButton.setBounds(headerTop.removeFromRight(32 * kScale));
+    headerTop.removeFromRight(10);
+    m_kitButton.setBounds(headerTop.removeFromRight(24 * kScale));
+    headerTop.removeFromRight(8);
+    m_kitName.setBounds(headerTop.removeFromRight(64 * kScale));
+    {   // without an OS file: the notice and its button beside the machine block
+        auto s = headerTop.withLeft(m_machineBlock.getRight() + 16);
+        m_status.setBounds(s.removeFromLeft(LcdCanvas::textWidth(spec::kFontBold8, "NO MACHINEDRUM OS FILE") * kScale + 6));
+        s.removeFromLeft(10);
+        m_osButton.setBounds(s.removeFromLeft((LcdCanvas::textWidth(spec::kFontBold8, "SELECT OS FILE") + 8) * kScale));
     }
-    const auto mix = juce::Rectangle<int>(kW - kMargin - kMixW, kPanelY, kMixW, kH - kPanelY - kMargin);
-    m_masterLabel.setBounds(mix.getX() + 10, mix.getY() + 36, kMixW - 20, 18);
-    m_master.setBounds(mix.getX() + 30, mix.getY() + 54, kMixW - 60, 92);
-    m_accentLabel.setBounds(mix.getX() + 10, mix.getY() + 150, kMixW - 20, 18);
-    m_accent.setBounds(mix.getX() + 40, mix.getY() + 168, kMixW - 80, 70);
-    m_velButton.setBounds(mix.getX() + 8, mix.getBottom() - 34, kMixW - 16, 26);
+    r.removeFromTop(6);
+
+    auto body = r;
+    auto lev = body.removeFromLeft(levW);
+    body.removeFromLeft(8);
+    body.removeFromTop(36);   // the machine block's lower part and the gap under it
+    auto keys = body.removeFromBottom(MdTrackKeys::kLcdH * kScale);
+    body.removeFromBottom(gap);
+    m_keys.setBounds(keys.withWidth(3 * KnobPage::kWidth + 2 * gap));
+    lev = lev.withTop(body.getY() - 11 * kScale).withBottom(body.getY() + 2 * KnobPage::kHeight + gap);
+    m_level.setBounds(lev.withHeight((lev.getHeight() / kScale) * kScale));
+
+    auto place = [](juce::Rectangle<int> b, KnobPage& page) { page.setBounds(b.withTop(b.getY() - page.overhangPx())); };   // tabs stand above the page
+    auto placeRow = [&](juce::Rectangle<int> row, KnobPage& a, KnobPage& b, KnobPage& c) {
+        place(row.removeFromLeft(KnobPage::kWidth), a); row.removeFromLeft(gap);
+        place(row.removeFromLeft(KnobPage::kWidth), b); row.removeFromLeft(gap);
+        place(row.removeFromLeft(KnobPage::kWidth), c);
+    };
+    placeRow(body.removeFromTop(KnobPage::kHeight), m_syn, m_fx, m_routing);
+    body.removeFromTop(gap);
+    placeRow(body.removeFromTop(KnobPage::kHeight), m_lfo, m_master, m_out);
+
+    // the sample slot stands in the SYNTHESIS title bar, right-aligned like a page badge
+    const int bw = m_sample.preferredWidth();
+    m_sample.setBounds(m_syn.getRight() - bw - kScale, m_syn.getY() + m_syn.overhangPx() + kScale, bw, (KnobPage::kTitleH - 2) * kScale);
+    m_picker.setBounds(juce::Rectangle<int>(m_syn.getX(), m_syn.getY(), m_routing.getRight() - m_syn.getX(), m_out.getBottom() - m_syn.getY()));
 }
 
 } // namespace mnm::plugin::md

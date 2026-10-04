@@ -136,7 +136,7 @@ void MdProcessor::refreshParameters()
         auto& p = params[size_t(t)];
         for (int k = 0; k < 8; ++k) p[size_t(k)] = val(tr.knobs[k]);
         for (int k = 0; k < 8; ++k) p[size_t(8 + k)] = val(tr.mix[k]);
-        p[16] = val(tr.mix[8]); p[17] = val(tr.mix[9]); p[18] = val(tr.mix[10], 64.0f); p[19] = val(tr.mix[11]); p[20] = val(tr.mix[12]);
+        p[16] = val(tr.mix[8]); p[17] = val(tr.mix[9]); p[18] = val(tr.mix[10]); p[19] = val(tr.mix[11]); p[20] = val(tr.mix[12]);
         p[21] = val(tr.lfo[5]); p[22] = val(tr.lfo[6]); p[23] = val(tr.lfo[7]);
         levels[size_t(t)] = val(tr.mix[13]);
         const uint8_t cfg[5] = {uint8_t(val(tr.lfo[0])), uint8_t(val(tr.lfo[1])), uint8_t(val(tr.lfo[2])), uint8_t(val(tr.lfo[3])), uint8_t(val(tr.lfo[4]))};
@@ -245,7 +245,7 @@ void MdProcessor::handleCc(int channel, int cc, int value)
         else if (k < 16) set(fxId(t, k - 8), float(value));
         else if (k < 21) {
             static juce::String (* const ids[5])(int) = {distId, volId, panId, delId, revId};
-            set(ids[k - 16](t), k == 18 ? float(value - 64) : float(value));
+            set(ids[k - 16](t), float(value));
         } else {
             set(lfoId(t, 5 + (k - 21)), float(value));   // LFOS LFOD LFOM
         }
@@ -449,7 +449,7 @@ int MdProcessor::applyKit(const mnm::md::Kit& kit)
         for (int k = 0; k < 8; ++k) set(fxId(t, k), float(p[size_t(8 + k)]));
         set(distId(t), float(p[16]));
         set(volId(t), float(p[17]));
-        set(panId(t), float(p[18]) - 64.0f);
+        set(panId(t), float(p[18]));
         set(delId(t), float(p[19]));
         set(revId(t), float(p[20]));
         set(levelId(t), float(kit.levels[size_t(t)]));

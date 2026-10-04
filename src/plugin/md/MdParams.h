@@ -1,10 +1,11 @@
 // Monomodule MD parameters, as the Machinedrum's pages: per track the machine and its eight SYNTHESIS knobs, the eight
 // EFFECTS knobs, ROUTING (DIST VOL PAN DEL REV), the kit LEVEL and the output; the four master effects; an output
-// volume. Every knob is raw 0..127 as on the hardware (PAN shown -64..63). The machine list is the stock synthesis
+// volume. Every knob is raw 0..127 as on the hardware (bipolar ones such as PAN shown -64..63). The machine list is the stock synthesis
 // machines of OS 1.63 (names and knob labels shown come from the user's OS file at run time).
 #pragma once
 #include <array>
 #include <juce_audio_processors/juce_audio_processors.h>
+#include "ParamDisplay.h"
 
 namespace mnm::plugin::md {
 
@@ -125,7 +126,7 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
             g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{fxId(t, k), 1}, kFxLabels[k], 0, 127, kFxDefaults[k]));
         g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{distId(t), 1}, "DIST", 0, 127, 0));
         g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{volId(t), 1}, "VOL", 0, 127, 100));
-        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{panId(t), 2}, "PAN", -64, 63, 0));
+        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{panId(t), 3}, "PAN", 0, 127, 64, hwDisplay(true)));   // raw, shown -64..63
         g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{delId(t), 1}, "DEL", 0, 127, 0));
         g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{revId(t), 1}, "REV", 0, 127, 0));
         g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{levelId(t), 2}, "LEVEL", 0, 127, 127));
