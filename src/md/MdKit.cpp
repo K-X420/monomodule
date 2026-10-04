@@ -42,6 +42,7 @@ bool parseKit(const uint8_t* msg, size_t len, Kit& out)
         out.machines[size_t(t)] = (uint32_t(models[4 * t]) << 24) | (uint32_t(models[4 * t + 1]) << 16) | (uint32_t(models[4 * t + 2]) << 8) | models[4 * t + 3];
     uint8_t lfos[16 * 36];
     r.unpack7(lfos, sizeof(lfos));
+    for (int t = 0; t < 16; ++t) std::copy_n(lfos + 36 * t, 36, out.lfos[size_t(t)].begin());
     for (auto& fx : out.masterFx) r.raw(fx.data(), 8);
     return r.ok;
 }

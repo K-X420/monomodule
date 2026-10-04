@@ -21,6 +21,7 @@ struct Kit {
     std::array<uint8_t, 16> levels{};
     std::array<uint32_t, 16> machines{};                // firmware machine IDs
     std::array<std::array<uint8_t, 8>, 4> masterFx{};   // reverb, delay, EQ, dynamics
+    std::array<std::array<uint8_t, 36>, 16> lfos{};     // dest track, dest param, shape 1, shape 2, type, OS state
 };
 
 // Parses one sysex message (F0..F7); false when it is not a stock MD kit message.

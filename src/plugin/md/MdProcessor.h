@@ -73,12 +73,12 @@ private:
         std::atomic<float>* machine = nullptr;
         std::atomic<float>* knobs[8] = {};
         std::atomic<float>* mix[kMixRaw] = {};
+        std::atomic<float>* lfo[8] = {};             // TRK PARAM SHP1 SHP2 TYPE SPD DEP MIX
         std::atomic<float>* route = nullptr;
         int sentMachine = -1;
-        std::array<int, 8> synRaw{}, synSent{};      // slewed raw words and the ones the packet was built from
-        std::array<int, kMixRaw> mixRaw{}, mixSent{};
+        std::array<int, 8> synSent{};                // live raw words the DSP2 packet was built from
+        std::array<int, kMixRaw> mixSent{};          // and the DSP1 words
         int sentRoute = -1;
-        bool snap = true;                            // jump to the targets (load, state restore)
     };
 
     void loadEngine();
@@ -99,7 +99,10 @@ private:
     std::array<Track, kTracks> m_tracks;
     std::array<std::array<std::atomic<float>*, 8>, 4> m_masterFx{};
     std::array<std::array<int, 8>, 4> m_masterSent{};
-    bool m_masterSnap = true;
+    std::atomic<bool> m_snap{true};   // the next tick jumps every knob to its target (load, state restore, kit)
+    uint32_t m_blockCount = 0;
+    std::array<std::array<uint8_t, 36>, kTracks> m_kitLfos{};   // a loaded kit's LFO structs, for the audio thread
+    std::array<std::atomic<bool>, kTracks> m_kitLfoPending{};
     double m_tempoSent = 0.0;
     std::atomic<float>* m_master = nullptr;
     std::atomic<double> m_hostBpm{120.0};

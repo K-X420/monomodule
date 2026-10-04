@@ -25,7 +25,7 @@ const char* familyOf(int id)
     if (id < 80) return "P-I";
     return "INP";
 }
-constexpr const char* kPageNames[4] = {"SYNTH", "EFFECTS", "ROUTING", "MASTER FX"};
+constexpr const char* kPageNames[5] = {"SYNTH", "EFFECTS", "ROUTING", "LFO", "MASTER FX"};
 }
 
 // ---------------------------------------------------------------------------------------------- look and feel
@@ -121,12 +121,13 @@ MdEditor::MdEditor(MdProcessor& p) : AudioProcessorEditor(p), m_proc(p)
     m_kitButton.onClick = [this] { chooseKit(); };
     addAndMakeVisible(m_kitButton);
 
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < kNumPages; ++i) {
         auto& b = m_pageButtons[size_t(i)];
         b.setButtonText(kPageNames[i]);
-        b.setClickingTogglesState(false);
         b.onClick = [this, i] { showPage(Page(i)); };
         addAndMakeVisible(b);
+    }
+    for (int i = 0; i < 4; ++i) {
         auto& f = m_fxButtons[size_t(i)];
         f.setButtonText(kMasterFxNames[i]);
         f.onClick = [this, i] { m_masterFx = i; attachKnobs(); };
@@ -187,7 +188,7 @@ void MdEditor::selectTrack(int t)
 void MdEditor::showPage(Page p)
 {
     m_page = p;
-    for (int i = 0; i < 4; ++i) m_pageButtons[size_t(i)].setToggleState(i == int(p), juce::dontSendNotification);
+    for (int i = 0; i < kNumPages; ++i) m_pageButtons[size_t(i)].setToggleState(i == int(p), juce::dontSendNotification);
     attachKnobs();
     resized();
 }
@@ -212,6 +213,7 @@ void MdEditor::attachKnobs()
             if (k < 7) id = ids[k](m_track);
             break;
         }
+        case Page::Lfo: id = lfoId(m_track, k); break;
         case Page::Master: id = masterFxId(m_masterFx, k); break;
         }
         auto& s = m_knobs[size_t(k)];
@@ -221,7 +223,7 @@ void MdEditor::attachKnobs()
     }
     m_shownMachine = -1;
     refreshLabels();
-    for (int i = 0; i < 4; ++i) m_pageButtons[size_t(i)].setToggleState(i == int(m_page), juce::dontSendNotification);
+    for (int i = 0; i < kNumPages; ++i) m_pageButtons[size_t(i)].setToggleState(i == int(m_page), juce::dontSendNotification);
     repaint();
 }
 
@@ -237,6 +239,7 @@ void MdEditor::refreshLabels()
         case Page::Synth: label = m ? juce::String(m->labels[size_t(k)]) : (id == 0 ? juce::String() : "SYN" + juce::String(k + 1)); break;
         case Page::Effects: label = kFxLabels[k]; break;
         case Page::Routing: label = k < 6 ? juce::String(kRouteLabels[k]) : (k == 6 ? juce::String("OUT") : juce::String()); break;
+        case Page::Lfo: label = kLfoLabels[k]; break;
         case Page::Master: label = kMasterFxLabels[m_masterFx][k]; break;
         }
         m_knobLabels[size_t(k)].setText(label, juce::dontSendNotification);
@@ -358,7 +361,7 @@ void MdEditor::resized()
     const auto panel = panelBounds();
     // page tabs along the bottom of the panel, the machine / effect selector in the title bar
     const int tabW = 116;
-    for (int i = 0; i < 4; ++i) m_pageButtons[size_t(i)].setBounds(panel.getX() + 10 + i * (tabW + 6), panel.getBottom() - 34, tabW, 26);
+    for (int i = 0; i < kNumPages; ++i) m_pageButtons[size_t(i)].setBounds(panel.getX() + 10 + i * (tabW + 6), panel.getBottom() - 34, tabW, 26);
     m_machine.setBounds(panel.getX() + 130, panel.getY() + 3, 190, 24);
     for (int i = 0; i < 4; ++i) m_fxButtons[size_t(i)].setBounds(panel.getX() + 130 + i * 96, panel.getY() + 3, 92, 24);
     const int knobW = 76, knobH = 96;

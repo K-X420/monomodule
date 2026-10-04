@@ -34,7 +34,8 @@ public:
     void mouseDown(const juce::MouseEvent&) override;
 
 private:
-    enum class Page { Synth = 0, Effects, Routing, Master };
+    enum class Page { Synth = 0, Effects, Routing, Lfo, Master };
+    static constexpr int kNumPages = 5;
     void timerCallback() override;
     void selectTrack(int t);
     void showPage(Page p);
@@ -54,7 +55,7 @@ private:
     juce::TextButton m_osButton{"OS FILE..."};
     juce::TextButton m_kitButton{"KIT..."};
     std::vector<mnm::md::Kit> m_kits;   // the kits of the last chosen file (for the menu)
-    std::array<juce::TextButton, 4> m_pageButtons;
+    std::array<juce::TextButton, kNumPages> m_pageButtons;
     std::array<juce::TextButton, 4> m_fxButtons;
     juce::ComboBox m_machine;
     std::array<juce::Slider, 8> m_knobs;

@@ -91,31 +91,119 @@ const ControlCpu::MasterFxSection& ControlCpu::masterFxSection(MasterFx fx)
     return sections[int(fx)];
 }
 
-bool ControlCpu::convertMasterFx(MasterFx fx, const std::array<uint16_t, 8>& raw, std::array<uint32_t, 16>& words)
+bool ControlCpu::call(uint32_t fn, uint32_t stopPc)
 {
-    constexpr uint32_t kJoin = 0x20BA4C;
-    const auto& s = masterFxSection(fx);
-    std::lock_guard<std::mutex> lock(g_cpuLock);
+    // caller holds g_cpuLock; a C call with no arguments returning to the trampoline (or stopping at stopPc)
     g_ram = &m_ram;
     g_tempo = m_tempo;
-    for (int k = 0; k < 8; ++k) { wr8(s.rawAddr + 2 * uint32_t(k), uint8_t(raw[size_t(k)] >> 8)); wr8(s.rawAddr + 2 * uint32_t(k) + 1, uint8_t(raw[size_t(k)])); }
+    auto put32 = [&](uint32_t a, uint32_t v) { for (int k = 0; k < 4; ++k) m_ram[a + uint32_t(k)] = uint8_t(v >> (8 * (3 - k))); };
+    const uint32_t sp = kStackTop - 0x100;
+    put32(sp, kReturnPc);
     ensureCpu();
     m68k_pulse_reset();
-    m68k_set_reg(M68K_REG_SP, kStackTop - 0x100);
-    m68k_set_reg(M68K_REG_PC, s.entry);
+    m68k_set_reg(M68K_REG_SP, sp);
+    m68k_set_reg(M68K_REG_PC, fn);
     g_returned = false;
-    g_stopPc = kJoin;
+    g_stopPc = stopPc;
     int cycles = 0;
     while (!g_returned && cycles < kMaxCycles) cycles += m68k_execute(10000);
     g_stopPc = 0;
-    bool ok = g_returned;
-    for (int k = 0; k < s.words && k < 16; ++k) {
-        const uint32_t a = s.mirror + 4 * uint32_t(k);
-        words[size_t(k)] = ((uint32_t(rd8(a)) << 24) | (uint32_t(rd8(a + 1)) << 16) | (uint32_t(rd8(a + 2)) << 8) | rd8(a + 3)) & 0xFFFFFF;
-    }
+    m_lastPc = m68k_get_reg(nullptr, M68K_REG_PC);
     g_ram = nullptr;
+    return g_returned;
+}
+
+bool ControlCpu::convertMasterFx(MasterFx fx, const std::array<uint16_t, 8>& raw, std::array<uint32_t, 16>& words)
+{
+    const auto& s = masterFxSection(fx);
+    for (int k = 0; k < 8; ++k) { sram(s.rawAddr)[2 * k] = uint8_t(raw[size_t(k)] >> 8); sram(s.rawAddr)[2 * k + 1] = uint8_t(raw[size_t(k)]); }
+    return convertMasterFxFromTick(fx, words);
+}
+
+bool ControlCpu::convertMasterFxFromTick(MasterFx fx, std::array<uint32_t, 16>& words)
+{
+    constexpr uint32_t kJoin = 0x20BA4C;
+    const auto& s = masterFxSection(fx);
+    bool ok;
+    {
+        std::lock_guard<std::mutex> lock(g_cpuLock);
+        ok = call(s.entry, kJoin);
+    }
+    for (int k = 0; k < s.words && k < 16; ++k) {
+        const uint8_t* p = sram(s.mirror + 4 * uint32_t(k));
+        words[size_t(k)] = ((uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3]) & 0xFFFFFF;
+    }
     m_error = ok ? "" : "master FX section did not finish";
     return ok;
+}
+
+// ---- control tick ------------------------------------------------------------------------------------------
+
+namespace {
+constexpr uint32_t kTargets = 0x1000DDC, kLevelTargets = 0x1000F5C, kLfos = 0x1000F8C;
+constexpr uint32_t kBase = 0x1000A4C, kLive = 0x10011CC, kLevelLive = 0x1000D7C;
+constexpr uint32_t kFnLfoUpdate = 0x1000088, kFnSlewParams = 0x10002E0, kFnApplyLfos = 0x1000332, kFnSlewLevels = 0x100029E;
+}
+
+void ControlCpu::setTargets(const TrackParams& params, const std::array<uint8_t, 16>& levels, const std::array<std::array<uint8_t, 8>, 4>& masterFx)
+{
+    uint8_t* t = sram(kTargets);
+    for (int tr = 0; tr < 16; ++tr)
+        for (int k = 0; k < 24; ++k) t[24 * tr + k] = params[size_t(tr)][size_t(k)];
+    uint8_t* l = sram(kLevelTargets);
+    for (int tr = 0; tr < 16; ++tr) l[tr] = levels[size_t(tr)];
+    for (int fx = 0; fx < 4; ++fx)
+        for (int k = 0; k < 8; ++k) l[16 + 8 * fx + k] = masterFx[size_t(fx)][size_t(k)];
+}
+
+void ControlCpu::snapToTargets()
+{
+    auto put16 = [](uint8_t* p, uint16_t v) { p[0] = uint8_t(v >> 8); p[1] = uint8_t(v); };
+    const uint8_t* t = sram(kTargets);
+    for (int i = 0; i < 16 * 24; ++i) { put16(sram(kBase) + 2 * i, uint16_t(t[i] << 7)); put16(sram(kLive) + 2 * i, uint16_t(t[i] << 7)); }
+    const uint8_t* l = sram(kLevelTargets);
+    for (int i = 0; i < 48; ++i) put16(sram(kLevelLive) + 2 * i, uint16_t(l[i] << 7));
+}
+
+void ControlCpu::setLfo(int track, const uint8_t* lfo36)
+{
+    if (track < 0 || track > 15) return;
+    std::memcpy(sram(kLfos + 36 * uint32_t(track)), lfo36, 36);
+}
+
+void ControlCpu::setLfoConfig(int track, const uint8_t* first5)
+{
+    if (track < 0 || track > 15) return;
+    std::memcpy(sram(kLfos + 36 * uint32_t(track)), first5, 5);
+}
+
+void ControlCpu::lfoTrig(int track)
+{
+    if (track >= 0 && track <= 15) sram(kLfos + 36 * uint32_t(track))[5] = 1;   // the OS's trig flag (0x20CE1C)
+}
+
+bool ControlCpu::tick(bool lfoUpdate)
+{
+    std::lock_guard<std::mutex> lock(g_cpuLock);
+    bool ok = true;
+    if (lfoUpdate) ok = call(kFnLfoUpdate) && ok;
+    ok = call(kFnSlewParams) && ok;
+    ok = call(kFnApplyLfos) && ok;
+    ok = call(kFnSlewLevels) && ok;
+    if (!ok) m_error = "control tick did not finish";
+    return ok;
+}
+
+uint16_t ControlCpu::liveParam(int track, int k) const
+{
+    const uint8_t* p = sram(kLive + 2 * uint32_t(24 * track + k));
+    return uint16_t((p[0] << 8) | p[1]);
+}
+
+uint16_t ControlCpu::liveLevel(int track) const
+{
+    const uint8_t* p = sram(kLevelLive + 2 * uint32_t(track));
+    return uint16_t((p[0] << 8) | p[1]);
 }
 
 ControlCpu::~ControlCpu() = default;

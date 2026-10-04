@@ -31,12 +31,33 @@ public:
     static const MasterFxSection& masterFxSection(MasterFx fx);
     // words: the DSP1 words for Y:dspAddr.. (count = section.words). Returns false on a runaway section.
     bool convertMasterFx(MasterFx fx, const std::array<uint16_t, 8>& raw, std::array<uint32_t, 16>& words);
+    // As above, from the raw words the control tick left in SRAM (slewed, the OS's own path)
+    bool convertMasterFxFromTick(MasterFx fx, std::array<uint32_t, 16>& words);
+
+    // The OS's control tick, run once per audio block (32 frames) as the hardware's block interrupt does
+    // (SRAM 0x1000088.. copied from MainOS). It slews every knob toward its target (cur = (3 cur + target) / 4),
+    // evaluates the track LFOs (every 4th block) and adds each LFO to its destination knob:
+    //   targets: track params 0x1000DDC (16 x 24 bytes), levels + master effects 0x1000F5C (16 + 32 bytes)
+    //   LFOs:    0x1000F8C + 36 t (kit LFO struct: dest track, dest param, shape 1, shape 2, type, state)
+    //   live:    track params 0x10011CC (16 x 24 raw words), levels 0x1000D7C, master effects 0x1000D9C
+    using TrackParams = std::array<std::array<uint8_t, 24>, 16>;
+    void setTargets(const TrackParams& params, const std::array<uint8_t, 16>& levels, const std::array<std::array<uint8_t, 8>, 4>& masterFx);
+    void snapToTargets();   // jump every live word to its target (load, state restore)
+    void setLfo(int track, const uint8_t* lfo36);       // the whole struct (kit load)
+    void setLfoConfig(int track, const uint8_t* first5); // dest track, dest param, shape 1, shape 2, type (state kept)
+    void lfoTrig(int track);                             // what a trig does to the track's LFO
+    bool tick(bool lfoUpdate);
+    uint16_t liveParam(int track, int k) const;          // raw word, 0..0x3FFF
+    uint16_t liveLevel(int track) const;
 
     void setTempo(double bpm) { m_tempo = uint32_t(bpm * 24.0 + 0.5); }   // BPM x 24, as the OS keeps it
     const char* lastError() const { return m_error; }
     uint32_t lastPc() const { return m_lastPc; }
 
 private:
+    bool call(uint32_t fn, uint32_t stopPc = 0);   // under the CPU lock: run fn (or up to stopPc) to its return
+    uint8_t* sram(uint32_t addr) { return m_ram.data() + 0x7E0000 + (addr - 0x1000000); }
+    const uint8_t* sram(uint32_t addr) const { return m_ram.data() + 0x7E0000 + (addr - 0x1000000); }
     std::vector<uint8_t> m_ram;   // 0x000000.. : MainOS at 0x200000, globals after it, the call frame at the top
     uint32_t m_tempo = 120 * 24;
     const char* m_error = "";

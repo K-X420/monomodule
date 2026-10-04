@@ -84,6 +84,13 @@ inline juce::String delId(int t) { return tp(t) + "del"; }
 inline juce::String revId(int t) { return tp(t) + "rev"; }
 inline juce::String levelId(int t) { return tp(t) + "lev"; }
 inline juce::String routeId(int t) { return tp(t) + "out"; }
+// LFO page: destination, shapes, type (the kit's LFO struct) and SPD DEP MIX (routing bytes 21-23)
+constexpr const char* kLfoLabels[8] = {"TRK", "PARAM", "SHP1", "SHP2", "TYPE", "SPD", "DEP", "MIX"};
+constexpr const char* kLfoTypes[3] = {"FREE", "TRIG", "HOLD"};
+constexpr const char* kLfoParamNames[24] = {"SYN1", "SYN2", "SYN3", "SYN4", "SYN5", "SYN6", "SYN7", "SYN8",
+                                            "AMD", "AMF", "EQF", "EQG", "FLTF", "FLTW", "FLTQ", "SRR",
+                                            "DIST", "VOL", "PAN", "DEL", "REV", "LFOS", "LFOD", "LFOM"};
+inline juce::String lfoId(int t, int k) { static const char* n[8] = {"lfotrk", "lfopar", "lfosh1", "lfosh2", "lfotyp", "lfospd", "lfodep", "lfomix"}; return tp(t) + n[k]; }
 inline juce::String masterFxId(int fx, int k) { static const char* p[4] = {"rv", "dl", "eq", "dx"}; return juce::String(p[fx]) + juce::String(k + 1); }
 inline juce::String masterId() { return "master"; }
 
@@ -108,6 +115,18 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
         juce::StringArray routes;
         for (auto* r : kRouteNames) routes.add(r);
         g->addChild(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{routeId(t), 1}, "OUT", routes, kNumRoutes - 1));
+        juce::StringArray tracks, lfoParams, types;
+        for (int i = 0; i < kTracks; ++i) tracks.add("T" + juce::String(i + 1));
+        for (auto* n : kLfoParamNames) lfoParams.add(n);
+        for (auto* n : kLfoTypes) types.add(n);
+        g->addChild(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{lfoId(t, 0), 1}, "LFO TRK", tracks, t));
+        g->addChild(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{lfoId(t, 1), 1}, "LFO PARAM", lfoParams, 0));
+        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{lfoId(t, 2), 1}, "LFO SHP1", 0, 7, 0));
+        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{lfoId(t, 3), 1}, "LFO SHP2", 0, 7, 0));
+        g->addChild(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{lfoId(t, 4), 1}, "LFO TYPE", types, 0));
+        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{lfoId(t, 5), 1}, "LFO SPD", 0, 127, 64));
+        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{lfoId(t, 6), 1}, "LFO DEP", 0, 127, 0));
+        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{lfoId(t, 7), 1}, "LFO MIX", 0, 127, 0));
         layout.add(std::move(g));
     }
     for (int fx = 0; fx < 4; ++fx) {

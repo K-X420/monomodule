@@ -19,6 +19,15 @@ int main(int argc, char** argv)
     proc.setPlayConfigDetails(0, 2, rate, block);
     proc.prepareToPlay(rate, block);
     bool kitLoaded = false;
+    const bool lfoTest = std::getenv("MD_LFO_TEST") != nullptr;
+    if (lfoTest) {   // track 1: GND-SN, long decay, LFO on its own PTCH (SYN1), depth 127, SPD 32
+        auto set = [&](const juce::String& id, float v) { if (auto* p = proc.apvts.getParameter(id)) p->setValueNotifyingHost(p->convertTo0to1(v)); };
+        set(machineId(0), float(machineIndexOf(1)));
+        set(knobId(0, 0), 64.0f); set(knobId(0, 1), 127.0f);
+        set(lfoId(0, 0), 0.0f); set(lfoId(0, 1), 0.0f); set(lfoId(0, 2), 0.0f); set(lfoId(0, 3), 0.0f);
+        set(lfoId(0, 5), 32.0f); set(lfoId(0, 6), 127.0f); set(lfoId(0, 7), 0.0f);
+        std::printf("LFO test: GND-SN with an LFO on PTCH\n");
+    }
     if (argc > 5) {   // md-plugintest <os> <out.wav> <ui.png> <dump.syx> <kit position>
         const auto kits = mnm::md::loadKits(argv[4]);
         const int pos = std::atoi(argv[5]);
@@ -45,6 +54,7 @@ int main(int argc, char** argv)
             const int at = int(s * stepSec * rate);
             if (at < pos || at >= pos + n) continue;
             auto note = [&](int nn) { midi.addEvent(juce::MidiMessage::noteOn(1, nn, uint8_t(100)), at - pos); };
+            if (lfoTest) { if (s == 0) note(36); continue; }
             if (kitLoaded) {   // a busier pattern over all 16 tracks
                 for (int t = 0; t < kTracks; ++t)
                     if ((s * (t + 3) + t) % (t < 2 ? 4 : 7) == 0) note(kTrackNotes[t]);

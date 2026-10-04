@@ -10,12 +10,9 @@ using mnm::md::ControlCpu;
 using mnm::md::MixEngine;
 constexpr double kEngineRate = 44100.0;
 constexpr int kBlock = mnm::md::VoiceEngine::kBlockFrames;
-constexpr int kSlewStep = 384;   // raw units per 32-frame block (3 knob steps): a full sweep in ~31 ms
 // DAC frame offsets of the outputs: A=2 B=5 C=1 D=4 E=0 F=3; the main bus is A/B (where MAIN lands)
 constexpr int kBusChannels[3][2] = {{2, 5}, {1, 4}, {0, 3}};
 juce::String loadOsPath() { return loadSharedSetting("mdOsPath"); }
-int toRaw(float v) { return int(std::lround(juce::jlimit(0.0f, 127.0f, v))) << 7; }
-int slew(int cur, int target) { return cur < target ? std::min(target, cur + kSlewStep) : std::max(target, cur - kSlewStep); }
 }
 
 MdProcessor::MdProcessor()
@@ -38,6 +35,7 @@ MdProcessor::MdProcessor()
         tr.mix[12] = apvts.getRawParameterValue(revId(t));
         tr.mix[13] = apvts.getRawParameterValue(levelId(t));
         tr.route = apvts.getRawParameterValue(routeId(t));
+        for (int k = 0; k < 8; ++k) tr.lfo[k] = apvts.getRawParameterValue(lfoId(t, k));
         apvts.addParameterListener(machineId(t), this);
     }
     for (int fx = 0; fx < 4; ++fx)
@@ -78,8 +76,8 @@ void MdProcessor::loadEngine()
         auto voices = std::make_unique<mnm::md::VoiceEngine>(*fw);
         auto mixer = std::make_unique<MixEngine>(*fw);
         m_fw = std::move(fw); m_cpu = std::move(cpu); m_voices = std::move(voices); m_mixer = std::move(mixer);
-        for (auto& tr : m_tracks) { tr.sentMachine = -1; tr.sentRoute = -1; tr.snap = true; }
-        m_masterSnap = true;
+        for (auto& tr : m_tracks) { tr.sentMachine = -1; tr.sentRoute = -1; }
+        m_snap = true;
         m_status = "OS loaded: " + juce::File(m_firmwarePath).getFileName();
         m_engineReady = true;
     } catch (const std::exception& e) {
@@ -113,64 +111,81 @@ bool MdProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
     return true;
 }
 
+// The OS's control path, once per block: the knob values become the tick's targets; the tick slews them and adds
+// the LFOs; the live raw words then go through the machine handlers (DSP2), as raw words to DSP1's track effects,
+// through the routing law, and through the master effect sections.
 void MdProcessor::refreshParameters()
 {
+    auto val = [](std::atomic<float>* p, float offset = 0.0f) { return uint8_t(juce::jlimit(0, 127, int(std::lround(p->load() + offset)))); };
+    ControlCpu::TrackParams params{};
+    std::array<uint8_t, 16> levels{};
+    std::array<std::array<uint8_t, 8>, 4> master{};
     for (int t = 0; t < kTracks; ++t) {
         auto& tr = m_tracks[size_t(t)];
-        // synthesis: the machine's control handler on the slewed raw words
+        auto& p = params[size_t(t)];
+        for (int k = 0; k < 8; ++k) p[size_t(k)] = val(tr.knobs[k]);
+        for (int k = 0; k < 8; ++k) p[size_t(8 + k)] = val(tr.mix[k]);
+        p[16] = val(tr.mix[8]); p[17] = val(tr.mix[9]); p[18] = val(tr.mix[10], 64.0f); p[19] = val(tr.mix[11]); p[20] = val(tr.mix[12]);
+        p[21] = val(tr.lfo[5]); p[22] = val(tr.lfo[6]); p[23] = val(tr.lfo[7]);
+        levels[size_t(t)] = val(tr.mix[13]);
+        const uint8_t cfg[5] = {uint8_t(val(tr.lfo[0])), uint8_t(val(tr.lfo[1])), uint8_t(val(tr.lfo[2])), uint8_t(val(tr.lfo[3])), uint8_t(val(tr.lfo[4]))};
+        if (m_kitLfoPending[size_t(t)].exchange(false)) m_cpu->setLfo(t, m_kitLfos[size_t(t)].data());
+        m_cpu->setLfoConfig(t, cfg);
+    }
+    for (int fx = 0; fx < 4; ++fx)
+        for (int k = 0; k < 8; ++k) master[size_t(fx)][size_t(k)] = val(m_masterFx[size_t(fx)][size_t(k)]);
+    m_cpu->setTargets(params, levels, master);
+    const bool snap = m_snap.exchange(false);
+    if (snap) m_cpu->snapToTargets();
+    const double bpm = m_hostBpm.load();
+    m_cpu->setTempo(bpm);
+    m_cpu->tick((m_blockCount++ & 3) == 0);   // the LFOs advance every 4th block, as on the hardware
+
+    for (int t = 0; t < kTracks; ++t) {
+        auto& tr = m_tracks[size_t(t)];
+        // synthesis: the machine's control handler on the live raw words
         const int id = machineIdOf(t);
-        const bool machineChanged = id != tr.sentMachine;
-        for (int k = 0; k < 8; ++k) {
-            const int target = toRaw(tr.knobs[k]->load());
-            tr.synRaw[size_t(k)] = (tr.snap || machineChanged) ? target : slew(tr.synRaw[size_t(k)], target);
-        }
-        if (machineChanged || tr.synRaw != tr.synSent) {
-            tr.sentMachine = id; tr.synSent = tr.synRaw;
+        std::array<int, 8> syn{};
+        for (int k = 0; k < 8; ++k) syn[size_t(k)] = m_cpu->liveParam(t, k);
+        if (snap || id != tr.sentMachine || syn != tr.synSent) {
+            tr.sentMachine = id; tr.synSent = syn;
             if (const auto* m = m_fw->byId(id)) {
                 std::array<uint16_t, 8> raw{};
-                for (int k = 0; k < 8; ++k) raw[size_t(k)] = uint16_t(tr.synRaw[size_t(k)]);
+                for (int k = 0; k < 8; ++k) raw[size_t(k)] = uint16_t(syn[size_t(k)]);
                 std::array<uint32_t, ControlCpu::kMaxPacket> packet{};
                 const int n = m_cpu->convert(m->handler, m->dspType(), raw, packet);
                 if (n > 0) m_voices->setPacket(t, packet.data(), n);
             }
         }
-        // effects and routing on DSP1
-        for (int k = 0; k < kMixRaw; ++k) {
-            const float v = tr.mix[k]->load() + (k == 10 ? 64.0f : 0.0f);   // PAN -64..63 -> 0..127
-            const int target = toRaw(v);
-            tr.mixRaw[size_t(k)] = tr.snap ? target : slew(tr.mixRaw[size_t(k)], target);
-        }
+        // DSP1: track effects (AMD..SRR, DIST) and routing (level, VOL, PAN, sends)
+        std::array<int, kMixRaw> mix{};
+        for (int k = 0; k < 9; ++k) mix[size_t(k)] = m_cpu->liveParam(t, 8 + k);
+        for (int k = 9; k < 13; ++k) mix[size_t(k)] = m_cpu->liveParam(t, 8 + k);   // VOL PAN DEL REV = params 17..20
+        mix[13] = m_cpu->liveLevel(t);
         const int route = juce::jlimit(0, kNumRoutes - 1, int(std::lround(tr.route->load())));
-        if (tr.snap || tr.mixRaw != tr.mixSent || route != tr.sentRoute) {
+        if (snap || mix != tr.mixSent || route != tr.sentRoute) {
             std::array<uint16_t, 9> fx{};
-            for (int k = 0; k < 9; ++k) fx[size_t(k)] = uint16_t(tr.mixRaw[size_t(k)]);
+            for (int k = 0; k < 9; ++k) fx[size_t(k)] = uint16_t(mix[size_t(k)]);
             m_mixer->setTrackFx(t, fx);
-            const auto& r = tr.mixRaw;
-            m_mixer->setRouting(t, MixEngine::routingWords(uint32_t(r[13]), uint32_t(r[9]), uint32_t(r[10]), uint32_t(r[12]), uint32_t(r[11]), route));
-            tr.mixSent = tr.mixRaw; tr.sentRoute = route;
+            m_mixer->setRouting(t, MixEngine::routingWords(uint32_t(mix[13]), uint32_t(mix[9]), uint32_t(mix[10]), uint32_t(mix[12]), uint32_t(mix[11]), route));
+            tr.mixSent = mix; tr.sentRoute = route;
         }
-        tr.snap = false;
     }
     // master effects (the delay also follows the tempo)
-    const double bpm = m_hostBpm.load();
-    m_cpu->setTempo(bpm);
     for (int fx = 0; fx < ControlCpu::kNumMasterFx; ++fx) {
-        std::array<int, 8> v{};
-        for (int k = 0; k < 8; ++k) v[size_t(k)] = int(std::lround(m_masterFx[size_t(fx)][size_t(k)]->load()));
-        const bool tempoChanged = fx == int(ControlCpu::MasterFx::Delay) && std::abs(bpm - m_tempoSent) > 0.01;
-        if (!m_masterSnap && !tempoChanged && v == m_masterSent[size_t(fx)]) continue;
-        m_masterSent[size_t(fx)] = v;
-        std::array<uint16_t, 8> raw{};
-        for (int k = 0; k < 8; ++k) raw[size_t(k)] = ControlCpu::rawFromValue(v[size_t(k)]);
-        std::array<uint32_t, 16> words{};
         const auto id = ControlCpu::MasterFx(fx);
-        if (m_cpu->convertMasterFx(id, raw, words)) {
+        std::array<int, 8> raw{};
+        for (int k = 0; k < 8; ++k) raw[size_t(k)] = m_cpu->liveLevel(16 + 8 * fx + k);
+        const bool tempoChanged = id == ControlCpu::MasterFx::Delay && std::abs(bpm - m_tempoSent) > 0.01;
+        if (!snap && !tempoChanged && raw == m_masterSent[size_t(fx)]) continue;
+        m_masterSent[size_t(fx)] = raw;
+        std::array<uint32_t, 16> words{};
+        if (m_cpu->convertMasterFxFromTick(id, words)) {
             const auto& s = ControlCpu::masterFxSection(id);
             m_mixer->setY(s.dspAddr, words.data(), s.words);
         }
     }
     m_tempoSent = bpm;
-    m_masterSnap = false;
 }
 
 void MdProcessor::runPass()
@@ -211,13 +226,15 @@ void MdProcessor::handleCc(int channel, int cc, int value)
     static const int bases[4] = {16, 40, 72, 96};
     for (int i = 0; i < 4; ++i) {
         const int k = cc - bases[i];
-        if (k < 0 || k > 20) continue;
+        if (k < 0 || k > 23) continue;
         const int t = (channel - 1) * 4 + i;
         if (k < 8) set(knobId(t, k), float(value));
         else if (k < 16) set(fxId(t, k - 8), float(value));
-        else {
+        else if (k < 21) {
             static juce::String (* const ids[5])(int) = {distId, volId, panId, delId, revId};
             set(ids[k - 16](t), k == 18 ? float(value - 64) : float(value));
+        } else {
+            set(lfoId(t, 5 + (k - 21)), float(value));   // LFOS LFOD LFOM
         }
         return;
     }
@@ -277,6 +294,7 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
         for (auto it = m_pending.begin(); it != m_pending.end();) {
             if (it->enginePos < passEnd) {
                 m_voices->trig(it->track, machineIdOf(it->track) + 1);
+                m_cpu->lfoTrig(it->track);
                 m_activity[size_t(it->track)].store(1.0f);
                 it = m_pending.erase(it);
             } else ++it;
@@ -323,7 +341,19 @@ int MdProcessor::applyKit(const mnm::md::Kit& kit)
         set(revId(t), float(p[20]));
         set(levelId(t), float(kit.levels[size_t(t)]));
         set(routeId(t), float(kNumRoutes - 1));
+        const auto& lfo = kit.lfos[size_t(t)];
+        set(lfoId(t, 0), float(juce::jlimit(0, 15, int(lfo[0]))));
+        set(lfoId(t, 1), float(juce::jlimit(0, 23, int(lfo[1]))));
+        set(lfoId(t, 2), float(juce::jlimit(0, 7, int(lfo[2]))));
+        set(lfoId(t, 3), float(juce::jlimit(0, 7, int(lfo[3]))));
+        set(lfoId(t, 4), float(juce::jlimit(0, 2, int(lfo[4]))));
+        set(lfoId(t, 5), float(p[21]));
+        set(lfoId(t, 6), float(p[22]));
+        set(lfoId(t, 7), float(p[23]));
+        m_kitLfos[size_t(t)] = lfo;
+        m_kitLfoPending[size_t(t)].store(true);
     }
+    m_snap = true;
     for (int fx = 0; fx < 4; ++fx)
         for (int k = 0; k < 8; ++k) set(masterFxId(fx, k), float(kit.masterFx[size_t(fx)][size_t(k)]));
     for (auto& f : m_machineChanged) f.store(false);   // the kit's knobs, not the machines' defaults
@@ -364,8 +394,7 @@ void MdProcessor::setStateInformation(const void* data, int sizeInBytes)
     apvts.replaceState(juce::ValueTree::fromXml(*xml));
     m_kitName = apvts.state.getProperty("kitName", "").toString();
     for (auto& f : m_machineChanged) f.store(false);   // restored knobs stay as saved
-    for (auto& tr : m_tracks) tr.snap = true;
-    m_masterSnap = true;
+    m_snap = true;
 }
 
 juce::AudioProcessorEditor* MdProcessor::createEditor() { return new MdEditor(*this); }
