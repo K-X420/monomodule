@@ -1,5 +1,6 @@
 #include "MdProcessor.h"
 #include <cmath>
+#include <juce_audio_formats/juce_audio_formats.h>
 #include "MdEditor.h"
 #include "SharedSettings.h"
 
@@ -81,6 +82,14 @@ void MdProcessor::loadEngine()
         for (auto& tr : m_tracks) { tr.sentMachine = -1; tr.sentRoute = -1; }
         m_snap = true;
         m_status = "OS loaded: " + juce::File(m_firmwarePath).getFileName();
+        {   // the UW samples (inline: the engine lock is already held)
+            std::array<std::vector<float>, mnm::md::VoiceEngine::kSlots> data;
+            std::array<double, mnm::md::VoiceEngine::kSlots> rates{};
+            std::array<int, mnm::md::VoiceEngine::kSlots> loops;
+            loops.fill(-1);
+            for (int i = 0; i < mnm::md::VoiceEngine::kSlots; ++i) { data[size_t(i)] = m_samples[size_t(i)].data; rates[size_t(i)] = m_samples[size_t(i)].rate; }
+            m_voices->setSamples(data, rates, loops);
+        }
         m_engineReady = true;
     } catch (const std::exception& e) {
         m_status = juce::String("OS file error: ") + e.what();
@@ -327,6 +336,101 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
     for (auto& p : m_pending) p.enginePos -= used;
 }
 
+// ---- UW samples ----------------------------------------------------------------------------------------------
+
+juce::String MdProcessor::loadSample(int slot, const juce::File& file)
+{
+    if (slot < 0 || slot >= mnm::md::VoiceEngine::kSlots) return "No such slot";
+    juce::AudioFormatManager formats;
+    formats.registerBasicFormats();
+    std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(file));
+    if (!reader) return "Cannot read " + file.getFileName();
+    const auto frames = int(std::min<juce::int64>(reader->lengthInSamples, juce::int64(mnm::md::VoiceEngine::kSampleCapacity)));
+    juce::AudioBuffer<float> buf(int(reader->numChannels), frames);
+    reader->read(&buf, 0, frames, 0, true, true);
+    Sample s;
+    s.name = file.getFileNameWithoutExtension();
+    s.rate = reader->sampleRate > 0 ? reader->sampleRate : 44100.0;
+    s.data.resize(size_t(frames));
+    for (int i = 0; i < frames; ++i) {
+        float v = 0.0f;
+        for (int c = 0; c < buf.getNumChannels(); ++c) v += buf.getSample(c, i);
+        s.data[size_t(i)] = v / float(std::max(1, buf.getNumChannels()));
+    }
+    auto previous = std::move(m_samples[size_t(slot)]);
+    m_samples[size_t(slot)] = std::move(s);
+    if (!pushSamples()) {
+        m_samples[size_t(slot)] = std::move(previous);
+        pushSamples();
+        return "Not enough sample memory (about 32 seconds in all)";
+    }
+    return {};
+}
+
+void MdProcessor::clearSample(int slot)
+{
+    if (slot < 0 || slot >= mnm::md::VoiceEngine::kSlots) return;
+    m_samples[size_t(slot)] = {};
+    pushSamples();
+}
+
+double MdProcessor::sampleMemoryUsed() const
+{
+    size_t total = 0;
+    for (const auto& s : m_samples) total += (s.data.size() + 1) & ~size_t(1);
+    return double(total) / double(mnm::md::VoiceEngine::kSampleCapacity);
+}
+
+bool MdProcessor::pushSamples()
+{
+    const juce::ScopedLock sl(m_engineLock);
+    if (!m_voices) return true;
+    std::array<std::vector<float>, mnm::md::VoiceEngine::kSlots> data;
+    std::array<double, mnm::md::VoiceEngine::kSlots> rates{};
+    std::array<int, mnm::md::VoiceEngine::kSlots> loops;
+    loops.fill(-1);
+    for (int i = 0; i < mnm::md::VoiceEngine::kSlots; ++i) { data[size_t(i)] = m_samples[size_t(i)].data; rates[size_t(i)] = m_samples[size_t(i)].rate; }
+    return m_voices->setSamples(data, rates, loops);
+}
+
+// Samples in the plugin state: 16-bit PCM, base64
+juce::ValueTree MdProcessor::samplesToTree() const
+{
+    juce::ValueTree t("SAMPLES");
+    for (int i = 0; i < mnm::md::VoiceEngine::kSlots; ++i) {
+        const auto& s = m_samples[size_t(i)];
+        if (s.data.empty()) continue;
+        juce::MemoryBlock pcm(s.data.size() * 2);
+        auto* p = static_cast<int16_t*>(pcm.getData());
+        for (size_t k = 0; k < s.data.size(); ++k) p[k] = int16_t(std::lround(juce::jlimit(-1.0f, 1.0f, s.data[k]) * 32767.0f));
+        juce::ValueTree c("SAMPLE");
+        c.setProperty("slot", i, nullptr);
+        c.setProperty("name", s.name, nullptr);
+        c.setProperty("rate", s.rate, nullptr);
+        c.setProperty("pcm16", pcm.toBase64Encoding(), nullptr);
+        t.appendChild(c, nullptr);
+    }
+    return t;
+}
+
+void MdProcessor::samplesFromTree(const juce::ValueTree& t)
+{
+    for (auto& s : m_samples) s = {};
+    for (const auto& c : t) {
+        const int slot = c.getProperty("slot", -1);
+        if (slot < 0 || slot >= mnm::md::VoiceEngine::kSlots) continue;
+        juce::MemoryBlock pcm;
+        if (!pcm.fromBase64Encoding(c.getProperty("pcm16").toString())) continue;
+        auto& s = m_samples[size_t(slot)];
+        s.name = c.getProperty("name").toString();
+        s.rate = double(c.getProperty("rate", 44100.0));
+        const auto* p = static_cast<const int16_t*>(pcm.getData());
+        s.data.resize(pcm.getSize() / 2);
+        for (size_t k = 0; k < s.data.size(); ++k) s.data[k] = float(p[k]) / 32768.0f;
+    }
+    pushSamples();
+}
+
 int MdProcessor::applyKit(const mnm::md::Kit& kit)
 {
     auto set = [&](const juce::String& id, float v) {
@@ -391,6 +495,8 @@ void MdProcessor::getStateInformation(juce::MemoryBlock& destData)
     auto state = apvts.copyState();
     state.setProperty("schema", 2, nullptr);
     state.setProperty("kitName", m_kitName, nullptr);
+    state.removeChild(state.getChildWithName("SAMPLES"), nullptr);
+    state.appendChild(samplesToTree(), nullptr);
     if (auto xml = state.createXml()) copyXmlToBinary(*xml, destData);
 }
 
@@ -400,6 +506,7 @@ void MdProcessor::setStateInformation(const void* data, int sizeInBytes)
     if (!xml || !xml->hasTagName(apvts.state.getType())) return;
     apvts.replaceState(juce::ValueTree::fromXml(*xml));
     m_kitName = apvts.state.getProperty("kitName", "").toString();
+    samplesFromTree(apvts.state.getChildWithName("SAMPLES"));
     for (auto& f : m_machineChanged) f.store(false);   // restored knobs stay as saved
     m_snap = true;
 }

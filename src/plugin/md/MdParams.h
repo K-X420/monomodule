@@ -26,7 +26,18 @@ constexpr MachineEntry kMachines[] = {
     {64, "P-I-BD"}, {65, "P-I-SD"}, {66, "P-I-MT"}, {67, "P-I-ML"}, {68, "P-I-MA"}, {69, "P-I-RS"}, {70, "P-I-RC"},
     {71, "P-I-CC"}, {72, "P-I-HH"},
     {80, "INP-GA"}, {81, "INP-GB"}, {82, "INP-FA"}, {83, "INP-FB"}, {84, "INP-EA"}, {85, "INP-EB"},   // the side-chain input
+    // UW sample machines: ROM-01..32 = IDs 128..159 (slots 0..31), ROM-33..48 = IDs 176..191 (slots 48..63)
+    {128, "ROM-01"}, {129, "ROM-02"}, {130, "ROM-03"}, {131, "ROM-04"}, {132, "ROM-05"}, {133, "ROM-06"}, {134, "ROM-07"},
+    {135, "ROM-08"}, {136, "ROM-09"}, {137, "ROM-10"}, {138, "ROM-11"}, {139, "ROM-12"}, {140, "ROM-13"}, {141, "ROM-14"},
+    {142, "ROM-15"}, {143, "ROM-16"}, {144, "ROM-17"}, {145, "ROM-18"}, {146, "ROM-19"}, {147, "ROM-20"}, {148, "ROM-21"},
+    {149, "ROM-22"}, {150, "ROM-23"}, {151, "ROM-24"}, {152, "ROM-25"}, {153, "ROM-26"}, {154, "ROM-27"}, {155, "ROM-28"},
+    {156, "ROM-29"}, {157, "ROM-30"}, {158, "ROM-31"}, {159, "ROM-32"},
+    {176, "ROM-33"}, {177, "ROM-34"}, {178, "ROM-35"}, {179, "ROM-36"}, {180, "ROM-37"}, {181, "ROM-38"}, {182, "ROM-39"},
+    {183, "ROM-40"}, {184, "ROM-41"}, {185, "ROM-42"}, {186, "ROM-43"}, {187, "ROM-44"}, {188, "ROM-45"}, {189, "ROM-46"},
+    {190, "ROM-47"}, {191, "ROM-48"},
 };
+inline bool isRomMachine(int id) { return (id >= 128 && id <= 159) || (id >= 176 && id <= 191); }
+inline int romSlotOf(int id) { return id - 128; }   // the UW slot (0..31, 48..63)
 constexpr int kNumMachines = int(sizeof(kMachines) / sizeof(kMachines[0]));
 inline int machineIndexOf(int id) { for (int i = 0; i < kNumMachines; ++i) if (kMachines[i].id == id) return i; return 0; }
 

@@ -62,6 +62,14 @@ public:
     // plugin does not run (ROM/RAM, MIDI, controller, input) become GND---. Returns how many tracks were emptied.
     int applyKit(const mnm::md::Kit& kit);
     juce::String kitName() const { return m_kitName; }
+
+    // UW samples (message thread): any audio file into a ROM slot (mixed to mono, kept at its own rate; the DSP
+    // resamples). Kept in the plugin state. Returns an error text, empty on success.
+    juce::String loadSample(int slot, const juce::File& file);
+    void clearSample(int slot);
+    juce::String sampleName(int slot) const { return m_samples[size_t(slot)].name; }
+    double sampleSeconds(int slot) const { const auto& s = m_samples[size_t(slot)]; return s.rate > 0 ? double(s.data.size()) / s.rate : 0.0; }
+    double sampleMemoryUsed() const;   // 0..1 of the UW sample memory
     void auditionTrack(int t) { m_audition[size_t(t)].store(true); }   // UI: trig as from MIDI
     float trackActivity(int t) const { return m_activity[size_t(t)].load(); }   // decays between UI polls
 
@@ -84,6 +92,11 @@ private:
     };
 
     void loadEngine();
+    bool pushSamples();   // every slot into DSP2 (under the engine lock)
+    struct Sample { juce::String name; std::vector<float> data; double rate = 44100.0; };
+    std::array<Sample, mnm::md::VoiceEngine::kSlots> m_samples;
+    juce::ValueTree samplesToTree() const;
+    void samplesFromTree(const juce::ValueTree& t);
     void refreshParameters();   // audio thread, before each pass: slew, convert, send
     void runPass();             // one 32-frame block through DSP2 and DSP1 into the FIFO
     void handleCc(int channel, int cc, int value);

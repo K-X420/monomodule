@@ -19,6 +19,29 @@ int main(int argc, char** argv)
     proc.setPlayConfigDetails(0, 2, rate, block);
     proc.prepareToPlay(rate, block);
     bool kitLoaded = false;
+    if (std::getenv("MD_ROM_TEST")) {   // a 220 Hz WAV into ROM-01 on track 1, then the state round trip into a 2nd instance
+        juce::File wav = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("md-rom-test.wav");
+        wav.deleteFile();
+        {
+            juce::AudioBuffer<float> b(1, 44100);
+            for (int i = 0; i < 44100; ++i) b.setSample(0, i, 0.5f * std::sin(2.0f * 3.14159265f * 220.0f * float(i) / 44100.0f) * (1.0f - float(i) / 44100.0f));
+            juce::WavAudioFormat fmt;
+            auto stream = std::unique_ptr<juce::FileOutputStream>(wav.createOutputStream());
+            if (auto w = std::unique_ptr<juce::AudioFormatWriter>(fmt.createWriterFor(stream.get(), 44100.0, 1, 16, {}, 0))) { stream.release(); w->writeFromAudioSampleBuffer(b, 0, 44100); }
+        }
+        if (auto* p = proc.apvts.getParameter(machineId(0))) p->setValueNotifyingHost(p->convertTo0to1(float(machineIndexOf(128))));
+        static const int romDefaults[8] = {64, 64, 127, 0, 0, 127, 0, 64};   // no message loop here: set the ROM knob defaults
+        for (int k = 0; k < 8; ++k) if (auto* p = proc.apvts.getParameter(knobId(0, k))) p->setValueNotifyingHost(p->convertTo0to1(float(romDefaults[k])));
+        const auto err = proc.loadSample(0, wav);
+        std::printf("ROM test: load '%s' -> %s (%.2f s, memory %.1f%%)\n", wav.getFileName().toRawUTF8(), err.isEmpty() ? "ok" : err.toRawUTF8(),
+                    proc.sampleSeconds(0), proc.sampleMemoryUsed() * 100.0);
+        juce::MemoryBlock state;
+        proc.getStateInformation(state);
+        MdProcessor other;
+        other.setFirmwarePath(juce::String(argv[1]), false);
+        other.setStateInformation(state.getData(), int(state.getSize()));
+        std::printf("state %zu bytes; restored instance has '%s' (%.2f s) in slot 0\n", state.getSize(), other.sampleName(0).toRawUTF8(), other.sampleSeconds(0));
+    }
     const bool lfoTest = std::getenv("MD_LFO_TEST") != nullptr;
     const bool velTest = std::getenv("MD_VEL_TEST") != nullptr;
     if (lfoTest) {   // track 1: GND-SN, long decay, LFO on its own PTCH (SYN1), depth 127, SPD 32
@@ -63,7 +86,7 @@ int main(int argc, char** argv)
                 }
                 continue;
             }
-            if (lfoTest) { if (s == 0) note(36); continue; }
+            if (lfoTest || std::getenv("MD_ROM_TEST")) { if (s == 0) note(36); continue; }
             if (kitLoaded) {   // a busier pattern over all 16 tracks
                 for (int t = 0; t < kTracks; ++t)
                     if ((s * (t + 3) + t) % (t < 2 ? 4 : 7) == 0) note(kTrackNotes[t]);

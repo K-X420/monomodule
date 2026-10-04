@@ -23,7 +23,8 @@ const char* familyOf(int id)
     if (id < 48) return "EFM";
     if (id < 64) return "E12";
     if (id < 80) return "P-I";
-    return "INP";
+    if (id < 128) return "INP";
+    return "ROM";
 }
 constexpr const char* kPageNames[5] = {"SYNTH", "EFFECTS", "ROUTING", "LFO", "MASTER FX"};
 }
@@ -120,6 +121,8 @@ MdEditor::MdEditor(MdProcessor& p) : AudioProcessorEditor(p), m_proc(p)
     addAndMakeVisible(m_osButton);
     m_kitButton.onClick = [this] { chooseKit(); };
     addAndMakeVisible(m_kitButton);
+    m_sampleButton.onClick = [this] { sampleMenu(); };
+    addChildComponent(m_sampleButton);
 
     for (int i = 0; i < kNumPages; ++i) {
         auto& b = m_pageButtons[size_t(i)];
@@ -299,6 +302,30 @@ void MdEditor::chooseKit()
     });
 }
 
+void MdEditor::sampleMenu()
+{
+    const int id = m_proc.machineIdOf(m_track);
+    if (!isRomMachine(id)) return;
+    const int slot = romSlotOf(id);
+    juce::PopupMenu m;
+    m.addItem(1, "Load Sample...");
+    m.addItem(2, "Clear Sample", m_proc.sampleName(slot).isNotEmpty());
+    m.addSeparator();
+    m.addItem(3, juce::String("Sample memory used: ") + juce::String(int(std::lround(m_proc.sampleMemoryUsed() * 100.0))) + "%", false);
+    m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&m_sampleButton), [this, slot](int r) {
+        if (r == 2) { m_proc.clearSample(slot); return; }
+        if (r != 1) return;
+        m_chooser = std::make_unique<juce::FileChooser>("Load a sample into " + juce::String(kMachines[machineIndexOf(slot + 128)].name),
+            juce::File::getSpecialLocation(juce::File::userMusicDirectory), "*.wav;*.aif;*.aiff;*.flac");
+        m_chooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles, [this, slot](const juce::FileChooser& fc) {
+            const auto f = fc.getResult();
+            if (!f.existsAsFile()) return;
+            const auto err = m_proc.loadSample(slot, f);
+            if (err.isNotEmpty()) juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Load Sample", err);
+        });
+    });
+}
+
 void MdEditor::timerCallback()
 {
     bool dirty = false;
@@ -307,6 +334,16 @@ void MdEditor::timerCallback()
         if (std::abs(a - m_lights[size_t(t)]) > 0.02f) { m_lights[size_t(t)] = a; dirty = true; }
     }
     if (m_page == Page::Synth) refreshLabels();
+    {   // the sample of a ROM machine's slot
+        const int id = m_proc.machineIdOf(m_track);
+        const bool rom = m_page == Page::Synth && isRomMachine(id);
+        m_sampleButton.setVisible(rom);
+        if (rom) {
+            const auto name = m_proc.sampleName(romSlotOf(id));
+            const juce::String text = name.isEmpty() ? juce::String("LOAD SAMPLE...") : "SAMPLE: " + name.toUpperCase();
+            if (m_sampleButton.getButtonText() != text) m_sampleButton.setButtonText(text);
+        }
+    }
     const bool accentMode = m_proc.apvts.getRawParameterValue(velModeId())->load() >= 0.5f;
     const juce::String vel = accentMode ? "VEL: ACCENT" : "VEL: VOLUME";
     if (m_velButton.getButtonText() != vel) m_velButton.setButtonText(vel);
@@ -375,6 +412,7 @@ void MdEditor::resized()
     const int tabW = 116;
     for (int i = 0; i < kNumPages; ++i) m_pageButtons[size_t(i)].setBounds(panel.getX() + 10 + i * (tabW + 6), panel.getBottom() - 34, tabW, 26);
     m_machine.setBounds(panel.getX() + 130, panel.getY() + 3, 190, 24);
+    m_sampleButton.setBounds(panel.getX() + 330, panel.getY() + 3, 300, 24);
     for (int i = 0; i < 4; ++i) m_fxButtons[size_t(i)].setBounds(panel.getX() + 130 + i * 96, panel.getY() + 3, 92, 24);
     const int knobW = 76, knobH = 96;
     const int x0 = panel.getX() + 12, y0 = panel.getY() + 40;

@@ -43,6 +43,7 @@ private:
     void refreshLabels();
     void chooseOsFile();
     void chooseKit();
+    void sampleMenu();
     juce::Rectangle<int> padBounds(int t) const;
     juce::Rectangle<int> panelBounds() const;
 
@@ -54,6 +55,7 @@ private:
     int m_shownMachine = -1;
     juce::TextButton m_osButton{"OS FILE..."};
     juce::TextButton m_kitButton{"KIT..."};
+    juce::TextButton m_sampleButton;   // SYNTH page of a ROM machine: the slot's sample
     std::vector<mnm::md::Kit> m_kits;   // the kits of the last chosen file (for the menu)
     std::array<juce::TextButton, kNumPages> m_pageButtons;
     std::array<juce::TextButton, 4> m_fxButtons;
