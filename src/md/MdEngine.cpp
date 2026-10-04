@@ -1,0 +1,92 @@
+#include "MdEngine.h"
+#include <cmath>
+
+namespace mnm::md {
+
+Engine::Engine(const Firmware& fw) : m_fw(fw)
+{
+    m_cpu = std::make_unique<ControlCpu>(fw.mainOs);
+    m_voices = std::make_unique<VoiceEngine>(fw);
+    m_mixer = std::make_unique<MixEngine>(fw);
+}
+
+void Engine::trig(int t, int machine, int accent)
+{
+    m_voices->trig(t, machine + 1);
+    m_cpu->lfoTrig(t);
+    m_tracks[size_t(t)].accent = accent;
+}
+
+void Engine::refresh()
+{
+    ControlCpu::TrackParams params{};
+    std::array<uint8_t, 16> levels{};
+    for (int t = 0; t < kTracks; ++t) {
+        const auto& tr = m_tracks[size_t(t)].target;
+        for (int k = 0; k < 24; ++k) params[size_t(t)][size_t(k)] = tr.params[size_t(k)];
+        levels[size_t(t)] = tr.level;
+        m_cpu->setLfoConfig(t, tr.lfoConfig.data());
+    }
+    m_cpu->setTargets(params, levels, m_masterFx);
+    const bool snap = m_snap;
+    m_snap = false;
+    if (snap) m_cpu->snapToTargets();
+    m_cpu->setTempo(m_bpm);
+    m_cpu->tick((m_blockCount++ & 3) == 0);   // the LFOs advance every 4th block, as on the hardware
+
+    for (int t = 0; t < kTracks; ++t) {
+        auto& st = m_tracks[size_t(t)];
+        // synthesis: the machine's control handler on the live raw words
+        const int id = st.target.machine;
+        std::array<int, 8> syn{};
+        for (int k = 0; k < 8; ++k) syn[size_t(k)] = m_cpu->liveParam(t, k);
+        if (snap || id != st.sentMachine || syn != st.synSent) {
+            st.sentMachine = id; st.synSent = syn;
+            if (const auto* m = m_fw.byId(id)) {
+                std::array<uint16_t, 8> raw{};
+                for (int k = 0; k < 8; ++k) raw[size_t(k)] = uint16_t(syn[size_t(k)]);
+                std::array<uint32_t, ControlCpu::kMaxPacket> packet{};
+                const int n = m_cpu->convert(m->handler, m->dspType(), raw, packet);
+                if (n > 0) m_voices->setPacket(t, packet.data(), n);
+            }
+        }
+        // DSP1: track effects (AMD..SRR, DIST) and routing (level, VOL, PAN, sends)
+        std::array<int, 14> mix{};
+        for (int k = 0; k < 13; ++k) mix[size_t(k)] = m_cpu->liveParam(t, 8 + k);   // AMD..SRR DIST, VOL PAN DEL REV
+        mix[13] = m_cpu->liveLevel(t);
+        const int route = st.target.route < 0 ? 0 : st.target.route > 6 ? 6 : st.target.route;
+        if (snap || mix != st.mixSent || route != st.sentRoute || st.accent != st.sentAccent) {
+            std::array<uint16_t, 9> fx{};
+            for (int k = 0; k < 9; ++k) fx[size_t(k)] = uint16_t(mix[size_t(k)]);
+            m_mixer->setTrackFx(t, fx);
+            m_mixer->setRouting(t, MixEngine::routingWords(uint32_t(mix[13]), uint32_t(mix[9]), uint32_t(mix[10]), uint32_t(mix[12]), uint32_t(mix[11]), route, st.accent));
+            st.mixSent = mix; st.sentRoute = route; st.sentAccent = st.accent;
+        }
+    }
+    // master effects (the delay also follows the tempo)
+    for (int fx = 0; fx < ControlCpu::kNumMasterFx; ++fx) {
+        const auto id = ControlCpu::MasterFx(fx);
+        std::array<int, 8> raw{};
+        for (int k = 0; k < 8; ++k) raw[size_t(k)] = m_cpu->liveLevel(16 + 8 * fx + k);
+        const bool tempoChanged = id == ControlCpu::MasterFx::Delay && std::abs(m_bpm - m_tempoSent) > 0.01;
+        if (!snap && !tempoChanged && raw == m_masterSent[size_t(fx)]) continue;
+        m_masterSent[size_t(fx)] = raw;
+        std::array<uint32_t, 16> words{};
+        if (m_cpu->convertMasterFxFromTick(id, words)) {
+            const auto& s = ControlCpu::masterFxSection(id);
+            m_mixer->setY(s.dspAddr, words.data(), s.words);
+        }
+    }
+    m_tempoSent = m_bpm;
+}
+
+void Engine::render()
+{
+    refresh();
+    m_voices->renderPass(m_block);
+    m_mixer->renderBlock(m_block, m_out);
+    m_mixer->masterReturn(m_masterReturn.data());   // the main mix for the RAM recorders, next block
+    m_voices->setMasterReturn(m_masterReturn.data());
+}
+
+} // namespace mnm::md

@@ -19,6 +19,7 @@
 #include "MdCatalog.h"
 #include "MdDump.h"
 #include "MdControl.h"
+#include "MdEngine.h"
 #include "MdFirmware.h"
 #include "MdKit.h"
 #include "MdMixEngine.h"
@@ -104,12 +105,6 @@ private:
         std::atomic<float>* lfo[8] = {};             // TRK PARAM SHP1 SHP2 TYPE SPD DEP MIX
         std::atomic<float>* route = nullptr;
         std::atomic<float>* mute = nullptr;
-        int sentMachine = -1;
-        std::array<int, 8> synSent{};                // live raw words the DSP2 packet was built from
-        std::array<int, kMixRaw> mixSent{};          // and the DSP1 words
-        int sentRoute = -1;
-        int accent = -128;                           // the volume law's accent factor: velocity, or 0x80 (+2 x ACCENT)
-        int sentAccent = 0;
     };
 
     void loadEngine();
@@ -130,20 +125,15 @@ private:
     struct LoadedSound { juce::String key, name; std::string hash; };
     std::array<LoadedSound, kTracks> m_sounds;
     std::unique_ptr<mnm::md::Firmware> m_fw;
-    std::unique_ptr<mnm::md::ControlCpu> m_cpu;
-    std::unique_ptr<mnm::md::VoiceEngine> m_voices;
-    std::unique_ptr<mnm::md::MixEngine> m_mixer;
+    std::unique_ptr<mnm::md::Engine> m_engine;   // the OS's control CPU and the two DSPs (src/md/MdEngine)
     juce::CriticalSection m_engineLock;
     std::atomic<bool> m_engineReady{false};
 
     std::array<Track, kTracks> m_tracks;
     std::array<std::array<std::atomic<float>*, 8>, 4> m_masterFx{};
-    std::array<std::array<int, 8>, 4> m_masterSent{};
     std::atomic<bool> m_snap{true};   // the next tick jumps every knob to its target (load, state restore, kit)
-    uint32_t m_blockCount = 0;
     std::array<std::array<uint8_t, 36>, kTracks> m_kitLfos{};   // a loaded kit's LFO structs, for the audio thread
     std::array<std::atomic<bool>, kTracks> m_kitLfoPending{};
-    double m_tempoSent = 0.0;
     std::atomic<float>* m_master = nullptr;
     std::atomic<float>* m_velMode = nullptr;
     std::atomic<float>* m_accent = nullptr;
@@ -164,11 +154,8 @@ private:
     int m_inLen = 0;
     std::array<juce::LagrangeInterpolator, 2> m_inInterp;
     std::array<int32_t, 64> m_inBlock{};
-    std::array<int32_t, 64> m_masterReturn{};
     struct PendingTrig { int track; double enginePos; int velocity; };   // engine frames from the current FIFO read point
     std::vector<PendingTrig> m_pending;
-    mnm::md::VoiceEngine::Block m_block{};
-    mnm::md::MixEngine::Output m_out{};
 };
 
 } // namespace mnm::plugin::md

@@ -76,15 +76,12 @@ void MdProcessor::loadEngine()
 {
     const juce::ScopedLock sl(m_engineLock);
     m_engineReady = false;
-    m_mixer.reset(); m_voices.reset(); m_cpu.reset(); m_fw.reset();
+    m_engine.reset(); m_fw.reset();
     if (m_firmwarePath.isEmpty()) { m_status = "Select the Machinedrum OS file (Elektron_SPS1-1UW_OS1.63.syx)"; return; }
     try {
         auto fw = std::make_unique<mnm::md::Firmware>(mnm::md::loadFirmware(m_firmwarePath.toStdString()));
-        auto cpu = std::make_unique<ControlCpu>(fw->mainOs);
-        auto voices = std::make_unique<mnm::md::VoiceEngine>(*fw);
-        auto mixer = std::make_unique<MixEngine>(*fw);
-        m_fw = std::move(fw); m_cpu = std::move(cpu); m_voices = std::move(voices); m_mixer = std::move(mixer);
-        for (auto& tr : m_tracks) { tr.sentMachine = -1; tr.sentRoute = -1; }
+        auto engine = std::make_unique<mnm::md::Engine>(*fw);
+        m_fw = std::move(fw); m_engine = std::move(engine);
         m_snap = true;
         m_status = "OS loaded: " + juce::File(m_firmwarePath).getFileName();
         {   // the UW samples (inline: the engine lock is already held)
@@ -93,7 +90,7 @@ void MdProcessor::loadEngine()
             std::array<int, mnm::md::VoiceEngine::kSlots> loops;
             loops.fill(-1);
             for (int i = 0; i < mnm::md::VoiceEngine::kSlots; ++i) { data[size_t(i)] = m_samples[size_t(i)].data; rates[size_t(i)] = m_samples[size_t(i)].rate; }
-            m_voices->setSamples(data, rates, loops);
+            m_engine->voices().setSamples(data, rates, loops);
         }
         m_engineReady = true;
     } catch (const std::exception& e) {
@@ -132,76 +129,28 @@ bool MdProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
 // through the routing law, and through the master effect sections.
 void MdProcessor::refreshParameters()
 {
-    auto val = [](std::atomic<float>* p, float offset = 0.0f) { return uint8_t(juce::jlimit(0, 127, int(std::lround(p->load() + offset)))); };
-    ControlCpu::TrackParams params{};
-    std::array<uint8_t, 16> levels{};
-    std::array<std::array<uint8_t, 8>, 4> master{};
+    auto val = [](std::atomic<float>* p) { return uint8_t(juce::jlimit(0, 127, int(std::lround(p->load())))); };
     for (int t = 0; t < kTracks; ++t) {
         auto& tr = m_tracks[size_t(t)];
-        auto& p = params[size_t(t)];
+        mnm::md::Engine::Track e;
+        e.machine = machineIdOf(t);
+        auto& p = e.params;
         for (int k = 0; k < 8; ++k) p[size_t(k)] = val(tr.knobs[k]);
         for (int k = 0; k < 8; ++k) p[size_t(8 + k)] = val(tr.mix[k]);
         p[16] = val(tr.mix[8]); p[17] = val(tr.mix[9]); p[18] = val(tr.mix[10]); p[19] = val(tr.mix[11]); p[20] = val(tr.mix[12]);
         p[21] = val(tr.lfo[5]); p[22] = val(tr.lfo[6]); p[23] = val(tr.lfo[7]);
-        levels[size_t(t)] = val(tr.mix[13]);
-        const uint8_t cfg[5] = {uint8_t(val(tr.lfo[0])), uint8_t(val(tr.lfo[1])), uint8_t(val(tr.lfo[2])), uint8_t(val(tr.lfo[3])), uint8_t(val(tr.lfo[4]))};
-        if (m_kitLfoPending[size_t(t)].exchange(false)) m_cpu->setLfo(t, m_kitLfos[size_t(t)].data());
-        m_cpu->setLfoConfig(t, cfg);
+        e.level = val(tr.mix[13]);
+        for (int k = 0; k < 5; ++k) e.lfoConfig[size_t(k)] = val(tr.lfo[k]);
+        e.route = juce::jlimit(0, kNumRoutes - 1, int(std::lround(tr.route->load())));
+        if (m_kitLfoPending[size_t(t)].exchange(false)) m_engine->setLfoState(t, m_kitLfos[size_t(t)].data());
+        m_engine->setTrack(t, e);
     }
+    std::array<std::array<uint8_t, 8>, 4> master{};
     for (int fx = 0; fx < 4; ++fx)
         for (int k = 0; k < 8; ++k) master[size_t(fx)][size_t(k)] = val(m_masterFx[size_t(fx)][size_t(k)]);
-    m_cpu->setTargets(params, levels, master);
-    const bool snap = m_snap.exchange(false);
-    if (snap) m_cpu->snapToTargets();
-    const double bpm = m_hostBpm.load();
-    m_cpu->setTempo(bpm);
-    m_cpu->tick((m_blockCount++ & 3) == 0);   // the LFOs advance every 4th block, as on the hardware
-
-    for (int t = 0; t < kTracks; ++t) {
-        auto& tr = m_tracks[size_t(t)];
-        // synthesis: the machine's control handler on the live raw words
-        const int id = machineIdOf(t);
-        std::array<int, 8> syn{};
-        for (int k = 0; k < 8; ++k) syn[size_t(k)] = m_cpu->liveParam(t, k);
-        if (snap || id != tr.sentMachine || syn != tr.synSent) {
-            tr.sentMachine = id; tr.synSent = syn;
-            if (const auto* m = m_fw->byId(id)) {
-                std::array<uint16_t, 8> raw{};
-                for (int k = 0; k < 8; ++k) raw[size_t(k)] = uint16_t(syn[size_t(k)]);
-                std::array<uint32_t, ControlCpu::kMaxPacket> packet{};
-                const int n = m_cpu->convert(m->handler, m->dspType(), raw, packet);
-                if (n > 0) m_voices->setPacket(t, packet.data(), n);
-            }
-        }
-        // DSP1: track effects (AMD..SRR, DIST) and routing (level, VOL, PAN, sends)
-        std::array<int, kMixRaw> mix{};
-        for (int k = 0; k < 9; ++k) mix[size_t(k)] = m_cpu->liveParam(t, 8 + k);
-        for (int k = 9; k < 13; ++k) mix[size_t(k)] = m_cpu->liveParam(t, 8 + k);   // VOL PAN DEL REV = params 17..20
-        mix[13] = m_cpu->liveLevel(t);
-        const int route = juce::jlimit(0, kNumRoutes - 1, int(std::lround(tr.route->load())));
-        if (snap || mix != tr.mixSent || route != tr.sentRoute || tr.accent != tr.sentAccent) {
-            std::array<uint16_t, 9> fx{};
-            for (int k = 0; k < 9; ++k) fx[size_t(k)] = uint16_t(mix[size_t(k)]);
-            m_mixer->setTrackFx(t, fx);
-            m_mixer->setRouting(t, MixEngine::routingWords(uint32_t(mix[13]), uint32_t(mix[9]), uint32_t(mix[10]), uint32_t(mix[12]), uint32_t(mix[11]), route, tr.accent));
-            tr.mixSent = mix; tr.sentRoute = route; tr.sentAccent = tr.accent;
-        }
-    }
-    // master effects (the delay also follows the tempo)
-    for (int fx = 0; fx < ControlCpu::kNumMasterFx; ++fx) {
-        const auto id = ControlCpu::MasterFx(fx);
-        std::array<int, 8> raw{};
-        for (int k = 0; k < 8; ++k) raw[size_t(k)] = m_cpu->liveLevel(16 + 8 * fx + k);
-        const bool tempoChanged = id == ControlCpu::MasterFx::Delay && std::abs(bpm - m_tempoSent) > 0.01;
-        if (!snap && !tempoChanged && raw == m_masterSent[size_t(fx)]) continue;
-        m_masterSent[size_t(fx)] = raw;
-        std::array<uint32_t, 16> words{};
-        if (m_cpu->convertMasterFxFromTick(id, words)) {
-            const auto& s = ControlCpu::masterFxSection(id);
-            m_mixer->setY(s.dspAddr, words.data(), s.words);
-        }
-    }
-    m_tempoSent = bpm;
+    m_engine->setMasterFx(master);
+    if (m_snap.exchange(false)) m_engine->snap();
+    m_engine->setTempo(m_hostBpm.load());
 }
 
 void MdProcessor::runPass()
@@ -216,20 +165,18 @@ void MdProcessor::runPass()
     const int take = std::min(kBlock, m_inLen);
     for (auto& f : m_inFifo) std::copy(f.begin() + take, f.begin() + m_inLen, f.begin());
     m_inLen -= take;
-    m_voices->setInput(m_inBlock.data());
-    m_voices->renderPass(m_block);
+    m_engine->setInput(m_inBlock.data());
+    m_engine->render();
     for (int t = 0; t < kTracks; ++t) {
         float pk = m_activity[size_t(t)].load() * 0.97f;
-        for (auto v : m_block[size_t(t)]) pk = std::max(pk, std::abs(float(v)) * (1.0f / 8388608.0f));
+        for (auto v : m_engine->voiceBlock()[size_t(t)]) pk = std::max(pk, std::abs(float(v)) * (1.0f / 8388608.0f));
         m_activity[size_t(t)].store(pk);
     }
-    m_mixer->renderBlock(m_block, m_out);
-    m_mixer->masterReturn(m_masterReturn.data());   // the main mix for the RAM recorders, next block
-    m_voices->setMasterReturn(m_masterReturn.data());
+    const auto& out = m_engine->output();
     const float gain = float(m_master->load()) / 100.0f * (1.0f / 8388608.0f);
     for (int c = 0; c < kDac; ++c) {
         float* dst = m_fifo[size_t(c)].data() + m_fifoLen;
-        for (int i = 0; i < kBlock; ++i) dst[i] = float(m_out[size_t(i)][size_t(c)]) * gain;
+        for (int i = 0; i < kBlock; ++i) dst[i] = float(out[size_t(i)][size_t(c)]) * gain;
     }
     m_fifoLen += kBlock;
 }
@@ -312,13 +259,10 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
         const double passEnd = double(m_fifoLen + kBlock);
         for (auto it = m_pending.begin(); it != m_pending.end();) {
             if (it->enginePos < passEnd) {
-                m_voices->trig(it->track, machineIdOf(it->track) + 1);
-                m_cpu->lfoTrig(it->track);
-                {   // the trig's accent factor (MainOS 0x20CD76): VOLUME mode = velocity; ACCENT mode = 0x80, accented at >= 112
-                    auto& tr = m_tracks[size_t(it->track)];
-                    if (int(std::lround(m_velMode->load())) == 0) tr.accent = it->velocity;
-                    else tr.accent = it->velocity >= 112 ? 0x80 + 2 * int(std::lround(m_accent->load())) : -128;
-                }
+                // the trig's accent factor (MainOS 0x20CD76): VOLUME mode = velocity; ACCENT mode = 0x80, accented at >= 112
+                const int accent = int(std::lround(m_velMode->load())) == 0 ? it->velocity
+                                 : it->velocity >= 112 ? 0x80 + 2 * int(std::lround(m_accent->load())) : -128;
+                m_engine->trig(it->track, machineIdOf(it->track), accent);
                 m_activity[size_t(it->track)].store(1.0f);
                 it = m_pending.erase(it);
             } else ++it;
@@ -392,13 +336,13 @@ double MdProcessor::sampleMemoryUsed() const
 bool MdProcessor::pushSamples()
 {
     const juce::ScopedLock sl(m_engineLock);
-    if (!m_voices) return true;
+    if (!m_engine) return true;
     std::array<std::vector<float>, mnm::md::VoiceEngine::kSlots> data;
     std::array<double, mnm::md::VoiceEngine::kSlots> rates{};
     std::array<int, mnm::md::VoiceEngine::kSlots> loops;
     loops.fill(-1);
     for (int i = 0; i < mnm::md::VoiceEngine::kSlots; ++i) { data[size_t(i)] = m_samples[size_t(i)].data; rates[size_t(i)] = m_samples[size_t(i)].rate; }
-    return m_voices->setSamples(data, rates, loops);
+    return m_engine->voices().setSamples(data, rates, loops);
 }
 
 // Samples in the plugin state: 16-bit PCM, base64
