@@ -45,7 +45,7 @@ public:
     bool hasEditor() const override { return true; }
     const juce::String getName() const override { return "Monomodule MD"; }
     bool acceptsMidi() const override { return true; }
-    bool producesMidi() const override { return false; }
+    bool producesMidi() const override { return true; }   // the MID machines
     bool isMidiEffect() const override { return false; }
     double getTailLengthSeconds() const override { return 8.0; }
     int getNumPrograms() override { return 1; }
@@ -131,6 +131,31 @@ private:
     void refreshParameters();   // audio thread, before each pass: slew, convert, send
     void runPass();             // one 32-frame block through DSP2 and DSP1 into the FIFO
     void handleCc(int channel, int cc, int value);
+
+    // CTR and MID machines (audio thread, once per host block): what the OS's parameter-change routine (MainOS
+    // 0x20C930) does when a knob of such a track moves, and the MID trig (0x209914). Writes to other parameters go
+    // through m_ctlFifo to the message thread (setValueNotifyingHost); MIDI goes into the block's MIDI output.
+    int trackParam(int t, int p) const;   // 0..127 by the MD's numbering (see trackParamId)
+    void controlMachines(int n);
+    void midTrig(int t, int pos);
+    void midSend(int pos, uint8_t a, uint8_t b, int c = -1);
+    void queueSet(int target, int p, int value, bool mirror = false);   // target 0-15 = track, 16-19 = master effect;
+                                                                      // mirror: a CTR knob <-> master effect echo, not a turn
+    struct CtlSet { int8_t target, p, value; };
+    juce::AbstractFifo m_ctlFifo{512};
+    std::array<CtlSet, 512> m_ctlBuf{};
+    std::array<std::array<int16_t, 24>, kTracks + 4> m_ctlSeen{};      // the values last seen (tracks, then the master effects)
+    std::array<std::array<int16_t, 24>, kTracks + 4> m_ctlPending{};   // a queued write not yet arrived (-1 none)
+    std::array<int64_t, kTracks + 4> m_ctlPendingUntil{};
+    std::array<int, kTracks> m_ctlMachine{};
+    std::array<std::atomic<bool>, kTracks> m_ctlRebase{};              // a machine change: the track's values are not turns
+    int64_t m_ctlQuietUntil = 0;                                        // a load: nothing is a turn until then
+    bool m_ctlStarted = false;
+    struct MidNote { uint8_t status, note; int64_t offAt; };
+    std::array<std::vector<MidNote>, kTracks> m_midNotes;
+    std::array<int, 16> m_midLastPb{}, m_midLastMw{}, m_midLastPc{};   // per channel, as the OS remembers what it sent
+    juce::MidiBuffer m_midiOut;
+    int64_t m_clock = 0;   // host samples since prepare
     void parameterChanged(const juce::String& id, float newValue) override;
     void handleAsyncUpdate() override;
 
@@ -169,6 +194,11 @@ private:
     std::array<std::array<std::array<uint8_t, 8>, kNumMachines>, kTracks> m_shadow{};
     std::array<std::array<bool, kNumMachines>, kTracks> m_visited{};
     std::array<int, kTracks> m_shadowIdx{};
+    // EFFECTS + ROUTING (+ the LFO page's last three: parameters 8..23) mean other things on MID / CTR machines (CC
+    // pairs, 8P assignments): a switch between an audio machine and a MID / CTR one keeps each side's values (session
+    // only), else that side's defaults (8..20 at 0; 21..23 at 0 for a CTR-8P, kept otherwise as they are LFO knobs)
+    std::array<std::array<std::array<uint8_t, 16>, 2>, kTracks> m_pageStore{};
+    std::array<std::array<bool, 2>, kTracks> m_pageStored{};
     juce::ValueTree shadowsToTree() const;
     void shadowsFromTree(const juce::ValueTree& t);
     MachineKnobInfo m_knobInfo;

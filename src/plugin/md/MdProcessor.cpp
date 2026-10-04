@@ -130,6 +130,11 @@ void MdProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
     for (auto& i : m_inInterp) i.reset();
     m_pending.clear();
     m_pending.reserve(256);
+    for (auto& v : m_midNotes) { v.clear(); v.reserve(8); }
+    m_midLastPb.fill(-1); m_midLastMw.fill(-1); m_midLastPc.fill(-1);
+    m_midiOut.ensureSize(4096);
+    m_clock = 0;
+    m_ctlStarted = false;
 }
 
 bool MdProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
@@ -162,6 +167,14 @@ void MdProcessor::refreshParameters()
         e.level = val(tr.mix[13]);
         for (int k = 0; k < 5; ++k) e.lfoConfig[size_t(k)] = val(tr.lfo[k]);
         e.route = juce::jlimit(0, kNumRoutes - 1, int(std::lround(tr.route->load())));
+        if (isMidMachine(e.machine) || isCtrMachine(e.machine)) {   // no voice; the LFO (MID, CTR-RE..DX) still runs
+            const bool lfo = e.machine != kCtrAll && e.machine != kCtr8p;
+            const auto keep = p;
+            p.fill(0);
+            p[17] = 0;
+            if (lfo) { p[21] = keep[21]; p[22] = keep[22]; p[23] = keep[23]; }
+            e.machine = 0; e.level = 0;
+        }
         if (m_kitLfoPending[size_t(t)].exchange(false)) m_engine->setLfoState(t, m_kitLfos[size_t(t)].data());
         m_engine->setTrack(t, e);
     }
@@ -169,7 +182,7 @@ void MdProcessor::refreshParameters()
     for (int fx = 0; fx < 4; ++fx)
         for (int k = 0; k < 8; ++k) master[size_t(fx)][size_t(k)] = val(m_masterFx[size_t(fx)][size_t(k)]);
     m_engine->setMasterFx(master);
-    if (m_snap.exchange(false)) m_engine->snap();
+    if (m_snap.exchange(false)) { m_engine->snap(); m_ctlQuietUntil = m_clock + int64_t(0.2 * m_hostRate); }
     m_engine->setTempo(m_hostBpm.load());
 }
 
@@ -208,6 +221,158 @@ void MdProcessor::runPass()
             else std::fill_n(dst, kBlock, 0.0f);
         }
     m_fifoLen += kBlock;
+}
+
+// ---------------------------------------------------------------------------------------------- CTR and MID machines
+
+int MdProcessor::trackParam(int t, int p) const
+{
+    const auto& tr = m_tracks[size_t(t)];
+    const std::atomic<float>* a = p < 8 ? tr.knobs[p] : p < 21 ? tr.mix[p - 8] : tr.lfo[5 + (p - 21)];
+    return juce::jlimit(0, 127, int(std::lround(a->load())));
+}
+
+void MdProcessor::queueSet(int target, int p, int value, bool mirror)
+{
+    const auto scope = m_ctlFifo.write(1);
+    if (scope.blockSize1 > 0) m_ctlBuf[size_t(scope.startIndex1)] = {int8_t(target), int8_t(p), int8_t(value)};
+    else if (scope.blockSize2 > 0) m_ctlBuf[size_t(scope.startIndex2)] = {int8_t(target), int8_t(p), int8_t(value)};
+    else return;
+    if (mirror) {   // the echo is not a turn (a CTR-8P write to a CTR or MID track is: it acts on arrival)
+        m_ctlPending[size_t(target)][size_t(p)] = int16_t(value);
+        m_ctlPendingUntil[size_t(target)] = m_clock + int64_t(m_hostRate);   // a write that never arrives stops blocking after 1 s
+    }
+    triggerAsyncUpdate();
+}
+
+void MdProcessor::midSend(int pos, uint8_t a, uint8_t b, int c)
+{
+    const uint8_t bytes[3] = {a, b, uint8_t(juce::jlimit(0, 127, c))};
+    m_midiOut.addEvent(bytes, c < 0 ? 2 : 3, juce::jmax(0, pos));
+}
+
+// The MID trig (MainOS 0x209914) on channel n of MID-n: the track's sounding notes end; PCHG (if set and not the program
+// last sent on the channel); NOTE, and N2 / N3 when off centre (NOTE + N - 64), at VEL (0 plays as 1); PB and MW when
+// they differ from what the channel last got, AT when not 0. The notes last 3 x (LEN + 1) sequencer ticks (96 per
+// quarter note; LEN 0 = 4 ticks), so LEN 7 is one 16th step and LEN 127 a bar.
+void MdProcessor::midTrig(int t, int pos)
+{
+    const int ch = machineIdOf(t) - 96;
+    auto& notes = m_midNotes[size_t(t)];
+    for (const auto& nt : notes) midSend(pos, uint8_t(0x80 | ch), nt.note, 0);
+    notes.clear();
+    const int pc = trackParam(t, 20);
+    if (pc > 0 && pc - 1 != m_midLastPc[size_t(ch)]) { midSend(pos, uint8_t(0xC0 | ch), uint8_t(pc - 1)); m_midLastPc[size_t(ch)] = pc - 1; }
+    const int note = trackParam(t, 0), len = trackParam(t, 3);
+    const int vel = juce::jmax(1, trackParam(t, 4));
+    double bpm = m_hostBpm.load();
+    if (bpm < 20.0 || bpm > 400.0) bpm = 120.0;
+    const int ticks = len > 0 ? 3 + 3 * len : 4;
+    const int64_t offAt = m_clock + pos + int64_t(std::lround(ticks * 60.0 / (bpm * 96.0) * m_hostRate));
+    auto play = [&](int nn) {
+        midSend(pos, uint8_t(0x90 | ch), uint8_t(nn), vel);
+        notes.push_back({uint8_t(0x90 | ch), uint8_t(nn), offAt});
+    };
+    play(note);
+    for (int k : {1, 2}) {
+        const int n = trackParam(t, k);
+        if (n != 64) play(juce::jlimit(0, 127, note + n - 64));
+    }
+    const int pb = trackParam(t, 5), mw = trackParam(t, 6), at = trackParam(t, 7);
+    if (pb != m_midLastPb[size_t(ch)]) { midSend(pos, uint8_t(0xE0 | ch), 0, pb); m_midLastPb[size_t(ch)] = pb; }
+    if (mw != m_midLastMw[size_t(ch)]) { midSend(pos, uint8_t(0xB0 | ch), 1, mw); m_midLastMw[size_t(ch)] = mw; }
+    if (at != 0) midSend(pos, uint8_t(0xD0 | ch), uint8_t(at));
+}
+
+// Once per host block: every parameter of a CTR / MID track (and the master effects) against the value last seen. A
+// change while the machine stays and no load is settling is a turn, as the OS's parameter-change routine sees it:
+//   MID     PB / MW / AT / a CC value (on its CC number; 0 = off, 1 = CC 0) / PCHG -> MIDI out now
+//   CTR-RE GB EQ DX   SYNTHESIS knob k -> that master effect's parameter k (and the knobs follow the master effect)
+//   CTR-AL  parameter p moved by d (its own value counted within 1..126) -> p + d on every other track, except MID
+//           and CTR tracks and the RAM recorders' SYNTHESIS knobs (MainOS 0x207E0E)
+//   CTR-8P  P1..P8 -> the parameter assigned by its TRK / PAR pair (EFFECTS and ROUTING pages, then the LFO page's
+//           last three), unless that track is a CTR-AL or CTR-8P (MainOS 0x207D36)
+void MdProcessor::controlMachines(int n)
+{
+    juce::ignoreUnused(n);
+    const bool quiet = !m_ctlStarted || m_clock < m_ctlQuietUntil;
+    std::array<int, kTracks> ids{};
+    for (int t = 0; t < kTracks; ++t) ids[size_t(t)] = machineIdOf(t);
+    auto rebase = [&](int target) {
+        for (int p = 0; p < 24; ++p) {
+            m_ctlSeen[size_t(target)][size_t(p)] = int16_t(target < kTracks ? trackParam(target, p)
+                                                           : p < 8 ? juce::jlimit(0, 127, int(std::lround(m_masterFx[size_t(target - kTracks)][size_t(p)]->load()))) : 0);
+            m_ctlPending[size_t(target)][size_t(p)] = -1;
+        }
+    };
+    // what moved since last block (a queued write counts once it has arrived, not before)
+    auto moved = [&](int target, int p, int now) {
+        auto& pend = m_ctlPending[size_t(target)][size_t(p)];
+        auto& seen = m_ctlSeen[size_t(target)][size_t(p)];
+        if (pend >= 0) {
+            if (now == pend || m_clock > m_ctlPendingUntil[size_t(target)]) { pend = -1; seen = int16_t(now); }
+            return false;
+        }
+        if (now == seen) return false;
+        return true;
+    };
+    for (int t = 0; t < kTracks; ++t) {
+        const int id = ids[size_t(t)];
+        if (quiet || m_ctlRebase[size_t(t)].exchange(false) || id != m_ctlMachine[size_t(t)]) {
+            m_ctlMachine[size_t(t)] = id;
+            rebase(t);
+            if (!isMidMachine(id))
+                for (const auto& nt : m_midNotes[size_t(t)]) midSend(0, uint8_t(nt.status & 0xEF), nt.note, 0);
+            if (!isMidMachine(id)) m_midNotes[size_t(t)].clear();
+            continue;
+        }
+        if (!isMidMachine(id) && !isCtrMachine(id)) continue;
+        for (int p = 0; p < 24; ++p) {
+            const int now = trackParam(t, p);
+            if (!moved(t, p, now)) continue;
+            const int before = m_ctlSeen[size_t(t)][size_t(p)];
+            m_ctlSeen[size_t(t)][size_t(p)] = int16_t(now);
+            if (isMidMachine(id)) {
+                const int ch = id - 96;
+                if (p == 5) { midSend(0, uint8_t(0xE0 | ch), 0, now); m_midLastPb[size_t(ch)] = now; }
+                else if (p == 6) { midSend(0, uint8_t(0xB0 | ch), 1, now); m_midLastMw[size_t(ch)] = now; }
+                else if (p == 7) midSend(0, uint8_t(0xD0 | ch), uint8_t(now));
+                else if (p >= 9 && p <= 19 && (p & 1)) {
+                    const int cc = trackParam(t, p - 1);
+                    if (cc > 0) midSend(0, uint8_t(0xB0 | ch), uint8_t(cc == 1 ? 0 : cc), now);
+                } else if (p == 20 && now > 0) { midSend(0, uint8_t(0xC0 | ch), uint8_t(now - 1)); m_midLastPc[size_t(ch)] = now - 1; }
+            } else if (const int fx = ctrMasterFx(id); fx >= 0) {
+                if (p < 8) queueSet(kTracks + fx, p, now, true);
+            } else if (id == kCtrAll) {
+                const int d = juce::jlimit(1, 126, now) - juce::jlimit(1, 126, before);
+                if (d == 0) continue;
+                for (int u = 0; u < kTracks; ++u) {
+                    const int uid = ids[size_t(u)];
+                    if (u == t || isMidMachine(uid) || isCtrMachine(uid)) continue;
+                    if (p < 8 && (uid == 160 || uid == 161 || uid == 165 || uid == 166)) continue;   // RAM-R1..R4
+                    const int cur = m_ctlPending[size_t(u)][size_t(p)] >= 0 ? m_ctlPending[size_t(u)][size_t(p)] : trackParam(u, p);
+                    queueSet(u, p, juce::jlimit(0, 127, cur + d));
+                }
+            } else if (id == kCtr8p && p < 8) {
+                const int tt = juce::jmin(15, trackParam(t, 8 + 2 * p)), tp = juce::jmin(23, trackParam(t, 9 + 2 * p));
+                if (ids[size_t(tt)] == kCtrAll || ids[size_t(tt)] == kCtr8p) continue;
+                queueSet(tt, tp, now);
+            }
+        }
+    }
+    // the master effects: a CTR-RE / GB / EQ / DX track's knobs show them
+    for (int fx = 0; fx < 4; ++fx) {
+        const int target = kTracks + fx;
+        if (quiet) { rebase(target); continue; }
+        for (int k = 0; k < 8; ++k) {
+            const int now = juce::jlimit(0, 127, int(std::lround(m_masterFx[size_t(fx)][size_t(k)]->load())));
+            if (!moved(target, k, now)) continue;
+            m_ctlSeen[size_t(target)][size_t(k)] = int16_t(now);
+            for (int t = 0; t < kTracks; ++t)
+                if (ctrMasterFx(ids[size_t(t)]) == fx && trackParam(t, k) != now) queueSet(t, k, now, true);
+        }
+    }
+    m_ctlStarted = true;
 }
 
 void MdProcessor::handleCc(int channel, int cc, int value)
@@ -277,15 +442,24 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
         const auto m = meta.getMessage();
         if (m.isNoteOn()) {
             for (int t = 0; t < kTracks; ++t)
-                if (kTrackNotes[t] == m.getNoteNumber() && m_tracks[size_t(t)].mute->load() < 0.5f)
-                    m_pending.push_back({t, meta.samplePosition * ratio, int(m.getVelocity())});
+                if (kTrackNotes[t] == m.getNoteNumber() && m_tracks[size_t(t)].mute->load() < 0.5f) {
+                    const int id = machineIdOf(t);
+                    if (isMidMachine(id)) { midTrig(t, meta.samplePosition); m_activity[size_t(t)].store(1.0f); }
+                    else if (isCtrMachine(id)) m_activity[size_t(t)].store(1.0f);
+                    else m_pending.push_back({t, meta.samplePosition * ratio, int(m.getVelocity())});
+                }
         } else if (m.isController()) {
             handleCc(m.getChannel(), m.getControllerNumber(), m.getControllerValue());
         }
     }
     midi.clear();
     for (int t = 0; t < kTracks; ++t)
-        if (m_audition[size_t(t)].exchange(false)) m_pending.push_back({t, 0.0, 100});
+        if (m_audition[size_t(t)].exchange(false)) {
+            const int id = machineIdOf(t);
+            if (isMidMachine(id)) { midTrig(t, 0); m_activity[size_t(t)].store(1.0f); }
+            else if (!isCtrMachine(id)) m_pending.push_back({t, 0.0, 100});
+        }
+    controlMachines(n);
 
     // render passes until the resampler has what it needs; each trig goes into the pass that covers its time
     const int needed = int(std::ceil(n * ratio)) + 4;
@@ -323,6 +497,14 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
     m_fifoLen -= used;
     for (auto& p : m_pending) p.enginePos -= used;
     mixPreview(buffer);
+    // the MID notes that end in this block, then the block's MIDI out
+    for (auto& notes : m_midNotes)
+        for (auto it = notes.begin(); it != notes.end();)
+            if (it->offAt < m_clock + n) { midSend(int(juce::jmax<int64_t>(0, it->offAt - m_clock)), uint8_t(it->status & 0xEF), it->note, 0); it = notes.erase(it); }
+            else ++it;
+    midi.swapWith(m_midiOut);
+    m_midiOut.clear();
+    m_clock += n;
 }
 
 // A library preview plays over the main output, whether or not the engine does
@@ -622,13 +804,25 @@ bool MdProcessor::soundModified(int t) const
 void MdProcessor::parameterChanged(const juce::String& id, float)
 {
     for (int t = 0; t < kTracks; ++t)
-        if (id == machineId(t)) { m_machineChanged[size_t(t)].store(true); triggerAsyncUpdate(); }
+        if (id == machineId(t)) { m_machineChanged[size_t(t)].store(true); m_ctlRebase[size_t(t)].store(true); triggerAsyncUpdate(); }
 }
 
 // A machine change brings back that machine's knob values from the last time the track used it, else its defaults (as
 // an assignment does on the hardware). Kits and sounds bring their own values (their loads clear the change flag).
 void MdProcessor::handleAsyncUpdate()
 {
+    {   // the CTR machines' parameter writes
+        const auto scope = m_ctlFifo.read(m_ctlFifo.getNumReady());
+        auto apply = [&](int start, int count) {
+            for (int i = start; i < start + count; ++i) {
+                const auto& s = m_ctlBuf[size_t(i)];
+                const auto id = s.target < kTracks ? trackParamId(s.target, s.p) : masterFxId(s.target - kTracks, s.p);
+                if (auto* p = apvts.getParameter(id)) p->setValueNotifyingHost(p->convertTo0to1(float(s.value)));
+            }
+        };
+        apply(scope.startIndex1, scope.blockSize1);
+        apply(scope.startIndex2, scope.blockSize2);
+    }
     for (int t = 0; t < kTracks; ++t) {
         const int cur = juce::jlimit(0, kNumMachines - 1, int(std::lround(m_tracks[size_t(t)].machine->load())));
         const bool user = m_machineChanged[size_t(t)].exchange(false);
@@ -637,6 +831,23 @@ void MdProcessor::handleAsyncUpdate()
         m_shadowIdx[size_t(t)] = cur;
         if (!user) continue;
         for (int k = 0; k < 8; ++k) m_shadow[size_t(t)][size_t(old)][size_t(k)] = uint8_t(juce::jlimit(0, 127, int(std::lround(m_tracks[size_t(t)].knobs[k]->load()))));
+        {
+            auto ctl = [](int idx) {   // CTR-AL's pages are the audio tracks' parameters (it turns them on every track)
+                const int id = kMachines[idx].id;
+                return isMidMachine(id) || (isCtrMachine(id) && id != kCtrAll) ? 1 : 0;
+            };
+            const int from = ctl(old), to = ctl(cur);
+            if (from != to) {
+                for (int p = 8; p <= 23; ++p) m_pageStore[size_t(t)][size_t(from)][size_t(p - 8)] = uint8_t(trackParam(t, p));
+                m_pageStored[size_t(t)][size_t(from)] = true;
+                const bool to8p = kMachines[cur].id == kCtr8p;
+                for (int p = 8; p <= 23; ++p)
+                    if (auto* prm = apvts.getParameter(trackParamId(t, p))) {
+                        if (m_pageStored[size_t(t)][size_t(to)]) prm->setValueNotifyingHost(prm->convertTo0to1(float(m_pageStore[size_t(t)][size_t(to)][size_t(p - 8)])));
+                        else if (p <= 20 || to8p) prm->setValueNotifyingHost(to ? 0.0f : prm->getDefaultValue());   // MID / CTR: CC numbers OFF, values 0
+                    }
+            }
+        }
         m_visited[size_t(t)][size_t(old)] = true;
         const auto* m = machineInfo(kMachines[cur].id);
         for (int k = 0; k < 8; ++k) {

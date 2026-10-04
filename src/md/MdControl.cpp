@@ -91,6 +91,17 @@ const ControlCpu::MasterFxSection& ControlCpu::masterFxSection(MasterFx fx)
     return sections[int(fx)];
 }
 
+int ControlCpu::disassemble(uint32_t pc, std::string& text)
+{
+    std::lock_guard<std::mutex> lock(g_cpuLock);
+    g_ram = &m_ram;
+    ensureCpu();
+    char buf[256];
+    const unsigned n = m68k_disassemble(buf, pc, M68K_CPU_TYPE_68020);
+    text = buf;
+    return int(n);
+}
+
 bool ControlCpu::call(uint32_t fn, uint32_t stopPc)
 {
     // caller holds g_cpuLock; a C call with no arguments returning to the trampoline (or stopping at stopPc)

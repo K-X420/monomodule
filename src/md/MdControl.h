@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace mnm::md {
@@ -50,6 +51,8 @@ public:
     uint16_t liveParam(int track, int k) const;          // raw word, 0..0x3FFF
     uint16_t liveLevel(int track) const;
 
+    // Developer aid: the instruction at pc (MainOS / SRAM addresses), Musashi's 68020 syntax. Returns its length.
+    int disassemble(uint32_t pc, std::string& text);
     void setTempo(double bpm) { m_tempo = uint32_t(bpm * 24.0 + 0.5); }   // BPM x 24, as the OS keeps it
     const char* lastError() const { return m_error; }
     uint32_t lastPc() const { return m_lastPc; }

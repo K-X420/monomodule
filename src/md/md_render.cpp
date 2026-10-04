@@ -89,6 +89,37 @@ int main(int argc, char** argv)
             }
             return 0;
         }
+        if (std::strcmp(argv[2], "cfhex") == 0 && argc > 3) {   // md-render <os.syx> cfhex <hex addr> [bytes]: MainOS bytes
+            const uint32_t a = uint32_t(std::strtoul(argv[3], nullptr, 16));
+            const int count = argc > 4 ? std::atoi(argv[4]) : 64;
+            for (int i = 0; i < count; ++i) {
+                if (i % 16 == 0) std::printf("%s%06x ", i ? "\n" : "", a + uint32_t(i));
+                const uint32_t off = a + uint32_t(i) - kMainOsBase;
+                std::printf(" %02x", off < fw.mainOs.size() ? fw.mainOs[off] : 0);
+            }
+            std::printf("\n");
+            return 0;
+        }
+        if ((std::strcmp(argv[2], "cfdis") == 0 || std::strcmp(argv[2], "cfgrep") == 0) && argc > 3) {
+            // md-render <os.syx> cfdis <hex addr> [count]: MainOS (ColdFire) instructions from addr
+            // md-render <os.syx> cfgrep <text> [from hex] [to hex]: every instruction (linear sweep) whose text contains it
+            ControlCpu cpu(fw.mainOs);
+            std::string s;
+            if (argv[2][2] == 'd') {
+                uint32_t a = uint32_t(std::strtoul(argv[3], nullptr, 16));
+                const int count = argc > 4 ? std::atoi(argv[4]) : 40;
+                for (int i = 0; i < count; ++i) { const int n = cpu.disassemble(a, s); std::printf("%06x  %s\n", a, s.c_str()); a += uint32_t(n > 0 ? n : 2); }
+            } else {
+                const uint32_t from = argc > 4 ? uint32_t(std::strtoul(argv[4], nullptr, 16)) : kMainOsBase;
+                const uint32_t to = argc > 5 ? uint32_t(std::strtoul(argv[5], nullptr, 16)) : kMainOsBase + uint32_t(fw.mainOs.size());
+                for (uint32_t a = from; a < to;) {
+                    const int n = cpu.disassemble(a, s);
+                    if (s.find(argv[3]) != std::string::npos) std::printf("%06x  %s\n", a, s.c_str());
+                    a += uint32_t(n > 0 ? n : 2);
+                }
+            }
+            return 0;
+        }
         if (std::strcmp(argv[2], "directcheck") == 0 && argc > 4) {
             // md-render <os.syx> directcheck <dump.syx> <kit>: each track of the kit alone, once in the mix and once on its
             // own output (Engine::setDirect); its own output against the main, sample by sample (neutral master section)

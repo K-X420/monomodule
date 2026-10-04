@@ -128,6 +128,75 @@ int main(int argc, char** argv)
             break;
         }
     }
+    if (std::getenv("MD_CTR_TEST")) {   // MID and CTR machines through the processor: MIDI out, CTR-AL, CTR-8P, CTR-GB / EQ
+        int fails = 0;
+        auto check = [&](bool ok, const juce::String& what) { std::printf("  %s %s\n", ok ? "ok  " : "FAIL", what.toRawUTF8()); fails += ok ? 0 : 1; };
+        auto set = [&](const juce::String& id, float v) { if (auto* pp = proc.apvts.getParameter(id)) pp->setValueNotifyingHost(pp->convertTo0to1(v)); };
+        auto get = [&](const juce::String& id) { return int(std::lround(proc.apvts.getRawParameterValue(id)->load())); };
+        std::vector<juce::MidiMessage> out;
+        int64_t clock = 0;
+        auto run = [&](int blocks, std::vector<int> notesAt0 = {}) {   // blocks of 480 at 48 kHz; notes at the first block's start
+            for (int b = 0; b < blocks; ++b) {
+                juce::AudioBuffer<float> buf(std::max(2, proc.getTotalNumOutputChannels()), block);
+                juce::MidiBuffer midi;
+                if (b == 0) for (int nn : notesAt0) midi.addEvent(juce::MidiMessage::noteOn(1, nn, uint8_t(100)), 0);
+                proc.processBlock(buf, midi);
+                for (const auto m : midi) { auto msg = m.getMessage(); msg.setTimeStamp(double(clock + m.samplePosition)); out.push_back(msg); }
+                clock += block;
+                proc.syncMachineSideEffects();   // the message thread: the CTR writes land
+            }
+        };
+        auto machine = [&](int tr, int id) { set(machineId(tr), float(machineIndexOf(id))); };
+        // T1 = MID-01: NOTE 60 (C3), N2 +4, N3 +7, LEN 7 (one 16th), VEL 90, PCHG 5 (program 4)
+        machine(0, 96);
+        machine(1, kCtrAll); machine(2, 121); machine(3, kCtr8p); machine(4, 16); machine(5, 17);
+        run(40);   // settle (the machine changes and the load quiet time)
+        set(knobId(0, 0), 60); set(knobId(0, 1), 68); set(knobId(0, 2), 71); set(knobId(0, 3), 7); set(knobId(0, 4), 90);
+        set(knobId(0, 5), 64); set(knobId(0, 6), 0); set(knobId(0, 7), 0); set(revId(0), 5);
+        run(2);
+        check(std::any_of(out.begin(), out.end(), [](const juce::MidiMessage& m) { return m.isProgramChange() && m.getProgramChangeNumber() == 4; }), "PCHG turned to 5: program 4 out");
+        out.clear(); clock = 0;
+        run(20, {36});
+        juce::String log;
+        for (const auto& m : out) log << int(m.getTimeStamp()) << ":" << m.getDescription() << " | ";
+        std::printf("MID-01 trig: %s\n", log.toRawUTF8());
+        auto find = [&](auto pred) { for (const auto& m : out) if (pred(m)) return int(m.getTimeStamp()); return -1; };
+        check(find([](const juce::MidiMessage& m) { return m.isNoteOn() && m.getNoteNumber() == 60 && m.getChannel() == 1 && m.getVelocity() == 90; }) == 0, "NOTE C3 on channel 1 at VEL 90");
+        check(find([](const juce::MidiMessage& m) { return m.isNoteOn() && m.getNoteNumber() == 64; }) == 0 && find([](const juce::MidiMessage& m) { return m.isNoteOn() && m.getNoteNumber() == 67; }) == 0, "N2 / N3: +4 and +7 semitones");
+        check(find([](const juce::MidiMessage& m) { return m.isProgramChange(); }) < 0, "the trig does not resend the program the channel already has");
+        const int off = find([](const juce::MidiMessage& m) { return m.isNoteOff() && m.getNoteNumber() == 60; });
+        check(std::abs(off - 6000) <= 1, "LEN 7 = one 16th at 120 BPM (6000 samples at 48 kHz), off at " + juce::String(off));
+        // a knob turn on MID: CC1D = 74, then CC1V -> CC 74; MW -> CC 1; PB -> pitch bend
+        out.clear(); clock = 0;
+        set(fxId(0, 0), 74); run(2);
+        set(fxId(0, 1), 100); set(knobId(0, 6), 33); set(knobId(0, 5), 80); run(2);
+        check(find([](const juce::MidiMessage& m) { return m.isController() && m.getControllerNumber() == 74 && m.getControllerValue() == 100; }) >= 0, "CC1V turn sends CC 74 = 100");
+        check(find([](const juce::MidiMessage& m) { return m.isController() && m.getControllerNumber() == 1 && m.getControllerValue() == 33; }) >= 0, "MW turn sends CC 1");
+        check(find([](const juce::MidiMessage& m) { return m.isPitchWheel() && m.getPitchWheelValue() == 80 * 128; }) >= 0, "PB turn sends pitch bend");
+        // CTR-AL (T2): SYN1 64 -> 70 moves T5 / T6 SYN1 by +6, not the MID or CTR tracks
+        set(knobId(1, 0), 64); set(knobId(4, 0), 40); set(knobId(5, 0), 125); run(3);
+        const int mid0 = get(knobId(0, 0));
+        set(knobId(1, 0), 70); run(3);
+        check(get(knobId(4, 0)) == 46 && get(knobId(5, 0)) == 127, "CTR-AL +6: T5 40 -> " + juce::String(get(knobId(4, 0))) + ", T6 125 -> " + juce::String(get(knobId(5, 0))) + " (clamped)");
+        check(get(knobId(0, 0)) == mid0, "CTR-AL leaves the MID track alone");
+        set(volId(1), 50); run(3); set(volId(1), 40); run(3);
+        check(get(volId(4)) == 40, "CTR-AL VOL 100 -> 50 -> 40: T5 VOL 100 -> " + juce::String(get(volId(4))));
+        // CTR-GB (T3) = the reverb: knob DEC (3rd) -> master reverb DEC; master reverb DAMP -> the knob
+        set(knobId(2, 2), 20); run(3);
+        check(get(masterFxId(0, 2)) == 20, "CTR-GB DEC -> master reverb DEC = " + juce::String(get(masterFxId(0, 2))));
+        set(masterFxId(0, 3), 99); run(3);
+        check(get(knobId(2, 3)) == 99, "master reverb DAMP -> CTR-GB knob = " + juce::String(get(knobId(2, 3))));
+        // CTR-8P (T4): P1 -> T5 VOL (track 4, parameter 17)
+        set(fxId(3, 0), 4); set(fxId(3, 1), 17); run(3);
+        set(knobId(3, 0), 30); run(3);
+        check(get(volId(4)) == 30, "CTR-8P P1 -> T5 VOL = " + juce::String(get(volId(4))));
+        set(fxId(3, 2), 2); set(fxId(3, 3), 8); run(3);   // P2 -> T3 (CTR-GB) parameter 8: its EFFECTS page, nothing behind it
+        set(fxId(3, 4), 2); set(fxId(3, 5), 1); run(3);   // P3 -> T3 (CTR-GB) SYN2 = master reverb PRED
+        set(knobId(3, 2), 77); run(4);
+        check(get(masterFxId(0, 1)) == 77, "CTR-8P P3 -> CTR-GB PRED -> master reverb PRED = " + juce::String(get(masterFxId(0, 1))));
+        std::printf(fails ? "CTR TEST FAILED (%d)\n" : "CTR TEST OK\n", fails);
+        return fails ? 1 : 0;
+    }
     if (std::getenv("MD_PARITY_TEST")) {   // knob names, per-machine memory, init kit, save into a project
         int fails = 0;
         auto check = [&](bool ok, const char* what) { std::printf("  %s %s\n", ok ? "ok  " : "FAIL", what); fails += ok ? 0 : 1; };
@@ -305,6 +374,8 @@ int main(int argc, char** argv)
         }
     }
     if (argc > 3) {
+        if (const char* m = std::getenv("MD_UI_MACHINE"))   // track 1's machine for the snapshot (an MD machine ID)
+            if (auto* pp = proc.apvts.getParameter(machineId(0))) { pp->setValueNotifyingHost(pp->convertTo0to1(float(machineIndexOf(std::atoi(m))))); proc.syncMachineSideEffects(); }
         std::unique_ptr<juce::AudioProcessorEditor> ed(proc.createEditor());
         if (auto* med = dynamic_cast<MdEditor*>(ed.get())) {
             med->refresh();

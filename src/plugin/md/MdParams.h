@@ -38,7 +38,18 @@ constexpr MachineEntry kMachines[] = {
     {190, "ROM-47"}, {191, "ROM-48"},
     // RAM machines: R1..R4 record the input and the main mix into slots 32..35, P1..P4 play them
     {160, "RAM-R1"}, {161, "RAM-R2"}, {165, "RAM-R3"}, {166, "RAM-R4"}, {162, "RAM-P1"}, {163, "RAM-P2"}, {167, "RAM-P3"}, {168, "RAM-P4"},
+    // No sound: MID-01..16 play MIDI out on channel 1..16; the controller machines turn other parameters (CTR-AL every
+    // track's, CTR-8P eight assigned ones, CTR-RE/GB/EQ/DX the master delay / reverb / EQ / dynamix)
+    {96, "MID-01"}, {97, "MID-02"}, {98, "MID-03"}, {99, "MID-04"}, {100, "MID-05"}, {101, "MID-06"}, {102, "MID-07"},
+    {103, "MID-08"}, {104, "MID-09"}, {105, "MID-10"}, {106, "MID-11"}, {107, "MID-12"}, {108, "MID-13"}, {109, "MID-14"},
+    {110, "MID-15"}, {111, "MID-16"},
+    {112, "CTR-AL"}, {113, "CTR-8P"}, {120, "CTR-RE"}, {121, "CTR-GB"}, {122, "CTR-EQ"}, {123, "CTR-DX"},
 };
+inline bool isMidMachine(int id) { return id >= 96 && id <= 111; }
+inline bool isCtrMachine(int id) { return id == 112 || id == 113 || (id >= 120 && id <= 123); }
+constexpr int kCtrAll = 112, kCtr8p = 113;
+// CTR-RE (Rhythm Echo) = the delay, CTR-GB (Gate Box) = the reverb, CTR-EQ, CTR-DX: index into the master effects
+inline int ctrMasterFx(int id) { return id == 120 ? 1 : id == 121 ? 0 : id == 122 ? 2 : id == 123 ? 3 : -1; }
 inline bool isRomMachine(int id) { return (id >= 128 && id <= 159) || (id >= 176 && id <= 191); }
 inline int romSlotOf(int id) { return id - 128; }   // the UW slot (0..31, 48..63)
 constexpr int kNumMachines = int(sizeof(kMachines) / sizeof(kMachines[0]));
@@ -147,6 +158,14 @@ constexpr const char* kLfoParamNames[24] = {"SYN1", "SYN2", "SYN3", "SYN4", "SYN
                                             "AMD", "AMF", "EQF", "EQG", "FLTF", "FLTW", "FLTQ", "SRR",
                                             "DIST", "VOL", "PAN", "DEL", "REV", "LFOS", "LFOD", "LFOM"};
 inline juce::String lfoId(int t, int k) { static const char* n[8] = {"lfotrk", "lfopar", "lfosh1", "lfosh2", "lfotyp", "lfospd", "lfodep", "lfomix"}; return tp(t) + n[k]; }
+// A track parameter by the Machinedrum's numbering: 0-7 SYNTHESIS, 8-15 EFFECTS, 16-20 DIST VOL PAN DEL REV, 21-23 LFOS LFOD LFOM
+inline juce::String trackParamId(int t, int p)
+{
+    if (p < 8) return knobId(t, p);
+    if (p < 16) return fxId(t, p - 8);
+    switch (p) { case 16: return distId(t); case 17: return volId(t); case 18: return panId(t); case 19: return delId(t); case 20: return revId(t); default: break; }
+    return lfoId(t, 5 + (p - 21));
+}
 inline juce::String masterFxId(int fx, int k) { static const char* p[4] = {"rv", "dl", "eq", "dx"}; return juce::String(p[fx]) + juce::String(k + 1); }
 inline juce::String masterId() { return "master"; }
 // MIDI velocity, as the OS's two trig paths (MainOS 0x20CD76): VOLUME = the velocity scales the track volume;

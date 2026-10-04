@@ -174,7 +174,7 @@ private:
     // descriptors the pages draw from (the labels must outlive the bind)
     std::array<std::string, 8> m_synLabels;
     std::array<spec::Param, 8> m_synParams{};
-    int m_track = 0, m_machineIndex = -1, m_shownMachineId = -2, m_masterTab = 0;
+    int m_track = 0, m_machineIndex = -1, m_shownMachineId = -2, m_pagesMachineId = -2, m_masterTab = 0;
     juce::String m_artPath;
     int m_tick = 0;
     bool m_ready = false;

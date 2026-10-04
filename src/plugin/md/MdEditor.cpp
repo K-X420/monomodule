@@ -54,6 +54,42 @@ const spec::Param kLfoParams[8] = {readout("TRK", kTrackNames, kTracks), readout
 const spec::Param kOutParams[8] = {numeric("VOL", 80), readout("VEL", kVelNames, 2), numeric("ACNT", 64), blank(), blank(), blank(), blank(), blank()};
 constexpr const char* kMasterTabs[4] = {"REV", "DEL", "EQ", "DYN"};
 
+// The pages of the MID and CTR machines (their parameters 8..23 are not track effects / routing)
+const char* const* nameTable(int kind)   // 0 notes C-2..G8, 1 CC number (OFF, then 1 = CC 0), 2 program (OFF, 1..),
+{                                        // 3 track T1..T16, 4 parameter (the 24 track parameters)
+    static const auto tables = [] {
+        std::array<std::array<std::string, 128>, 5> s;
+        static const char* const notes[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+        for (int v = 0; v < 128; ++v) {
+            s[0][size_t(v)] = std::string(notes[v % 12]) + std::to_string(v / 12 - 2);
+            s[1][size_t(v)] = v == 0 ? "OFF" : std::to_string(v == 1 ? 0 : v);
+            s[2][size_t(v)] = v == 0 ? "OFF" : std::to_string(v - 1);
+            s[3][size_t(v)] = "T" + std::to_string(std::min(v, 15) + 1);
+            s[4][size_t(v)] = kLfoParamNames[std::min(v, 23)];
+        }
+        return s;
+    }();
+    static const auto ptrs = [] {
+        std::array<std::array<const char*, 128>, 5> p{};
+        for (size_t k = 0; k < 5; ++k) for (size_t v = 0; v < 128; ++v) p[k][v] = tables[k][v].c_str();
+        return p;
+    }();
+    return ptrs[size_t(kind)].data();
+}
+spec::Param named(const char* label, int kind, int def = 0) { return readout(label, nameTable(kind), 128, def); }
+const spec::Param kMidFx[8] = {named("CC1D", 1), numeric("CC1V", 0), named("CC2D", 1), numeric("CC2V", 0),
+                               named("CC3D", 1), numeric("CC3V", 0), named("CC4D", 1), numeric("CC4V", 0)};
+const spec::Param kMidRouting[8] = {named("CC5D", 1), numeric("CC5V", 0), named("CC6D", 1), numeric("CC6V", 0),
+                                    named("PCHG", 2), blank(), blank(), blank()};
+const spec::Param kCtr8pFx[8] = {named("P1T", 3), named("P1P", 4), named("P2T", 3), named("P2P", 4),
+                                 named("P3T", 3), named("P3P", 4), named("P4T", 3), named("P4P", 4)};
+const spec::Param kCtr8pRouting[8] = {named("P5T", 3), named("P5P", 4), named("P6T", 3), named("P6P", 4), named("P7T", 3), blank(), blank(), blank()};
+const spec::Param kCtr8pLfo[8] = {blank(), blank(), blank(), blank(), blank(), named("P7P", 4), named("P8T", 3), named("P8P", 4)};
+const spec::Param kCtrAllRouting[8] = {numeric("DIST", 0), numeric("VOL", 100), bipolar("PAN"), numeric("DEL", 0),
+                                       numeric("REV", 0), blank(), blank(), blank()};
+const spec::Param kCtrAllLfo[8] = {blank(), blank(), blank(), blank(), blank(), numeric("SPD", 64), numeric("DEP", 0), numeric("MIX", 0)};
+const spec::Param kBlankPage[8] = {blank(), blank(), blank(), blank(), blank(), blank(), blank(), blank()};
+
 const spec::Param& masterParam(int fx, int k)
 {
     static const auto table = [] {
@@ -414,13 +450,7 @@ void MdEditor::bindTrackPages()
     m_levelAttach.reset();
     m_levelAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(m_proc.apvts, levelId(t), m_level);
     m_level.setDoubleClickReturnValue(true, 127.0);
-    m_fx.bind(kFxParams, [t](int k) { return fxId(t, k); });
-    m_routing.bind(kRoutingParams, [t](int k) {
-        static juce::String (* const ids[6])(int) = {distId, volId, panId, delId, revId, routeId};
-        return k < 6 ? ids[k](t) : juce::String();
-    });
-    m_lfo.bind(kLfoParams, [t](int k) { return lfoId(t, k); });
-    m_shownMachineId = -2;
+    m_shownMachineId = -2; m_pagesMachineId = -2;
     rebuildSynPage();
 }
 
@@ -428,8 +458,11 @@ void MdEditor::bindTrackPages()
 void MdEditor::rebuildSynPage()
 {
     const int id = m_proc.machineIdOf(m_track);
-    if (id == m_shownMachineId) return;
-    m_shownMachineId = id;
+    int shown = id;   // CTR-8P: its knob labels also follow the TRK / PAR assignments
+    if (id == kCtr8p)
+        for (int p = 8; p < 24; ++p) shown = (shown * 131 + int(std::lround(m_proc.apvts.getRawParameterValue(trackParamId(m_track, p))->load()))) & 0x7FFFFF;
+    if (shown == m_shownMachineId) return;
+    m_shownMachineId = shown;
     const auto* m = m_proc.machineInfo(id);
     for (int k = 0; k < 8; ++k) {
         m_synLabels[size_t(k)] = m ? m->labels[size_t(k)] : std::string();
@@ -437,8 +470,31 @@ void MdEditor::rebuildSynPage()
         p = m_synLabels[size_t(k)].empty() ? blank() : numeric("", m ? m->defaults[size_t(k)] : 0);
         p.label = m_synLabels[size_t(k)].c_str();
     }
+    if (isMidMachine(id)) {   // NOTE as a note, N2 N3 PB centred
+        m_synParams[0] = named(m_synParams[0].label, 0, 64);
+        for (int k : {1, 2, 5}) { const auto* l = m_synParams[size_t(k)].label; m_synParams[size_t(k)] = bipolar(l); }
+    }
+    if (id == kCtr8p)   // P1..P8 show the parameter they turn
+        for (int k = 0; k < 8; ++k) {
+            const int tt = juce::jmin(15, int(std::lround(m_proc.apvts.getRawParameterValue(trackParamId(m_track, 8 + 2 * k))->load())));
+            const int tp = juce::jmin(23, int(std::lround(m_proc.apvts.getRawParameterValue(trackParamId(m_track, 9 + 2 * k))->load())));
+            static const char* const code[24] = {"S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "AMD", "AMF", "EQF", "EQG",
+                                                 "FF", "FW", "FQ", "SRR", "DIS", "VOL", "PAN", "DEL", "REV", "LS", "LD", "LM"};
+            m_synLabels[size_t(k)] = (juce::String(tt + 1) + code[tp]).toStdString();   // "5S1" = track 5 SYN1, "16VOL"
+            m_synParams[size_t(k)].label = m_synLabels[size_t(k)].c_str();
+        }
     const int t = m_track;
     m_syn.bind(m_synParams.data(), [t](int k) { return knobId(t, k); });
+    // the other pages follow the machine family (rebound on a machine change only: a turn of an 8P TRK / PAR is not one)
+    if (id == m_pagesMachineId) return;
+    m_pagesMachineId = id;
+    const bool mid = isMidMachine(id), master = ctrMasterFx(id) >= 0;
+    m_fx.bind(mid ? kMidFx : id == kCtr8p ? kCtr8pFx : master ? kBlankPage : kFxParams, [t](int k) { return fxId(t, k); });
+    m_routing.bind(mid ? kMidRouting : id == kCtr8p ? kCtr8pRouting : master ? kBlankPage : id == kCtrAll ? kCtrAllRouting : kRoutingParams, [t](int k) {
+        static juce::String (* const ids[6])(int) = {distId, volId, panId, delId, revId, routeId};
+        return k < 6 ? ids[k](t) : juce::String();
+    });
+    m_lfo.bind(id == kCtr8p ? kCtr8pLfo : id == kCtrAll ? kCtrAllLfo : kLfoParams, [t](int k) { return lfoId(t, k); });
 }
 
 void MdEditor::bindMasterFx(int fx)
