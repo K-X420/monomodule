@@ -4,7 +4,10 @@
 // faults, and what it touches on the host port.
 //   md-probe <os.syx> [section=1] [millions of instructions=50]
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <cmath>
+#include <thread>
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -14,6 +17,7 @@
 #include "dsp56kEmu/memory.h"
 #include "dsp56kEmu/peripherals.h"
 #include "dsp56kEmu/jit.h"
+#include "dsp56kEmu/disasm.h"
 
 using namespace dsp56k;
 using namespace mnm;
@@ -74,7 +78,7 @@ int main(int argc, char** argv)
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     if (argc < 2) { std::printf("usage: md-probe <os.syx> [section=1] [Minstr=50]\n"); return 2; }
     const int section = argc > 2 ? std::atoi(argv[2]) : 1;
-    const uint64_t budget = uint64_t(argc > 3 ? std::atoi(argv[3]) : 50) * 1'000'000ull;
+    const uint64_t budget = uint64_t(argc > 3 && std::atoi(argv[3]) > 0 ? std::atoi(argv[3]) : 50) * 1'000'000ull;
     try {
         const auto c = fw::parseContainer(parseAnyElektronSysex(fw::readFile(argv[1])));
         std::printf("container: %zu sections\n", c.sections.size());
@@ -89,8 +93,13 @@ int main(int argc, char** argv)
         const TWord bridge = 0x100000, size = std::max<TWord>(0x180000, (maxAddr + 0xFFFF) & ~0xFFFFu);
         Memory mem(validator, size, size, bridge);
         Peripherals56303 px;
-        PeripheralsNop py;
-        DSP dsp(mem, &px, &py);
+        PeripheralsNop py, pxNop;
+        const bool renderMode = argc > 6 && std::strcmp(argv[3], "render") == 0;
+        // no DMA / ESSI / HI08 at all: the 56303 peripheral model stalls on the MD's DMA setup, and the render
+        // harness drives the engine directly (as Monomodule's stub does) instead of through the audio ports
+        const bool noPeriph = renderMode || std::getenv("MD_NOPERIPH") != nullptr;
+        DSP dsp(mem, noPeriph ? static_cast<IPeripherals*>(&pxNop) : &px, &py);
+        if (noPeriph) std::printf("peripherals disabled\n");
         auto cfg = dsp.getJit().getConfig();
         cfg.dynamicFastInterrupts = true;
         cfg.interruptRegionIsCode = true;
@@ -105,7 +114,89 @@ int main(int argc, char** argv)
                 else dsp.memWrite(r.space == fw::Space::X ? MemArea_X : MemArea_Y, a, r.words[k]);
             }
         dsp.setPC(start);
+        if (argc > 5 && std::strcmp(argv[3], "disasm") == 0) {   // md-probe <os.syx> <section> disasm <hex addr> <count>
+            Disassembler dis(dsp.opcodes());
+            TWord pc = TWord(std::strtoul(argv[4], nullptr, 16));
+            const int count = std::atoi(argv[5]);
+            for (int i = 0; i < count; ++i) {
+                std::string text;
+                const TWord opA = mem.get(MemArea_P, pc), opB = mem.get(MemArea_P, pc + 1);
+                const auto len = dis.disassemble(text, opA, opB, 0, 0, pc);
+                std::printf("P:$%06x  %06x %s  %s\n", pc, opA, len > 1 ? (std::to_string(opB).empty() ? "" : "+") : " ", text.c_str());
+                pc += std::max<uint32_t>(1, len);
+            }
+            return 0;
+        }
+        auto step = [&] {
+            const TWord pc = dsp.getPC().toWord();
+            // 'rep x0' memory clear at boot: memory starts zeroed, step over it and the repeated instruction
+            if (mem.get(MemArea_P, pc) == 0x06C420) dsp.setPC(pc + 2);
+            dsp.execInterpreter();
+        };
+        if (renderMode) {
+            // md-probe <os.syx> 1 render <machine> <passes> <out.wav>
+            // Main loop (P:$64..$E7): for track t = y:$142 (0..15), struct at y:$141 = $800 + $40*t. A non-zero word 0
+            // is a trig with that machine: init routine from table $145AF5 when the machine changed, trig routine from
+            // $145BB6, word cleared. Then the render routine from $145C77 fills 32 words at y:$140 ($100/$120 in turn).
+            // At track 0 it waits for the ESSI frame (P:$BB..$BF); that wait is patched out.
+            const int machine = int(std::strtol(argv[4], nullptr, 0));
+            const int passes = std::atoi(argv[5]);
+            uint64_t n = 0;
+            while (dsp.getPC().toWord() != 0xBB && n++ < 50'000'000) step();
+            if (dsp.getPC().toWord() != 0xBB) { std::printf("boot did not reach the main loop (PC $%06x)\n", dsp.getPC().toWord()); return 1; }
+            std::printf("booted in %llu instructions; main loop reached\n", (unsigned long long)dsp.getInstructionCounter());
+            dsp.memWriteP(0xBF, 0x000000);   // 'beq $bb' (frame wait) -> nop
+            for (int a = 7; a < argc; ++a) {   // track 1 struct words: <index>=<value>, e.g. 1=0x51c0 (both may be hex)
+                const char* eq = std::strchr(argv[a], '=');
+                if (!eq) continue;
+                const TWord idx = TWord(std::strtoul(argv[a], nullptr, 0)), val = TWord(std::strtoul(eq + 1, nullptr, 0)) & 0xFFFFFF;
+                dsp.memWrite(MemArea_Y, 0x800 + idx, val);
+                std::printf("  y:$%03x = $%06x\n", 0x800 + idx, val);
+            }
+            dsp.memWrite(MemArea_Y, 0x800, TWord(machine));   // trig track 1 with the machine
+            std::vector<int32_t> capX, capY;
+            uint64_t passStart = dsp.getInstructionCounter(), perPass = 0;
+            for (int p = 0; p < passes;) {
+                step();
+                if (dsp.getPC().toWord() == 0xB5 && mem.get(MemArea_Y, 0x142) == 0) {   // track 1's render returned
+                    const TWord base = mem.get(MemArea_Y, 0x140);
+                    for (TWord k = 0; k < 32; ++k) {
+                        capX.push_back(int32_t(mem.get(MemArea_X, base + k) << 8) >> 8);
+                        capY.push_back(int32_t(mem.get(MemArea_Y, base + k) << 8) >> 8);
+                    }
+                    const auto now = dsp.getInstructionCounter();
+                    if (p == 1) perPass = now - passStart;
+                    passStart = now;
+                    ++p;
+                }
+                if (dsp.getInstructionCounter() > 4'000'000'000ull) { std::printf("instruction cap hit\n"); break; }
+            }
+            auto energy = [](const std::vector<int32_t>& v) { double s = 0; for (auto x : v) s += double(x) * x; return v.empty() ? 0.0 : std::sqrt(s / double(v.size())) / 8388608.0; };
+            const double eX = energy(capX), eY = energy(capY);
+            std::printf("machine %d: %zu samples; RMS X %.5f  Y %.5f; ~%llu DSP instructions per 16-track pass\n", machine, capX.size(), eX, eY, (unsigned long long)perPass);
+            const auto& cap = eY >= eX ? capY : capX;
+            if (FILE* f = std::fopen(argv[6], "wb")) {   // 16-bit mono 44.1 kHz WAV
+                const uint32_t dataBytes = uint32_t(cap.size() * 2), rate = 44100;
+                auto u32 = [&](uint32_t v) { std::fwrite(&v, 4, 1, f); };
+                auto u16 = [&](uint16_t v) { std::fwrite(&v, 2, 1, f); };
+                std::fwrite("RIFF", 1, 4, f); u32(36 + dataBytes); std::fwrite("WAVEfmt ", 1, 8, f);
+                u32(16); u16(1); u16(1); u32(rate); u32(rate * 2); u16(2); u16(16);
+                std::fwrite("data", 1, 4, f); u32(dataBytes);
+                for (auto v : cap) u16(uint16_t(int16_t(v >> 8)));
+                std::fclose(f);
+                std::printf("wrote %s (%s memory)\n", argv[6], eY >= eX ? "Y" : "X");
+            }
+            return 0;
+        }
         std::printf("loaded; running from $%06x\n", start);
+        std::atomic<bool> done{false};
+        std::thread watchdog([&] {   // debug only: racy reads, enough to tell "running somewhere" from "stuck"
+            for (int s = 1; !done; ++s) {
+                std::this_thread::sleep_for(std::chrono::seconds(3));
+                if (!done) std::printf("  [watchdog %ds] PC $%06x  instr %llu\n", s * 3, dsp.getPC().toWord(), (unsigned long long)dsp.getInstructionCounter());
+            }
+        });
+        struct Join { std::thread& t; std::atomic<bool>& d; ~Join() { d = true; t.join(); } } join{watchdog, done};
 
         std::map<uint32_t, uint64_t> hist;   // PC samples (one per exec() call)
         const uint64_t t0 = dsp.getInstructionCounter();
