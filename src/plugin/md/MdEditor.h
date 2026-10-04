@@ -15,6 +15,7 @@
 #include "one/LcdWidgets.h"
 #include "one/OneLookAndFeel.h"
 #include "MdLibraryUi.h"
+#include "MdLibraryPanel.h"
 
 namespace mnm::plugin::md {
 
@@ -53,6 +54,7 @@ public:
     void paint(juce::Graphics&) override;
     void mouseDown(const juce::MouseEvent&) override;
     int trackAt(juce::Point<int> local) const { for (int t = 0; t < kTracks; ++t) if (keyRect(t).contains(local / one::kScale)) return t; return -1; }
+    void setDropTarget(int t) { if (m_dropTarget != t) { m_dropTarget = t; repaint(); } }   // a sound dragged over a key
 private:
     juce::Rectangle<int> keyRect(int t) const;   // LCD px
     juce::Rectangle<int> lockBox(int t) const { const auto r = keyRect(t); return {r.getX() + 2, r.getBottom() - 10, 8, 8}; }
@@ -61,6 +63,7 @@ private:
     int m_selected = 0;
     std::array<int, kTracks> m_machine{};
     std::array<bool, kTracks> m_active{}, m_muted{}, m_locked{};
+    int m_dropTarget = -1;
 };
 
 // The machine picker over the pages: a column per family (GND TRX EFM E12 P-I INP, ROM over three columns, RAM),
@@ -106,6 +109,7 @@ public:
     void refresh() { timerCallback(); }   // dev/snapshot: apply pending state without the message loop
     void showMachinePicker() { m_picker.open(m_machineIndex); }   // dev/snapshot
     void showKitList() { openKitList(); }                         // dev/snapshot
+    void showLibrary(int tab) { m_panel.open(false); m_panel.setTab(MdLibraryPanel::Tab(tab)); }   // dev/snapshot
     // Dropped on the editor: .syx files go into the library (a file of one kit is loaded as well); a .mdkit from the
     // Library app loads; a .mdsound lands on the track key it is dropped on, else on the selected track
     bool isInterestedInFileDrag(const juce::StringArray& files) override;
@@ -129,7 +133,9 @@ private:
     void stepSound(int dir);
     juce::String saveSound(const juce::String& name);
     juce::String soundDisplayName(int t);
-    void audition(const juce::String& key, bool kit);
+    void audition(const juce::String& key, int kind);   // MdLibraryPanel::Tab: sound, kit, pattern
+    void loadKitKey(const juce::String& key);
+    void loadSoundKey(int track, const juce::String& key);
     void sampleMenu();
     void setMachine(int index);
     void applySkin(const skin::Skin& s);
@@ -144,6 +150,7 @@ private:
     MdKitStrip m_strip;
     MdLibraryDrop m_drop{*m_lib};
     MdSaveDialog m_saveDialog;
+    MdLibraryPanel m_panel{*m_lib};
     one::LcdButton m_osButton{"SELECT OS FILE"};
     one::LevelColumn m_level;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> m_levelAttach;

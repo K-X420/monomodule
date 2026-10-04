@@ -48,6 +48,8 @@ struct MdTransferPayload {
 juce::File writeMdSoundDragFile(const mnm::mdcatalog::Sound& sound, const juce::String& baseName);
 juce::File writeMdKitDragFile(const mnm::mddump::Kit& kit, const juce::String& baseName);
 bool readMdTransferFile(const juce::File& file, MdTransferPayload& out);
+// A Machinedrum pattern's MIDI (MdMidiExport.h): track -1 = every track with trigs
+juce::File writeMdPatternMidiDragFile(const mnm::mddump::Kit* kit, const mnm::mddump::Pattern& pat, const juce::String& baseName, int track);
 inline bool isMdTransferFile(const juce::String& path) { return path.endsWithIgnoreCase(kMdSoundFileExtension) || path.endsWithIgnoreCase(kMdKitFileExtension); }
 
 } // namespace mnm::library

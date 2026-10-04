@@ -87,6 +87,8 @@ public:
     void previewPlay(const juce::String& key, const std::function<mnm::mdpreview::Spec()>& build);
     void previewStop();
     juce::String previewKey() const { return m_previewKey; }
+    void previewSetLoop(bool on) { m_previewVoice.setLoop(on && m_previewKey.isNotEmpty()); }   // off again on stop or another preview
+    bool previewLoop() const { return m_previewKey.isNotEmpty() && m_previewVoice.loop(); }
     juce::String previewStatus() const { return m_previewRenderer ? m_previewRenderer->status() : juce::String(); }
     bool previewPoll();   // editor timer: true when the playing state changed
     // LOCK: a locked track keeps its sound when a kit is loaded (kept in the plugin state)

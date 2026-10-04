@@ -13,13 +13,14 @@ namespace mnm::plugin::md {
 
 class MdKitStrip : public juce::Component, public juce::SettableTooltipClient {
 public:
-    enum Part { None = -1, KitPrev, Kit, KitNext, KitSave, SoundPrev, Sound, SoundNext, SoundSave };
+    enum Part { None = -1, KitPrev, Kit, KitNext, KitSave, SoundPrev, Sound, SoundNext, SoundSave, Library };
     static constexpr int kS = 2, kLcdH = 15;
     std::function<void(Part)> onPart;
     void setKit(const juce::String& name, bool modified);
     void setSound(int track, const juce::String& name, bool modified);
     void setOpen(Part menu) { if (m_open != menu) { m_open = menu; repaint(); } }
-    int preferredWidth(int available) const { return juce::jmin(available, 330 * kS); }
+    void setLibraryOpen(bool open) { if (m_libOpen != open) { m_libOpen = open; repaint(); } }
+    int preferredWidth(int available) const { return juce::jmin(available, 344 * kS); }
     void paint(juce::Graphics&) override;
     void resized() override;
     void mouseDown(const juce::MouseEvent&) override;
@@ -30,9 +31,9 @@ private:
     Part partAt(juce::Point<int> p) const;
     juce::String m_kit = "DEFAULT", m_sound;
     int m_track = 0;
-    bool m_kitMod = false, m_soundMod = false;
+    bool m_kitMod = false, m_soundMod = false, m_libOpen = false;
     Part m_open = None, m_hover = None;
-    std::array<juce::Rectangle<int>, 8> m_rects{};   // LCD px
+    std::array<juce::Rectangle<int>, 9> m_rects{};   // LCD px
 };
 
 class MdLibraryDrop : public juce::Component {

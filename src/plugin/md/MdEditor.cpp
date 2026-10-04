@@ -151,6 +151,10 @@ void MdTrackKeys::paint(juce::Graphics& g)
         };
         key(lockBox(t), "L", m_locked[size_t(t)]);
         key(muteBox(t), "M", m_muted[size_t(t)]);
+        if (t == m_dropTarget) {   // a sound from the library would land here: an inner frame
+            cv.invertRect(r.getX() + 1, r.getY() + 1, r.getWidth() - 2, 1); cv.invertRect(r.getX() + 1, r.getBottom() - 2, r.getWidth() - 2, 1);
+            cv.invertRect(r.getX() + 1, r.getY() + 2, 1, r.getHeight() - 4); cv.invertRect(r.getRight() - 2, r.getY() + 2, 1, r.getHeight() - 4);
+        }
     }
     cv.draw(g, 0, 0);
 }
@@ -308,13 +312,42 @@ MdEditor::MdEditor(MdProcessor& p)
                 m_saveDialog.onSave = [this](const juce::String& name) { return saveSound(name); };
                 m_saveDialog.open("SAVE SOUND T" + juce::String(m_track + 1), soundDisplayName(m_track).isEmpty() || soundDisplayName(m_track) == "-" ? juce::String("NEW SOUND") : soundDisplayName(m_track));
                 break;
+            case MdKitStrip::Library:   if (m_panel.isOpen()) m_panel.close(); else { m_picker.setVisible(false); m_panel.open(); } break;
             case MdKitStrip::None: break;
         }
     };
+    // the library panel over the pages
+    m_panel.currentKit = [this] { return m_proc.loadedKitKey(); };
+    m_panel.currentSound = [this] { return m_proc.loadedSoundKey(m_track); };
+    m_panel.selectedTrack = [this] { return m_track; };
+    m_panel.loadKit = [this](const juce::String& key) { loadKitKey(key); };
+    m_panel.loadSound = [this](const juce::String& key) { loadSoundKey(m_track, key); };
+    m_panel.loadPatternKit = [this](const juce::String& key) {
+        if (const auto* p = m_lib->model().mdCatalog().pattern(key.toStdString()); p && !p->kitId.empty()) loadKitKey(juce::String(p->kitId));
+        else m_panel.message = "THIS PATTERN'S KIT SLOT IS EMPTY";
+    };
+    m_panel.audition = [this](const juce::String& key, MdLibraryPanel::Tab kind) { audition(key, int(kind)); };
+    m_panel.isPlaying = [this](const juce::String& key) { return m_proc.previewKey() == key; };
+    m_panel.looping = [this] { return m_proc.previewLoop(); };
+    m_panel.toggleLoop = [this] { m_proc.previewSetLoop(!m_proc.previewLoop()); };
+    m_panel.patternMidiFile = [this](const juce::String& key) {
+        const auto& cat = m_lib->model().mdCatalog();
+        const auto* p = cat.pattern(key.toStdString());
+        if (!p) return juce::File();
+        const auto* k = cat.kit(p->kitId);
+        return mnm::library::writeMdPatternMidiDragFile(k ? &k->kit : nullptr, p->pattern, juce::String(p->name).replace(" ", "-"), -1);
+    };
+    m_panel.onSoundDragging = [this](juce::Point<int> screen) { m_keys.setDropTarget(m_keys.trackAt(m_keys.getLocalPoint(nullptr, screen))); };
+    m_panel.onSoundDropped = [this](const juce::String& key, juce::Point<int> screen) {
+        m_keys.setDropTarget(-1);
+        const int t = m_keys.trackAt(m_keys.getLocalPoint(nullptr, screen));
+        if (t >= 0) { loadSoundKey(t, key); if (t != m_track) selectTrack(t); }
+    };
+    m_panel.onOpenChanged = [this](bool open) { m_strip.setLibraryOpen(open); };
     m_drop.onLoadKit = [this](const KitEntry& e) { loadKit(e); };
     m_drop.onLoadSound = [this](const SoundEntry& e) { loadSound(e); };
     m_drop.onImport = [this] { importSyx(); };
-    m_drop.onAudition = [this](const juce::String& key, bool kit) { audition(key, kit); };
+    m_drop.onAudition = [this](const juce::String& key, bool kit) { audition(key, kit ? int(MdLibraryPanel::Kits) : int(MdLibraryPanel::Sounds)); };
     m_drop.isPlaying = [this](const juce::String& key) { return m_proc.previewKey() == key; };
     m_drop.onClosed = [this] { m_strip.setOpen(MdKitStrip::None); };
     addChildComponent(m_status);
@@ -335,6 +368,7 @@ MdEditor::MdEditor(MdProcessor& p)
     };
     m_keys.onLock = [this](int t) { m_proc.setTrackLocked(t, !m_proc.trackLocked(t)); timerCallback(); };
     addAndMakeVisible(m_keys);
+    addChildComponent(m_panel);
     addChildComponent(m_drop);
     addChildComponent(m_saveDialog);
 
@@ -596,27 +630,52 @@ juce::String MdEditor::saveSound(const juce::String& name)
     return {};
 }
 
-// A kit (its best pattern, else a demo) or a sound (one trig), heard before loading it; a second click stops
-void MdEditor::audition(const juce::String& key, bool kit)
+// A kit (its best pattern, else a demo), a sound (one trig) or a pattern (on its kit), heard before loading it; a second
+// click stops
+void MdEditor::audition(const juce::String& key, int kind)
 {
-    if (m_proc.previewKey() == key) { m_proc.previewStop(); m_drop.repaint(); return; }
+    if (m_proc.previewKey() == key) { m_proc.previewStop(); m_drop.repaint(); m_panel.repaint(); return; }
     const auto& cat = m_lib->model().mdCatalog();
     mnm::mdpreview::Options opt;
-    if (kit) {
+    if (kind == MdLibraryPanel::Kits) {
         const auto* k = cat.kit(key.toStdString());
         if (!k) return;
         const auto kitData = k->kit;
         const auto best = mnm::mdpreview::choosePreviewPattern(cat, *k);
         if (const auto* p = best.empty() ? nullptr : cat.pattern(best)) { const auto pat = p->pattern; m_proc.previewPlay(key, [kitData, pat, opt] { return mnm::mdpreview::patternPreview(kitData, pat, opt); }); }
         else m_proc.previewPlay(key, [kitData, opt] { return mnm::mdpreview::patternPreview(kitData, mnm::mdpreview::demoPattern(kitData), opt); });
+    } else if (kind == MdLibraryPanel::Patterns) {
+        const auto* p = cat.pattern(key.toStdString());
+        const auto* k = p ? cat.kit(p->kitId) : nullptr;
+        if (!p || !k) { m_panel.message = "THIS PATTERN'S KIT SLOT IS EMPTY"; m_panel.repaint(); return; }
+        const auto pat = p->pattern; const auto kitData = k->kit;
+        m_proc.previewPlay(key, [kitData, pat, opt] { return mnm::mdpreview::patternPreview(kitData, pat, opt); });
     } else {
         const auto* s = cat.sound(key.toStdString());
         if (!s) return;
         const auto snd = s->sound;
         m_proc.previewPlay(key, [snd, opt] { return mnm::mdpreview::soundPreview(snd, opt); });
     }
-    if (const auto st = m_proc.previewStatus(); st.isNotEmpty()) juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon, "Audition", st);
+    if (const auto st = m_proc.previewStatus(); st.isNotEmpty()) { m_panel.message = st.toUpperCase(); juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon, "Audition", st); }
     m_drop.repaint();
+    m_panel.repaint();
+}
+
+void MdEditor::loadKitKey(const juce::String& key)
+{
+    for (const auto& k : m_lib->kits()) if (k.key == key) { loadKit(k); return; }
+}
+
+void MdEditor::loadSoundKey(int track, const juce::String& key)
+{
+    mnm::mdcatalog::Sound s;
+    if (!m_lib->loadSound(key, s)) return;
+    const auto* item = m_lib->model().mdCatalog().sound(key.toStdString());
+    const auto name = item ? juce::String(item->name).toUpperCase() : juce::String();
+    if (!m_proc.loadSound(track, key, s, name))
+        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon, "Load Sound", "This sound uses a machine Monomodule MD does not have yet.");
+    bindTrackPages();
+    timerCallback();
 }
 
 // The selected track's sound: the name it was loaded or saved under, else its catalog name, else "-"
@@ -689,7 +748,8 @@ void MdEditor::timerCallback()
         if (m_sample.getButtonText() != text) { m_sample.setButtonText(text); resized(); }
     }
     if (m_sample.isVisible() != rom) { m_sample.setVisible(rom); resized(); }
-    if (m_proc.previewPoll()) m_drop.repaint();   // an audition ended
+    if (m_proc.previewPoll()) { m_drop.repaint(); m_panel.repaint(); }   // an audition ended
+    m_panel.refreshIfChanged();
     if ((m_tick++ % 5) == 0) {   // the modified marks: a few times a second
         m_strip.setKit(m_proc.kitName(), m_proc.kitModified());
         m_strip.setSound(m_track, soundDisplayName(m_track), m_proc.soundModified(m_track));
@@ -756,6 +816,7 @@ void MdEditor::resized()
     m_sample.setBounds(m_syn.getRight() - bw - kScale, m_syn.getY() + m_syn.overhangPx() + kScale, bw, (KnobPage::kTitleH - 2) * kScale);
     m_saveDialog.setBounds(getLocalBounds());
     m_picker.setBounds(juce::Rectangle<int>(m_syn.getX(), m_syn.getY(), m_routing.getRight() - m_syn.getX(), m_out.getBottom() - m_syn.getY()));
+    m_panel.setTargetBounds(juce::Rectangle<int>(m_syn.getX(), m_syn.getY(), m_routing.getRight() - m_syn.getX(), m_out.getBottom() - m_syn.getY()));
 }
 
 } // namespace mnm::plugin::md

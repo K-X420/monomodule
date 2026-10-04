@@ -1,5 +1,6 @@
 #include <cstring>
 #include "Transfer.h"
+#include "MdMidiExport.h"
 #include "Store.h"
 #include "MidiExport.h"
 
@@ -141,6 +142,17 @@ bool readMdTransferFile(const juce::File& file, MdTransferPayload& out)
     } else return false;
     out = p;
     return true;
+}
+
+juce::File writeMdPatternMidiDragFile(const mnm::mddump::Kit* kit, const mnm::mddump::Pattern& pat, const juce::String& baseName, int track)
+{
+    const auto f = uniqueDragFile(baseName + (track >= 0 ? "-T" + juce::String(track + 1) : juce::String()), ".mid");
+    juce::FileOutputStream os(f);
+    if (!os.openedOk()) return {};
+    os.setPosition(0); os.truncate();
+    if (track >= 0) buildMdTrackMidiFile(kit, pat, track).writeTo(os, 1);
+    else buildMdPatternMidiFile(kit, pat).writeTo(os, 1);
+    return f;
 }
 
 juce::File writePatternMidiDragFile(const Dump& dump, const Pattern& pat, int track)

@@ -18,6 +18,7 @@
 #include "Store.h"
 #include "LibraryModel.h"
 #include "MidiExport.h"
+#include "MdMidiExport.h"
 #include "Transfer.h"
 #include "LibraryComponent.h"
 #include "SharedSettings.h"
@@ -281,6 +282,30 @@ int main(int argc, char** argv)
     if (cmd == "preview" && args.size() >= 5) return preview(args);
     if (cmd == "playtest" && args.size() == 4) return playtest(args);
     if (cmd == "mdplaytest" && args.size() == 3) return mdplaytest(args);
+    if (cmd == "mdmidi" && args.size() >= 4) {   // mdmidi <md.syx> <pattern> [track 1-16] out.mid, and what is in it
+        const auto bytes = readAll(juce::File::getCurrentWorkingDirectory().getChildFile(args[1]));
+        const auto d = mnm::mddump::parseDump(bytes.data(), bytes.size(), "md");
+        const auto* p = d.patternAt(args[2].getIntValue());
+        if (!p) { std::printf("no pattern %s\n", args[2].toRawUTF8()); return 1; }
+        const auto* k = d.kitAt(p->kit);
+        const int track = args.size() == 5 ? args[3].getIntValue() - 1 : -1;
+        const auto mf = track >= 0 ? buildMdTrackMidiFile(k, *p, track) : buildMdPatternMidiFile(k, *p);
+        const auto out = juce::File::getCurrentWorkingDirectory().getChildFile(args[args.size() - 1]);
+        { juce::FileOutputStream os(out); if (!os.openedOk()) return 1; os.setPosition(0); os.truncate(); mf.writeTo(os, 1); }
+        juce::MidiFile back;   // read the file back as a DAW would
+        juce::FileInputStream in(out);
+        if (!back.readFrom(in)) { std::printf("the written file does not read back\n"); return 1; }
+        int notes = 0, accents = 0, ccs = 0, trigs = 0;
+        for (int i = 0; i < back.getNumTracks(); ++i)
+            for (const auto* e : *back.getTrack(i)) {
+                if (e->message.isNoteOn()) { ++notes; accents += e->message.getVelocity() == 127 ? 1 : 0; }
+                if (e->message.isController()) ++ccs;
+            }
+        for (int t = 0; t < 16; ++t) if (track < 0 || t == track) trigs += p->trigCount(t);
+        std::printf("%s: %d MIDI tracks, %d notes (%d accented), %d lock CCs; the pattern has %d trigs -> %s\n", out.getFileName().toRawUTF8(),
+                    back.getNumTracks(), notes, accents, ccs, trigs, notes == trigs ? "OK" : "MISMATCH");
+        return notes == trigs ? 0 : 1;
+    }
     if (cmd == "render" && args.size() >= 3) {
         // the app window offscreen, on a throw-away library holding this dump as a project (imported twice when
         // "history" is asked for, so the timeline has more than one version)

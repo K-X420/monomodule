@@ -32,13 +32,13 @@ void MdKitStrip::resized()
 {
     // joined parts share their edges; the kit and the sound are two strips with a gap between
     const int w = getWidth() / kS, arrowW = 12, iconW = 15, gap = 6;
-    const int fixed = 2 * (2 * (arrowW - 1) + (iconW - 1)) + gap;
+    const int fixed = 2 * (2 * (arrowW - 1) + (iconW - 1)) + gap + (iconW - 1);
     const int kitW = (w - fixed) / 2, soundW = w - fixed - kitW;
     int x = 0;
     auto take = [&](Part p, int pw) { m_rects[size_t(p)] = {x, 0, pw, kLcdH}; x += pw - 1; };
     take(KitPrev, arrowW); take(Kit, kitW); take(KitNext, arrowW); take(KitSave, iconW);
     x += 1 + gap;
-    take(SoundPrev, arrowW); take(Sound, soundW); take(SoundNext, arrowW); take(SoundSave, iconW);
+    take(SoundPrev, arrowW); take(Sound, soundW); take(SoundNext, arrowW); take(SoundSave, iconW); take(Library, iconW);
 }
 
 void MdKitStrip::paint(juce::Graphics& g)
@@ -70,6 +70,7 @@ void MdKitStrip::paint(juce::Graphics& g)
     arrows(SoundPrev, SoundNext);
     selector(Sound, "T" + juce::String(m_track + 1), m_sound.isEmpty() ? juce::String("-") : m_sound, m_soundMod);
     r = part(SoundSave, m_soundMod); pixelIcon(cv, kIconSave, 9, r.getX() + 3, r.getY() + 3, !m_soundMod);
+    r = part(Library, m_libOpen); pixelIcon(cv, kIconLibrary, 9, r.getX() + 3, r.getY() + 3, !m_libOpen);
     cv.draw(g, 0, 0, kS);
 }
 
@@ -88,7 +89,7 @@ void MdKitStrip::mouseMove(const juce::MouseEvent& e)
     if (p == m_hover) return;
     m_hover = p;
     static const char* const tips[] = {"Previous kit", "Kits", "Next kit", "Save this kit to the library",
-                                       "Previous sound of this machine", "Sounds for the selected track", "Next sound of this machine", "Save this track's sound to the library"};
+                                       "Previous sound of this machine", "Sounds for the selected track", "Next sound of this machine", "Save this track's sound to the library", "Library"};
     setTooltip(p == None ? juce::String() : juce::String(tips[int(p)]));
     setMouseCursor(p == None ? juce::MouseCursor::NormalCursor : juce::MouseCursor::PointingHandCursor);
     repaint();

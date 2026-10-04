@@ -206,7 +206,8 @@ int main(int argc, char** argv)
         if (auto* med = dynamic_cast<MdEditor*>(ed.get())) {
             med->refresh();
             if (std::getenv("MD_UI_PICKER")) med->showMachinePicker();   // the machine picker open over the pages
-            if (std::getenv("MD_UI_KITS")) med->showKitList();          // the kit list open under the header
+            if (std::getenv("MD_UI_KITS")) med->showKitList();
+            if (const char* tab = std::getenv("MD_UI_PANEL")) med->showLibrary(std::atoi(tab));   // 0 sounds, 1 kits, 2 patterns          // the kit list open under the header
         }
         auto img = ed->createComponentSnapshot(ed->getLocalBounds(), true, 1.0f);
         juce::File png{juce::String(argv[3])};

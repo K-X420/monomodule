@@ -1785,7 +1785,12 @@ void LibraryComponent::dragKit(const juce::String& id, juce::Component* source)
 
 void LibraryComponent::dragPatternMidi(const juce::String& id, int track, juce::Component* source)
 {
-    if (m_nav.itemKind.startsWith("md")) { toast("Machinedrum pattern MIDI is not available yet"); return; }
+    if (const auto* mp = m_mdCatalog.pattern(id.toStdString())) {   // a Machinedrum pattern: its trigs on the MD's trig notes
+        const auto* k = m_mdCatalog.kit(mp->kitId);
+        const juce::String base = juce::String(mp->name).replace(" ", "-");
+        startFileDrag(mnm::library::writeMdPatternMidiDragFile(k ? &k->kit : nullptr, mp->pattern, base, track), source);
+        return;
+    }
     const auto* p = m_catalog.pattern(id.toStdString());
     if (!p || p->sources.empty()) return;
     const auto* d = currentState(juce::String(p->sources.front().importId));
