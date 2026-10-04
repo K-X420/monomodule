@@ -1,5 +1,6 @@
 #include "MdVoiceEngine.h"
 #include <algorithm>
+#include <cstdlib>
 #include <sstream>
 #include <stdexcept>
 #include "dsp56kEmu/dsp.h"
@@ -14,11 +15,13 @@ using namespace dsp56k;
 
 namespace {
 constexpr TWord kBridge = 0x100000;
-constexpr TWord kMemSize = 0x180000;
+constexpr TWord kMemSize = 0x200000;    // UW sample memory runs 0x150000..0x1FFA00 (48-ROM layout)
 constexpr TWord kMainLoop = 0x64;
 constexpr TWord kCopyStub = 0xF00;      // free internal P (the image uses P:0..0x3E1)
 constexpr TWord kParkPc = 0xF40;
-constexpr TWord kCapture = 0x170000;    // Y: 16 x 32 words, above the sine table and sample memory
+constexpr TWord kCapture = 0x1000;      // Y: 16 x 32 words of plain RAM below the bridge (the image uses Y up to 0x7FF; tracks 0x800..0xBFF)
+constexpr TWord kSampleBase = 0x150000, kSampleEnd = 0x1FFA00;   // the 48-ROM configuration
+constexpr TWord kSlotTable = 0x147E00;  // 4 words per slot: base, length, loop start (-1 = none), rate
 constexpr uint64_t kMaxExecBoot = 20'000'000;
 constexpr uint64_t kMaxExecPass = 2'000'000;
 TWord trackBase(int t) { return 0x800 + 0x40 * TWord(t); }
@@ -56,12 +59,13 @@ void VoiceEngine::installPatches()
     emit("move #>$ffffff,m0");
     emit("move y:>$142,b");
     emit("asl #5,b,b");
-    emit("move #>$170000,x0");
+    emit("move #>$1000,x0");
     emit("add x0,b");
     emit("move b1,r1");
     emit("move #>$ffffff,m1");
     {
-        std::ostringstream o; o << "do #32,$" << std::hex << (pc + 3);   // LA = last body word: two 1-word moves at pc+2, pc+3
+        // the operand is the address AFTER the loop (as the disassembler prints it): body = pc+2, pc+3
+        std::ostringstream o; o << "do #32,$" << std::hex << (pc + 4);
         emit(o.str().c_str());
         emit("move y:(r0)+,x0");
         emit("move x0,y:(r1)+");
@@ -97,8 +101,30 @@ void VoiceEngine::reset()
 bool VoiceEngine::runToPark(uint64_t maxExec)
 {
     const uint64_t start = m_dsp->getInstructionCounter();
+    static const bool interp = std::getenv("MD_DSP_INTERP") != nullptr;   // debug: the interpreter instead of the JIT
     for (uint64_t n = 0; n < maxExec; ++n) {
-        m_dsp->exec();
+        if (interp) {
+            static const char* tr = std::getenv("MD_TRACE");   // "lo-hi" hex PC range: print registers there
+            static TWord lo = tr ? TWord(std::strtoul(tr, nullptr, 16)) : 0, hi = tr && std::strchr(tr, '-') ? TWord(std::strtoul(std::strchr(tr, '-') + 1, nullptr, 16)) : 0;
+            static int budget = 2000;
+            const TWord pc = m_dsp->getPC().toWord();
+            if (tr && pc >= lo && pc <= hi && budget > 0 && m_mem->get(MemArea_Y, 0x142) == 0) {
+                --budget;
+                auto& r = m_dsp->regs();
+                std::fprintf(stderr, "PC=%04x x0=%06x x1=%06x y0=%06x y1=%06x a=%02x:%06x:%06x b=%02x:%06x:%06x r0=%06x r7=%06x m7=%06x\n", pc,
+                             r.x.var & 0xFFFFFF, (r.x.var >> 24) & 0xFFFFFF, r.y.var & 0xFFFFFF, (r.y.var >> 24) & 0xFFFFFF,
+                             unsigned((r.a.var >> 48) & 0xFF), unsigned((r.a.var >> 24) & 0xFFFFFF), unsigned(r.a.var & 0xFFFFFF),
+                             unsigned((r.b.var >> 48) & 0xFF), unsigned((r.b.var >> 24) & 0xFFFFFF), unsigned(r.b.var & 0xFFFFFF),
+                             r.r[0].var, r.r[7].var, r.m[7].var);
+                if (pc == 0xF00 || pc == 0x3A1 || pc == 0xB5) {
+                    const TWord bank = m_mem->get(MemArea_Y, 0x140);
+                    std::fprintf(stderr, "   bank Y:%03x:", bank);
+                    for (TWord k = 0; k < 10; ++k) std::fprintf(stderr, " %06x", m_mem->get(MemArea_Y, bank + k));
+                    std::fprintf(stderr, "\n");
+                }
+            }
+            m_dsp->execInterpreter();
+        } else m_dsp->exec();
         if (m_dsp->getJit().hasFailed()) { m_faulted = true; m_fault = "DSP JIT failed: " + m_dsp->getJit().failReason(); return false; }
         if (m_dsp->getPC().toWord() == kParkPc) { m_lastInstr = m_dsp->getInstructionCounter() - start; return true; }
     }
@@ -122,6 +148,58 @@ void VoiceEngine::trig(int track, int dspType)
 {
     if (track < 0 || track >= kTracks || dspType <= 0 || dspType > 192) return;
     m_dsp->memWrite(MemArea_Y, trackBase(track), TWord(dspType));
+}
+
+bool VoiceEngine::setSamples(const std::array<std::vector<float>, kSlots>& samples, const std::array<double, kSlots>& rates,
+                             const std::array<int, kSlots>& loopStarts)
+{
+    size_t total = 0;
+    for (const auto& s : samples) total += (s.size() + 1) & ~size_t(1);
+    if (total > kSampleCapacity) return false;
+    // the decode table (built by the DSP at boot): monotonic, code 0 = -1.0 .. code 4095 = +1.0
+    std::array<int32_t, 4096> table{};
+    for (TWord k = 0; k < 4096; ++k) table[k] = int32_t(m_mem->get(MemArea_Y, 0x146000 + k) << 8) >> 8;
+    auto encode = [&](float v) {
+        const int32_t x = int32_t(std::clamp(v, -1.0f, 1.0f) * 8388607.0f);
+        const auto it = std::lower_bound(table.begin(), table.end(), x);
+        int code = int(it - table.begin());
+        if (code >= 4096) code = 4095;
+        else if (code > 0 && std::abs(int64_t(table[size_t(code - 1)]) - x) <= std::abs(int64_t(table[size_t(code)]) - x)) --code;
+        return uint32_t(code);
+    };
+    TWord addr = kSampleBase;
+    for (int slot = 0; slot < kSlots; ++slot) {
+        const auto& s = samples[size_t(slot)];
+        const TWord rec = kSlotTable + 4 * TWord(slot);
+        // ROM slots only run the sample player while they hold a sample (the OS points their dispatch entries at
+        // the player, P:0x13D / 0x15A / 0x16C, or back at the fallback)
+        const bool romSlot = slot < 32 || slot >= 48;
+        if (romSlot) {
+            const TWord type = TWord(slot) + 129;
+            const bool on = !s.empty();
+            m_dsp->memWriteP(0x145AF5 + type, on ? 0x00013D : 0x10008E);
+            m_dsp->memWriteP(0x145BB6 + type, on ? 0x00015A : 0x10008E);
+            m_dsp->memWriteP(0x145C77 + type, on ? 0x00016C : 0x10008F);
+        }
+        if (s.empty()) {
+            for (TWord k = 0; k < 4; ++k) m_dsp->memWriteP(rec + k, 0);
+            continue;
+        }
+        const TWord base = addr;
+        for (size_t i = 0; i < s.size(); i += 2) {
+            const uint32_t a = encode(s[i]), b = i + 1 < s.size() ? encode(s[i + 1]) : 2048;
+            m_dsp->memWriteP(addr++, (a << 12) | b);
+        }
+        // the loader divides by the sample period in nanoseconds (as in a MIDI sample dump), not the rate
+        const double rate = rates[size_t(slot)] > 0 ? rates[size_t(slot)] : 44100.0;
+        const int64_t periodNs = std::max<int64_t>(1, int64_t(1e9 / rate + 0.5));
+        const TWord rateWord = TWord((int64_t(0x16250000) / periodNs) << 4) & 0xFFFFFF;
+        m_dsp->memWriteP(rec + 0, base);
+        m_dsp->memWriteP(rec + 1, TWord(s.size()) & 0xFFFFFF);
+        m_dsp->memWriteP(rec + 2, loopStarts[size_t(slot)] >= 0 ? TWord(loopStarts[size_t(slot)]) : 0xFFFFFF);
+        m_dsp->memWriteP(rec + 3, rateWord);
+    }
+    return true;
 }
 
 void VoiceEngine::setInput(const int32_t* lr64)

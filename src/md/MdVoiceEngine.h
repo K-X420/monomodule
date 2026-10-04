@@ -37,6 +37,18 @@ public:
     // voice reads 32 frames per block from the ADC ring X:0x100..0x1FF at its own pointer (+0x40 per block), so
     // the block goes into all four ring slots.
     void setInput(const int32_t* lr64);
+
+    // UW sample slots (ROM-01..32 = slots 0..31, ROM-33..48 = 48..63; RAM-R/P use 32..40). The OS's loader layout:
+    // 12-bit codes, two per word (first sample in the high 12 bits), in sample memory 0x150000..0x1FFA00; the player
+    // decodes a code through the companding table at Y:0x146000 (4096 entries, code 2048 = 0). The slot record at
+    // 0x147E00 + 4 slot is { base, length (samples), loop start (-1 = none), (0x16250000 / period in ns) << 4 }, and a ROM slot
+    // only runs the player while it holds a sample (its dispatch entries are switched like the OS does).
+    static constexpr int kSlots = 64;
+    static constexpr uint32_t kSampleCapacity = (0x1FFA00 - 0x150000) * 2;   // 12-bit samples (~32 s at 44.1 kHz)
+    // Replaces every slot's sample (index = slot; empty = no sample). Returns false when they do not fit.
+    // samples: -1..1 floats per slot, encoded to the nearest code of the DSP's own table.
+    bool setSamples(const std::array<std::vector<float>, kSlots>& samples, const std::array<double, kSlots>& rates,
+                    const std::array<int, kSlots>& loopStarts);
     bool renderPass(Block& out);         // one 32-sample block for all 16 tracks
     bool faulted() const { return m_faulted; }
     const std::string& faultReason() const { return m_fault; }

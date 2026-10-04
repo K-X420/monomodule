@@ -100,6 +100,17 @@ int main(int argc, char** argv)
         const auto t0 = std::chrono::steady_clock::now();
         VoiceEngine eng(fw);
         const auto t1 = std::chrono::steady_clock::now();
+        if (m->id >= 128) {   // ROM/RAM: a 1 s 220 Hz test tone in the machine's slot
+            const int slot = m->id - 128;
+            std::array<std::vector<float>, VoiceEngine::kSlots> samples;
+            std::array<double, VoiceEngine::kSlots> rates{};
+            std::array<int, VoiceEngine::kSlots> loops;
+            loops.fill(-1);
+            for (int i = 0; i < 44100; ++i) samples[size_t(slot)].push_back(float(0.5 * std::sin(2.0 * 3.14159265358979 * 220.0 * i / 44100.0)));
+            rates[size_t(slot)] = 44100.0;
+            std::printf("test tone in slot %d: %s\n", slot,
+                        eng.setSamples(samples, rates, loops) ? "loaded" : "does not fit");
+        }
         eng.setPacket(track, packet.data(), n);
         eng.trig(track, m->dspType());
         const int passes = int(seconds * 44100.0 / VoiceEngine::kBlockFrames);
@@ -154,6 +165,31 @@ int main(int argc, char** argv)
         if (std::getenv("MD_DUMP")) {   // debug: the track's state block and the first samples of its last block
             std::printf("state Y:$%03x..:", 0x800 + 0x40 * track);
             for (int k = 0; k < 0x30; ++k) std::printf("%s%06x", k % 8 == 0 ? "\n  " : " ", eng.peek(2, 0x800 + 0x40 * uint32_t(track) + uint32_t(k)));
+            std::printf("\nactive type y:$%03x = %u; slot record X:$147e00..: %06x %06x %06x %06x; P:$13d = %06x",
+                        0x153 + track, eng.peek(2, 0x153 + uint32_t(track)), eng.peek(1, 0x147E00), eng.peek(1, 0x147E01),
+                        eng.peek(1, 0x147E02), eng.peek(1, 0x147E03), eng.peek(0, 0x13D));
+            const uint32_t type = uint32_t(m->dspType());
+            std::printf("\ntables for type %u: init Y:%06x P:%06x  update Y:%06x P:%06x  render Y:%06x P:%06x", type,
+                        eng.peek(2, 0x145AF5 + type), eng.peek(0, 0x145AF5 + type), eng.peek(2, 0x145BB6 + type), eng.peek(0, 0x145BB6 + type),
+                        eng.peek(2, 0x145C77 + type), eng.peek(0, 0x145C77 + type));
+            std::printf("\nbanks Y:$100..: ");
+            for (uint32_t k = 0; k < 8; ++k) std::printf(" %06x", eng.peek(2, 0x100 + k));
+            std::printf("\n      Y:$120..: ");
+            for (uint32_t k = 0; k < 8; ++k) std::printf(" %06x", eng.peek(2, 0x120 + k));
+            std::printf("\nsample mem Y:$150000..:");
+            for (uint32_t k = 0; k < 8; ++k) std::printf(" %06x", eng.peek(2, 0x150000 + k));
+            std::printf("\nX:$000.. (decode ptrs):");
+            for (uint32_t k = 0; k < 12; ++k) std::printf(" %06x", eng.peek(1, k));
+            std::printf("\nX:$092.. (decoded ring):");
+            for (uint32_t k = 0; k < 12; ++k) std::printf(" %06x", eng.peek(1, 0x92 + k));
+            std::printf("\nX:$0f8..$0ff:");
+            for (uint32_t k = 0xF8; k < 0x100; ++k) std::printf(" %06x", eng.peek(1, k));
+            std::printf("\nY:$000.. (filter out):");
+            for (uint32_t k = 0; k < 12; ++k) std::printf(" %06x", eng.peek(2, k));
+            std::printf("\nY:$146000 table (every 256th):");
+            for (uint32_t k = 0; k < 4096; k += 256) std::printf(" %06x", eng.peek(2, 0x146000 + k));
+            std::printf("\nY:$146000 around 0/2048/4095: %06x %06x %06x | %06x %06x %06x | %06x", eng.peek(2, 0x146000), eng.peek(2, 0x146001), eng.peek(2, 0x146002),
+                        eng.peek(2, 0x1467FF), eng.peek(2, 0x146800), eng.peek(2, 0x146801), eng.peek(2, 0x146FFF));
             std::printf("\nlast block:");
             for (int i = 0; i < 8; ++i) std::printf(" %d", blk[size_t(track)][size_t(i)]);
             std::printf("\n");
