@@ -34,6 +34,21 @@ int main(int argc, char** argv)
     proc.setPlayConfigDetails(0, 2, rate, block);
     proc.prepareToPlay(rate, block);
     bool kitLoaded = false;
+    // MD_OUTS_TEST: every output bus live, PER TRACK outputs (MD_OUTS_OFF=n leaves track n's bus off: it stays on
+    // the main); prints each bus's level. MD_OUTS_TEST=hw: the same buses in HARDWARE mode
+    const char* outsTest = std::getenv("MD_OUTS_TEST");
+    if (outsTest) {
+        proc.enableAllBuses();
+        if (const char* off = std::getenv("MD_OUTS_OFF")) {
+            auto layout = proc.getBusesLayout();
+            layout.outputBuses.getReference(3 + std::atoi(off) - 1) = juce::AudioChannelSet::disabled();
+            proc.setBusesLayout(layout);
+        }
+        if (std::strcmp(outsTest, "hw") != 0)
+            if (auto* p = proc.apvts.getParameter(outputModeId())) p->setValueNotifyingHost(1.0f);
+        proc.prepareToPlay(rate, block);
+    }
+    std::vector<double> busEnergy(size_t(proc.getBusCount(false)), 0.0);
     if (std::getenv("MD_ROM_TEST")) {   // a 220 Hz WAV into ROM-01 on track 1, then the state round trip into a 2nd instance
         juce::File wav = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("md-rom-test.wav");
         wav.deleteFile();
@@ -225,7 +240,7 @@ int main(int argc, char** argv)
     const auto t0 = juce::Time::getMillisecondCounterHiRes();
     for (int pos = 0; pos < total; pos += block) {
         const int n = std::min(block, total - pos);
-        juce::AudioBuffer<float> buf(2, n);
+        juce::AudioBuffer<float> buf(std::max(2, proc.getTotalNumOutputChannels()), n);
         juce::MidiBuffer midi;
         for (int s = 0; s < steps; ++s) {
             const int at = int(s * stepSec * rate);
@@ -261,12 +276,24 @@ int main(int argc, char** argv)
         }
         proc.processBlock(buf, midi);
         for (int c = 0; c < 2; ++c) out.copyFrom(c, pos, buf, c, 0, n);
+        for (int b = 0; outsTest && b < proc.getBusCount(false); ++b) {
+            if (!proc.getBus(false, b)->isEnabled()) continue;
+            auto bb = proc.getBusBuffer(buf, false, b);
+            for (int c = 0; c < bb.getNumChannels(); ++c) for (int i = 0; i < n; ++i) busEnergy[size_t(b)] += double(bb.getSample(c, i)) * bb.getSample(c, i);
+        }
     }
     const double ms = juce::Time::getMillisecondCounterHiRes() - t0;
     float peak = 0; double sum = 0;
     for (int c = 0; c < 2; ++c) for (int i = 0; i < total; ++i) { const float v = out.getSample(c, i); peak = std::max(peak, std::abs(v)); sum += double(v) * v; }
     std::printf("rendered %.2f s in %.0f ms (%.1fx realtime); peak %.3f RMS %.4f\n", total / rate, ms, total / rate * 1000.0 / ms, peak, std::sqrt(sum / (2.0 * total)));
 
+    if (outsTest) {
+        std::printf("bus levels (RMS):");
+        for (int b = 0; b < proc.getBusCount(false); ++b)
+            std::printf("%s %s %.4f", b % 5 == 0 ? "\n " : "", proc.getBus(false, b)->getName().toRawUTF8(),
+                        proc.getBus(false, b)->isEnabled() ? std::sqrt(busEnergy[size_t(b)] / (2.0 * total)) : -1.0);
+        std::printf("\n");
+    }
     juce::File wav{juce::String(argv[2])};
     wav.deleteFile();
     juce::WavAudioFormat fmt;

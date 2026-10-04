@@ -41,10 +41,20 @@ public:
     //   pan    = PAN << 9,   sends = S^2 >> 5
     static std::array<uint32_t, 5> routingWords(uint32_t level, uint32_t vol, uint32_t pan, uint32_t reverbSend, uint32_t delaySend, int route = 6, int accent = 127);
     void setTrackFx(int track, const std::array<uint16_t, 9>& raw);   // AMD AMF EQF EQG FLTF FLTW FLTQ SRR DIST
-    void setRouting(int track, const std::array<uint32_t, 5>& words) { setY(0x100 + 5 * uint32_t(track), words.data(), 5); }
+    void setRouting(int track, const std::array<uint32_t, 5>& words);
+    // Per-track outputs: the tracks in the mask are taken off the DSP's mix (their volume word goes to the DSP as 0,
+    // which also silences their reverb / delay sends and A-F outs); trackOutput() then makes their signal as the
+    // main mixer would. The mixer code the DSP generates (P:0x2BD..) reads each track's mono block after its track
+    // effects (MAIN tracks packed up from X:0x200, A-F tracks down from X:0x3E0, in track order) and multiplies it by
+    // volume x pan law: PAN word (clamped at 0x7ECCCD) >> 10 indexes X:0x14A000 (left) / X:0x148000 (right); x8.
+    void setDirect(uint32_t mask);
+    void trackOutput(int track, float* left, float* right) const;   // after renderBlock: 32 frames, 1.0 = full scale
     bool renderBlock(const VoiceEngine::Block& voices, Output& out);
     // The finished master block (32 stereo frames, L/R) DSP1 sends back to DSP2 for the RAM recorders (X:0x688)
     void masterReturn(int32_t* lr64) const;
+    int32_t peekX(uint32_t addr) const;   // 24-bit signed
+    uint32_t peekP(uint32_t addr) const;
+    int32_t peekY(uint32_t addr) const;
     bool faulted() const { return m_faulted; }
     const std::string& faultReason() const { return m_fault; }
     uint64_t lastBlockInstructions() const { return m_lastInstr; }
@@ -60,6 +70,8 @@ private:
     bool m_faulted = false;
     std::string m_fault;
     uint64_t m_lastInstr = 0;
+    std::array<std::array<uint32_t, 5>, VoiceEngine::kTracks> m_routing{};
+    uint32_t m_direct = 0;
 };
 
 } // namespace mnm::md

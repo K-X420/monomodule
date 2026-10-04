@@ -151,6 +151,8 @@ private:
     std::array<std::atomic<bool>, kTracks> m_kitLfoPending{};
     std::atomic<float>* m_master = nullptr;
     std::atomic<float>* m_velMode = nullptr;
+    std::atomic<float>* m_outputMode = nullptr;
+    std::atomic<uint32_t> m_directMask{0};   // PER TRACK: the tracks on their own buses (set each block)
     std::atomic<float>* m_accent = nullptr;
     std::atomic<double> m_hostBpm{120.0};
     std::array<std::atomic<bool>, kTracks> m_audition{};
@@ -172,12 +174,14 @@ private:
     MachineKnobInfo m_knobInfo;
     std::array<int, kNumMachines> m_idOfIndex{};
 
-    // engine-rate (44.1 kHz) output FIFO: the six DAC channels, and their host-rate resamplers
+    // engine-rate (44.1 kHz) output FIFO: the six DAC channels, then the per-track outputs (L/R per track), and
+    // their host-rate resamplers
     static constexpr int kDac = mnm::md::MixEngine::kChannels;
-    std::array<std::vector<float>, kDac> m_fifo;
+    static constexpr int kFifoChannels = kDac + 2 * kTracks;
+    std::array<std::vector<float>, kFifoChannels> m_fifo;
     int m_fifoLen = 0;
     double m_hostRate = 44100.0;
-    std::array<juce::LagrangeInterpolator, kDac> m_interp;
+    std::array<juce::LagrangeInterpolator, kFifoChannels> m_interp;
     // side-chain input for the INP machines, resampled to the engine rate
     std::array<std::vector<float>, 2> m_inFifo;
     int m_inLen = 0;

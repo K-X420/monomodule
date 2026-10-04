@@ -86,6 +86,45 @@ std::array<uint32_t, 5> MixEngine::routingWords(uint32_t level, uint32_t vol, ui
     return {uint32_t(route), uint32_t(volume) & 0xFFFFFF, panWord & 0xFFFFFF, rev & 0xFFFFFF, del & 0xFFFFFF};
 }
 
+void MixEngine::setRouting(int track, const std::array<uint32_t, 5>& words)
+{
+    m_routing[size_t(track)] = words;
+    auto w = words;
+    if ((m_direct >> track) & 1) w[1] = 0;
+    setY(0x100 + 5 * uint32_t(track), w.data(), 5);
+}
+
+void MixEngine::setDirect(uint32_t mask)
+{
+    const uint32_t changed = mask ^ m_direct;
+    m_direct = mask;
+    for (int t = 0; t < VoiceEngine::kTracks; ++t)
+        if ((changed >> t) & 1) setRouting(t, m_routing[size_t(t)]);
+}
+
+void MixEngine::trackOutput(int track, float* left, float* right) const
+{
+    TWord mainBlock = 0x200, otherBlock = 0x3E0, block = 0;
+    for (int k = 0; k <= track; ++k) {
+        const bool main = (m_routing[size_t(k)][0] & 0xFFFFFF) == 6;
+        block = main ? mainBlock : otherBlock;
+        if (main) mainBlock += 0x20; else otherBlock -= 0x20;
+    }
+    auto frac = [](TWord w) { return double(int32_t(w << 8) >> 8) * (1.0 / 8388608.0); };
+    const auto& w = m_routing[size_t(track)];
+    TWord pan = w[2] & 0xFFFFFF;
+    if (pan & 0x800000) pan = 0;
+    if (pan > 0x7ECCCD) pan = 0x7FFFFF;
+    const TWord n = pan >> 10;
+    const double vol = frac(w[1]) * 8.0;
+    const double gl = frac(m_mem->get(MemArea_X, 0x14A000 + n)) * vol, gr = frac(m_mem->get(MemArea_X, 0x148000 + n)) * vol;
+    for (TWord i = 0; i < kFrames; ++i) {
+        const double s = frac(m_mem->get(MemArea_X, block + i));
+        left[i] = float(s * gl);
+        right[i] = float(s * gr);
+    }
+}
+
 void MixEngine::setTrackFx(int track, const std::array<uint16_t, 9>& raw)
 {
     std::array<uint32_t, 9> w{};
@@ -97,6 +136,10 @@ void MixEngine::masterReturn(int32_t* lr64) const
 {
     for (TWord k = 0; k < 64; ++k) lr64[k] = int32_t(m_mem->get(MemArea_X, 0x688 + k) << 8) >> 8;
 }
+
+int32_t MixEngine::peekX(uint32_t addr) const { return int32_t(m_mem->get(MemArea_X, addr) << 8) >> 8; }
+int32_t MixEngine::peekY(uint32_t addr) const { return int32_t(m_mem->get(MemArea_Y, addr) << 8) >> 8; }
+uint32_t MixEngine::peekP(uint32_t addr) const { return m_mem->get(MemArea_P, addr); }
 
 bool MixEngine::renderBlock(const VoiceEngine::Block& voices, Output& out)
 {

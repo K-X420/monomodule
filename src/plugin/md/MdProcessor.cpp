@@ -14,15 +14,21 @@ constexpr double kEngineRate = 44100.0;
 constexpr int kBlock = mnm::md::VoiceEngine::kBlockFrames;
 // DAC frame offsets of the outputs: A=2 B=5 C=1 D=4 E=0 F=3; the main bus is A/B (where MAIN lands)
 constexpr int kBusChannels[3][2] = {{2, 5}, {1, 4}, {0, 3}};
+constexpr int kHardwareBuses = 3;   // then "Track 1".."Track 16" (PER TRACK outputs)
+
 juce::String loadOsPath() { return loadSharedSetting("mdOsPath"); }
 }
 
 MdProcessor::MdProcessor()
-    : AudioProcessor(BusesProperties()
-                         .withInput("Input (INP machines)", juce::AudioChannelSet::stereo(), false)
-                         .withOutput("Main A/B", juce::AudioChannelSet::stereo(), true)
-                         .withOutput("Out C/D", juce::AudioChannelSet::stereo(), false)
-                         .withOutput("Out E/F", juce::AudioChannelSet::stereo(), false)),
+    : AudioProcessor([] {
+          auto b = BusesProperties()
+                       .withInput("Input (INP machines)", juce::AudioChannelSet::stereo(), false)
+                       .withOutput("Main A/B", juce::AudioChannelSet::stereo(), true)
+                       .withOutput("Out C/D", juce::AudioChannelSet::stereo(), false)
+                       .withOutput("Out E/F", juce::AudioChannelSet::stereo(), false);
+          for (int t = 0; t < kTracks; ++t) b = b.withOutput("Track " + juce::String(t + 1), juce::AudioChannelSet::stereo(), false);
+          return b;
+      }()),
       apvts(*this, nullptr, "PARAMS", createLayout())
 {
     for (int t = 0; t < kTracks; ++t) {   // an empty kit's bytes: no trig / mute groups, every LFO on its own track
@@ -55,6 +61,7 @@ MdProcessor::MdProcessor()
         for (int k = 0; k < 8; ++k) m_masterFx[size_t(fx)][size_t(k)] = apvts.getRawParameterValue(masterFxId(fx, k));
     m_master = apvts.getRawParameterValue(masterId());
     m_velMode = apvts.getRawParameterValue(velModeId());
+    m_outputMode = apvts.getRawParameterValue(outputModeId());
     m_accent = apvts.getRawParameterValue(accentId());
     m_firmwarePath = loadOsPath();
     loadEngine();
@@ -179,6 +186,7 @@ void MdProcessor::runPass()
     for (auto& f : m_inFifo) std::copy(f.begin() + take, f.begin() + m_inLen, f.begin());
     m_inLen -= take;
     m_engine->setInput(m_inBlock.data());
+    m_engine->setDirect(m_directMask.load());
     m_engine->render();
     for (int t = 0; t < kTracks; ++t) {
         float pk = m_activity[size_t(t)].load() * 0.97f;
@@ -191,6 +199,14 @@ void MdProcessor::runPass()
         float* dst = m_fifo[size_t(c)].data() + m_fifoLen;
         for (int i = 0; i < kBlock; ++i) dst[i] = float(out[size_t(i)][size_t(c)]) * gain;
     }
+    const float trackGain = float(m_master->load()) / 100.0f;
+    const uint32_t direct = m_engine->direct();
+    for (int t = 0; t < kTracks; ++t)
+        for (int c = 0; c < 2; ++c) {
+            float* dst = m_fifo[size_t(kDac + 2 * t + c)].data() + m_fifoLen;
+            if ((direct >> t) & 1) { const float* src = m_engine->trackOut(t, c); for (int i = 0; i < kBlock; ++i) dst[i] = src[i] * trackGain; }
+            else std::fill_n(dst, kBlock, 0.0f);
+        }
     m_fifoLen += kBlock;
 }
 
@@ -249,6 +265,13 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
     const juce::ScopedTryLock sl(m_engineLock);
     if (!sl.isLocked() || !m_engineReady) { midi.clear(); mixPreview(buffer); return; }
     const double ratio = kEngineRate / m_hostRate;   // engine frames per host frame
+    {   // PER TRACK: the tracks whose own bus is live leave the hardware outputs
+        uint32_t mask = 0;
+        if (int(std::lround(m_outputMode->load())) == int(OutputMode::Tracks))
+            for (int t = 0; t < kTracks; ++t)
+                if (kHardwareBuses + t < getBusCount(false) && getBus(false, kHardwareBuses + t)->isEnabled()) mask |= 1u << t;
+        m_directMask.store(mask);
+    }
 
     for (const auto meta : midi) {
         const auto m = meta.getMessage();
@@ -284,11 +307,11 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
     }
 
     int used = 0;
-    for (int bus = 0; bus < 3; ++bus) {
-        if (bus >= getBusCount(false) || !getBus(false, bus)->isEnabled()) continue;
+    for (int bus = 0; bus < std::min(getBusCount(false), kHardwareBuses + kTracks); ++bus) {
+        if (!getBus(false, bus)->isEnabled()) continue;
         auto out = getBusBuffer(buffer, false, bus);
         for (int ch = 0; ch < std::min(2, out.getNumChannels()); ++ch) {
-            const int dac = kBusChannels[bus][ch];
+            const int dac = bus < kHardwareBuses ? kBusChannels[bus][ch] : kDac + 2 * (bus - kHardwareBuses) + ch;
             float* dst = out.getWritePointer(ch);
             if (std::abs(ratio - 1.0) < 1e-9) { std::copy_n(m_fifo[size_t(dac)].data(), n, dst); used = n; }
             else used = m_interp[size_t(dac)].process(ratio, m_fifo[size_t(dac)].data(), dst, n);

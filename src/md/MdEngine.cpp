@@ -80,11 +80,27 @@ void Engine::refresh()
     m_tempoSent = m_bpm;
 }
 
+void Engine::setDirect(uint32_t mask)
+{
+    for (int t = 0; t < kTracks; ++t)   // a track that just went direct starts from silence
+        if (((mask & ~m_direct) >> t) & 1) for (auto& c : m_trackOut[size_t(t)]) c.fill(0.0f);
+    m_direct = mask;
+    m_mixer->setDirect(mask);
+}
+
 void Engine::render()
 {
     refresh();
     m_voices->renderPass(m_block);
     m_mixer->renderBlock(m_block, m_out);
+    for (int t = 0; t < kTracks; ++t) {
+        if (!((m_direct >> t) & 1)) continue;
+        auto& o = m_trackOut[size_t(t)];
+        for (auto& c : o) std::copy(c.begin() + kFrames, c.end(), c.begin());   // the last kMasterLatency frames move to the front
+        float L[kFrames], R[kFrames];
+        m_mixer->trackOutput(t, L, R);
+        for (int i = 0; i < kFrames; ++i) { o[0][size_t(kMasterLatency + i)] = L[i] * kMasterGain; o[1][size_t(kMasterLatency + i)] = R[i] * kMasterGain; }
+    }
     m_mixer->masterReturn(m_masterReturn.data());   // the main mix for the RAM recorders, next block
     m_voices->setMasterReturn(m_masterReturn.data());
 }

@@ -16,6 +16,8 @@
 #include "MdMixEngine.h"
 #include "MdKit.h"
 #include "MdPreview.h"
+#include "MdEngine.h"
+#include <cmath>
 #include <map>
 #include <memory>
 #include "dsp56kEmu/disasm.h"
@@ -85,6 +87,54 @@ int main(int argc, char** argv)
             } else {
                 for (const auto& [a, w] : p) { const auto s = line(a).first; if (s.find(argv[4]) != std::string::npos) std::printf("%06x  %s\n", a, s.c_str()); }
             }
+            return 0;
+        }
+        if (std::strcmp(argv[2], "directcheck") == 0 && argc > 4) {
+            // md-render <os.syx> directcheck <dump.syx> <kit>: each track of the kit alone, once in the mix and once on its
+            // own output (Engine::setDirect); its own output against the main, sample by sample (neutral master section)
+            std::FILE* f = std::fopen(argv[3], "rb");
+            std::vector<uint8_t> bytes;
+            for (int c; f && (c = std::fgetc(f)) != EOF;) bytes.push_back(uint8_t(c));
+            if (f) std::fclose(f);
+            const auto d = mnm::mddump::parseDump(bytes.data(), bytes.size(), "dump");
+            const auto* kit = d.kitAt(std::atoi(argv[4]));
+            if (!kit) { std::printf("no kit\n"); return 1; }
+            double worst = -1e9;   // the largest own-output error, dB below the main, over the tracks that sound
+            for (int s = 0; s < 16; ++s) {
+                auto make = [&](bool direct) {
+                    auto e = std::make_unique<Engine>(fw);
+                    e->setMasterFx({{{127, 0, 64, 64, 0, 127, 0, 127}, {24, 0, 0, 32, 0, 127, 0, 127}, {64, 64, 64, 64, 64, 64, 64, 64}, {0, 64, 127, 0, 0, 0, 64, 0}}});
+                    for (int tr = 0; tr < 16; ++tr) {
+                        Engine::Track x;
+                        x.machine = kit->model(tr);
+                        std::copy(kit->params[tr], kit->params[tr] + 24, x.params.begin());
+                        x.params[19] = x.params[20] = 0;   // no sends: the main is then the track alone
+                        x.level = tr == s ? kit->levels[tr] : 0;
+                        x.route = 6;
+                        e->setTrack(tr, x);
+                    }
+                    e->setDirect(direct ? 1u << s : 0u);
+                    e->snap(); e->render();
+                    e->trig(s, kit->model(s), 100);
+                    return e;
+                };
+                auto mixed = make(false), direct = make(true);
+                double err = 0, ref = 0, mainLeft = 0, mo = 0, oo = 0;
+                for (int pass = 0; pass < 40; ++pass) {
+                    mixed->render(); direct->render();
+                    for (int i = 0; i < 32; ++i)
+                        for (int c = 0; c < 2; ++c) {
+                            const double m = mixed->output()[size_t(i)][size_t(c == 0 ? 2 : 5)] / 8388608.0, o = direct->trackOut(s, c)[i];
+                            const double dm = direct->output()[size_t(i)][size_t(c == 0 ? 2 : 5)] / 8388608.0;
+                            err += (m - o) * (m - o); ref += m * m; mainLeft += dm * dm; mo += m * o; oo += o * o;
+                        }
+                }
+                const double snr = ref > 0 ? 10 * std::log10(ref / std::max(err, 1e-30)) : 0;
+                if (ref > 1e-6) worst = std::max(worst, -snr);
+                std::printf("T%-2d %-7s main rms %.4f  own-output error %6.1f dB below it (best gain x%.5f); main with it direct: rms %.2e\n", s + 1,
+                            fw.byId(kit->model(s)) ? fw.byId(kit->model(s))->name().c_str() : "?", std::sqrt(ref / 2560), -snr, oo > 0 ? mo / oo : 0.0, std::sqrt(mainLeft / 2560));
+            }
+            std::printf("worst own-output error %.1f dB (re the main)\n", worst);
             return 0;
         }
         if (std::strcmp(argv[2], "preview") == 0 && argc > 5) {

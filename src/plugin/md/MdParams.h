@@ -153,6 +153,12 @@ inline juce::String masterId() { return "master"; }
 // ACCENT = velocity >= 112 is an accented trig (+2 x ACCENT in the volume law), others play at normal volume
 inline juce::String velModeId() { return "velmode"; }
 inline juce::String accentId() { return "accent"; }
+// What the plugin's output buses carry. HARDWARE: Main A/B, Out C/D, Out E/F = the Machinedrum's six outputs (each
+// track where its ROUTE puts it). PER TRACK: every track whose "Track n" bus the host has enabled plays there (after
+// its track effects, volume and pan, level-matched to the main mix) and leaves the hardware outputs, its reverb and
+// delay sends with it, as a track on an individual output does on the hardware; the rest stay on the hardware outputs.
+enum class OutputMode : int { Hardware = 0, Tracks = 1 };
+inline juce::String outputModeId() { return "outputs"; }
 
 inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
 {
@@ -199,6 +205,7 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     layout.add(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{masterId(), 1}, "VOLUME", 0, 127, 80));
     layout.add(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{velModeId(), 1}, "VEL", juce::StringArray{"VOLUME", "ACCENT"}, 0));
     layout.add(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{accentId(), 1}, "ACCENT", 0, 127, 64));
+    layout.add(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{outputModeId(), 1}, "OUTPUTS", juce::StringArray{"Hardware", "Per Track"}, 0));
     return layout;
 }
 

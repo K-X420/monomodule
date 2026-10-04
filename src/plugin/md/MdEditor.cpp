@@ -473,6 +473,11 @@ void MdEditor::showMenu()
     m.addItem(2, "IMPORT MACHINEDRUM .SYX...");
     m.addItem(9, "LIBRARY", true, m_panel.isOpen());
     m.addSeparator();
+    juce::PopupMenu outputs;   // as Monomodule Six's Plugin Outputs
+    const int outMode = int(std::lround(m_proc.apvts.getRawParameterValue(outputModeId())->load()));
+    outputs.addItem(40, "HARDWARE (MAIN A/B, OUT C/D, OUT E/F)", true, outMode == int(OutputMode::Hardware));
+    outputs.addItem(41, "PER TRACK (TRACK 1-16, WHERE ENABLED)", true, outMode == int(OutputMode::Tracks));
+    m.addSubMenu("PLUGIN OUTPUTS", outputs);
     m.addSubMenu("SKIN", skins);
     m.addItem(7, "SHOW ENGINE STATUS", true, m_showStatus);
     m.addItem(4, juce::String("SAMPLE MEMORY USED ") + juce::String(int(std::lround(m_proc.sampleMemoryUsed() * 100.0))) + "%", false);
@@ -486,6 +491,7 @@ void MdEditor::showMenu()
         else if (r == 7) { m_showStatus = !m_showStatus; resized(); timerCallback(); }
         else if (r == 8) { m_about.setVisible(true); m_about.toFront(false); }
         else if (r == 9) { if (m_panel.isOpen()) m_panel.close(); else m_panel.open(); }
+        else if (r == 40 || r == 41) { if (auto* p = m_proc.apvts.getParameter(outputModeId())) p->setValueNotifyingHost(p->convertTo0to1(float(r - 40))); }
         else if (r == 100 + int(skin::Preset::Custom)) { m_skinDialog.setBounds(getLocalBounds()); m_skinDialog.open(); }
         else if (r >= 100) applySkin(skin::presetSkin(skin::Preset(r - 100)));
     });

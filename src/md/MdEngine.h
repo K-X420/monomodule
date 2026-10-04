@@ -1,4 +1,4 @@
-// The Machinedrum sound engine, as Monomodule MD and the library previews run it: the OS's control CPU (knob
+﻿// The Machinedrum sound engine, as Monomodule MD and the library previews run it: the OS's control CPU (knob
 // slewing, LFOs, the machines' control handlers, the master effects' conversion), DSP2 (the 16 voices) and DSP1 (track
 // effects, routing, mixer, master effects), one 32-frame pass at a time at 44.1 kHz. JUCE-free.
 // Each pass: the targets set since the last pass go to the OS tick (which slews towards them), then whatever changed
@@ -44,6 +44,15 @@ public:
     void render();
     const VoiceEngine::Block& voiceBlock() const { return m_block; }
     const MixEngine::Output& output() const { return m_out; }
+    // Per-track outputs (see MixEngine::setDirect): the masked tracks leave the hardware mix; after render(),
+    // trackOut(t, 0|1) is each one's 32 frames (L / R, 1.0 = full scale) after its track effects, volume and pan, with
+    // the master section's gain at neutral settings and its latency (measured: x5.762, 18 frames; correlation 1.0
+    // against the track alone on MAIN), so a track on its own output sounds as it did in the main mix, in time
+    static constexpr int kMasterLatency = 18;
+    static constexpr float kMasterGain = 5.762f;
+    void setDirect(uint32_t mask);
+    uint32_t direct() const { return m_direct; }
+    const float* trackOut(int t, int ch) const { return m_trackOut[size_t(t)][size_t(ch)].data(); }
 
 private:
     void refresh();
@@ -66,6 +75,9 @@ private:
     VoiceEngine::Block m_block{};
     MixEngine::Output m_out{};
     std::array<int32_t, 64> m_masterReturn{};
+    uint32_t m_direct = 0;
+    // per track and channel: kMasterLatency frames of history, then the block (trackOut reads from the history start)
+    std::array<std::array<std::array<float, kFrames + kMasterLatency>, 2>, kTracks> m_trackOut{};
 };
 
 } // namespace mnm::md
