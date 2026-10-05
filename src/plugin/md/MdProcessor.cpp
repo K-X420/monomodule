@@ -362,6 +362,26 @@ void MdProcessor::editPattern(int slot, const std::function<void(mnm::mddump::Pa
     if (!cur) m_bankFresh.store(true);
 }
 
+void MdProcessor::setBankPattern(int slot, std::shared_ptr<const mnm::mddump::Pattern> p)
+{
+    if (slot < 0 || slot >= 128) return;
+    std::shared_ptr<const SeqBank> cur;
+    { const juce::SpinLock::ScopedLockType l(m_bankLock); cur = m_bank; }
+    if (!cur && !p) return;
+    auto bank = cur ? std::make_shared<SeqBank>(*cur) : std::make_shared<SeqBank>();
+    if (!cur) { bank->patterns.resize(128); bank->kits.resize(64); bank->songs.resize(32); m_bankName = "PLUGIN"; }
+    bank->patterns[size_t(slot)] = p;
+    bank->hasPattern[size_t(slot)] = p != nullptr;
+    {
+        const juce::SpinLock::ScopedLockType l(m_bankLock);
+        m_bankOld = std::move(m_bank);
+        m_bank = std::move(bank);
+    }
+    const int was = m_patternEdited.exchange(slot);
+    if (was >= 0 && was != slot) m_patternEdited.store(-2);
+    if (!cur) m_bankFresh.store(true);
+}
+
 void MdProcessor::setPatternBank(const juce::String& projectId, const juce::String& name, const mnm::mddump::Dump& dump, int kitSlot)
 {
     m_seqKitSlot.store(kitSlot);

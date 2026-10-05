@@ -73,7 +73,7 @@ public:
     void setGrid(const Grid& g) { if (!(g == m_grid)) { m_grid = g; repaint(); } }
     std::function<void(int step)> onStep, onHold;
     std::function<void(int step)> onStepMenu;
-    std::function<void(int track)> onSelect;
+    std::function<void(int track)> onSelect, onMuteKey;   // Ctrl / Cmd + click: select; Alt + click: mute (as FUNC + trig)
     void setSeq(int step, int length, uint64_t trigs)
     {
         if (m_seqStep != step || m_seqLen != length || m_seqTrigs != trigs) { m_seqStep = step; m_seqLen = length; m_seqTrigs = trigs; repaint(); }
@@ -154,6 +154,13 @@ public:
     void showKitList() { openKitList(); }                         // dev/snapshot
     void showLibrary(int tab) { m_panel.open(false); m_panel.setTab(MdLibraryPanel::Tab(tab)); }   // dev/snapshot
     void showAbout() { m_about.setVisible(true); m_about.toFront(false); }                     // dev/snapshot
+    // dev/tests: the GRID as clicks drive it
+    void devStep(int s) { if (m_keys.onStep) m_keys.onStep(s); }
+    void devHold(int s) { holdStep(s); }
+    void devMuteKey(int t) { if (m_keys.onMuteKey) m_keys.onMuteKey(t); }
+    void devUndo() { undo(); }
+    void devRedo() { redo(); }
+    one::KnobPage& devSynPage() { return m_syn; }
     void showGrid(int held)   // dev/snapshot: the PATTERN tab, GRID on, a step held (-1 none)
     {
         m_out.setTabs({"OUT", "PATTERN"}, 1, [this](int tab) { bindOutPage(tab); });
@@ -172,6 +179,7 @@ public:
     void fileDragMove(const juce::StringArray& files, int x, int y) override;
     void fileDragExit(const juce::StringArray& files) override;
     void paintOverChildren(juce::Graphics& g) override;
+    bool keyPressed(const juce::KeyPress& k) override;   // Ctrl/Cmd+Z undo, Ctrl/Cmd+Shift+Z (or +Y) redo
     void mouseDown(const juce::MouseEvent& e) override;   // a press elsewhere closes the machine picker and the list
 
 private:
@@ -186,6 +194,16 @@ private:
     void holdStep(int step);     // -1 releases
     void stepMenu(int step);
     void editMenu();   // copy / paste / clear: the page GRID shows, the selected track, the pattern; double
+    // Every pattern edit of the editor, with undo: `coalesce` >= 0 merges a run of edits of the same kind (a knob drag)
+    // into one undo step
+    void doEdit(int slot, const juce::String& label, const std::function<void(mnm::mddump::Pattern&)>& fn, int coalesce = -1);
+    void undo();
+    void redo();
+    void toggleMute(int t);
+    struct UndoStep { int slot = 0; std::shared_ptr<const mnm::mddump::Pattern> before, after; juce::String label; };
+    std::vector<UndoStep> m_undo, m_redo;
+    int m_lastCoalesce = -1;
+    juce::int64 m_lastEditMs = 0;
     struct Clip { int kind = 0; bool all = false; int track = 0, page = 0; mnm::mddump::Pattern pat; };   // kind 1 page, 2 track, 3 pattern
     Clip m_clip;
     void refreshGrid();

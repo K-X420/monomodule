@@ -33,6 +33,7 @@ void KnobCell::mouseUp(const juce::MouseEvent& e)
 void KnobCell::mouseDoubleClick(const juce::MouseEvent& e)
 {
     if (m_valueArea.contains(e.getPosition())) return;   // double-click on the value is editing, not reset
+    if (onReset && onReset()) return;
     Slider::mouseDoubleClick(e);
 }
 
@@ -153,11 +154,14 @@ void KnobPage::showValueList(int k)
 // A page's cells are repainted when any of its values change, so DEST follows PAGE live.
 
 
-void KnobPage::bindCustom(const spec::Param* params8, std::function<int(int)> get, std::function<void(int, int)> set)
+void KnobPage::bindCustom(const spec::Param* params8, std::function<int(int)> get, std::function<void(int, int)> set,
+                          std::function<void(int)> reset, std::function<bool(int)> marked)
 {
     m_custom = true;
     m_get = std::move(get);
     m_set = std::move(set);
+    m_reset = std::move(reset);
+    m_marked = std::move(marked);
     m_pulling = true;
     for (int k = 0; k < 8; ++k) {
         auto& cell = m_cells[size_t(k)];
@@ -175,6 +179,7 @@ void KnobPage::bindCustom(const spec::Param* params8, std::function<int(int)> ge
         cell.setValue(double(m_get ? m_get(k) : 0), juce::dontSendNotification);
         cell.setDoubleClickReturnValue(true, double(params8[k].defaultRaw));
         cell.onValueChange = [this, k] { repaint(); if (!m_pulling && m_set) m_set(k, int(std::lround(m_cells[size_t(k)].getValue()))); };
+        cell.onReset = [this, k] { if (!m_reset) return false; m_reset(k); pull(); repaint(); return true; };
     }
     m_pulling = false;
     endEdit(false);
@@ -201,9 +206,12 @@ void KnobPage::bind(const spec::Param* params8, const std::function<juce::String
     m_custom = false;
     m_get = nullptr;
     m_set = nullptr;
+    m_reset = nullptr;
+    m_marked = nullptr;
     for (int k = 0; k < 8; ++k) {
         auto& cell = m_cells[size_t(k)];
         cell.onValueChange = [this] { repaint(); };   // the page draws the cells
+        cell.onReset = nullptr;
         m_attach[size_t(k)].reset();
         m_params[size_t(k)] = params8[k];
         const auto d = params8[k].display;
@@ -284,6 +292,10 @@ void KnobPage::paint(juce::Graphics& g)
         const int raw = int(std::lround(cell.getValue()));
         const bool hot = cell.isVisible() && (cell.isMouseOverOrDragging() || m_editing == k);
         drawKnobCell(cv, x0, y0, p, raw, hot, m_iconFn[size_t(k)] ? m_iconFn[size_t(k)]() : nullptr);
+        if (m_custom && m_marked && cell.isVisible() && m_marked(k)) {   // marked (a locked value): the value box inverted
+            const auto vb = knobValueBox(x0, y0);
+            cv.invertRect(vb.getX(), vb.getY(), vb.getWidth(), vb.getHeight());
+        }
     }
     cv.dotsV(kLcdW - 1, oy + kGridY, oy + kLcdH - 1);   // grid right edge
     cv.dotsH(0, kLcdW - 1, oy + kLcdH - 1);             // grid bottom edge

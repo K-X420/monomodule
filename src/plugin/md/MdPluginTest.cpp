@@ -33,6 +33,48 @@ int main(int argc, char** argv)
     const int block = 480;
     proc.setPlayConfigDetails(0, 2, rate, block);
     proc.prepareToPlay(rate, block);
+    if (std::getenv("MD_GRID_TEST")) {
+        // The GRID driven as clicks drive it: steps, undo / redo, a held step's locks (a knob drag is one undo step),
+        // a double-click clearing one lock, Alt+click muting a track
+        int fails = 0;
+        auto check = [&](bool ok, const juce::String& what) { std::printf("  %s %s\n", ok ? "ok  " : "FAIL", what.toRawUTF8()); fails += ok ? 0 : 1; };
+        std::unique_ptr<juce::AudioProcessorEditor> ed(proc.createEditor());
+        auto* med = dynamic_cast<MdEditor*>(ed.get());
+        med->showGrid(-1);
+        auto trigs = [&] { const auto p = proc.bankPattern(0); return p ? p->trigs[0] : uint64_t(0); };
+        auto lockAt = [&](int step) { const auto p = proc.bankPattern(0); if (!p) return -1; const int row = p->lockRow(0, 0); return row >= 0 && p->locks[row][step] <= 127 ? int(p->locks[row][step]) : -1; };
+        med->devStep(0); med->devStep(4);
+        check(trigs() == ((1u << 0) | (1u << 4)), "two clicks: trigs on steps 1 and 5");
+        med->devUndo();
+        check(trigs() == 1u, "undo: step 5 off again");
+        med->devRedo();
+        check(trigs() == ((1u << 0) | (1u << 4)), "redo: step 5 back");
+        med->devHold(4);
+        auto& syn = med->devSynPage();
+        for (int v = 70; v <= 100; v += 5) syn.devTurn(0, v);   // a drag
+        check(lockAt(4) == 100 && syn.devMarked(0) && !syn.devMarked(1), "held step 5, a knob drag: PTCH locked to 100, its value box marked");
+        med->devUndo();
+        check(lockAt(4) == -1, "one undo takes the whole drag back");
+        med->devRedo();
+        check(lockAt(4) == 100, "redo: the lock again");
+        syn.devReset(0);
+        check(lockAt(4) == -1 && ((trigs() >> 4) & 1), "double-click: that lock goes, the trig stays");
+        med->devUndo();
+        check(lockAt(4) == 100, "undo brings the cleared lock back");
+        med->devMuteKey(2);
+        check(proc.apvts.getRawParameterValue(muteId(2))->load() >= 0.5f, "Alt+click key 3: T3 muted");
+        med->devMuteKey(2);
+        check(proc.apvts.getRawParameterValue(muteId(2))->load() < 0.5f, "again: unmuted");
+        if (argc > 3) {
+            med->devHold(4); med->refresh();
+            auto img = ed->createComponentSnapshot(ed->getLocalBounds(), true, 1.0f);
+            juce::File png{juce::String(argv[3])}; png.deleteFile();
+            juce::PNGImageFormat pf;
+            if (auto st = std::unique_ptr<juce::FileOutputStream>(png.createOutputStream())) pf.writeImageToStream(img, *st);
+        }
+        std::printf(fails ? "GRID TEST FAILED (%d)\n" : "GRID TEST OK\n", fails);
+        return fails ? 1 : 0;
+    }
     if (std::getenv("MD_EDIT_TEST")) {
         // Pattern editing: the lock rows as the unit keeps them, the sysex round trip, a bank made from nothing, and an
         // edit while it plays (it plays from the next block)

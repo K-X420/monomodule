@@ -301,6 +301,7 @@ void MdTrackKeys::mouseDown(const juce::MouseEvent& e)
             if (!keyRect(i).contains(p)) continue;
             const int s = m_grid.page * 16 + i;
             if (e.mods.isPopupMenu()) { if (onStepMenu && s < m_grid.length) onStepMenu(s); }
+            else if (e.mods.isAltDown()) { if (onMuteKey) onMuteKey(i); }
             else if (e.mods.isCommandDown() || e.mods.isCtrlDown()) { if (onSelect) onSelect(i); }
             else if (s >= m_grid.length) return;
             else if (e.mods.isShiftDown()) { if (onHold) onHold(s); }
@@ -324,7 +325,7 @@ void MdTrackKeys::mouseMove(const juce::MouseEvent& e)
     juce::String tip;
     if (m_grid.on) {
         setTooltip("Step " + juce::String(m_grid.page * 16 + 1) + "-" + juce::String(m_grid.page * 16 + 16)
-                   + ". Click: trig on/off. Shift+click: hold for locks (turn the track's knobs). Ctrl+click: select that track. Right-click: step menu.");
+                   + ". Click: trig on/off. Shift+click: hold for locks (turn the track's knobs; double-click one to clear its lock). Ctrl+click: select that track. Alt+click: mute that track. Right-click: step menu. Ctrl+Z: undo.");
         return;
     }
     for (int t = 0; t < kTracks; ++t)
@@ -695,7 +696,7 @@ MdEditor::MdEditor(MdProcessor& p)
     m_keys.onStep = [this](int s) {
         const int t = m_track;
         bool removed = false;
-        m_proc.editPattern(editSlot(), [&](mnm::mddump::Pattern& p) {
+        doEdit(editSlot(), "step " + juce::String(s + 1), [&](mnm::mddump::Pattern& p) {
             if ((p.trigs[t] >> s) & 1) { p.trigs[t] &= ~(1ull << s); p.clearStepLocks(t, s); removed = true; }
             else p.trigs[t] |= 1ull << s;
         });
@@ -704,6 +705,8 @@ MdEditor::MdEditor(MdProcessor& p)
     };
     m_keys.onHold = [this](int s) { holdStep(s == m_heldStep ? -1 : s); };
     m_keys.onSelect = [this](int t) { selectTrack(t); };
+    m_keys.onMuteKey = [this](int t) { toggleMute(t); };
+    setWantsKeyboardFocus(true);
     m_keys.onStepMenu = [this](int s) { stepMenu(s); };
     addAndMakeVisible(m_seqBar);
     m_seqBar.onPart = [this](MdSeqBar::Part p) {
@@ -722,6 +725,7 @@ MdEditor::MdEditor(MdProcessor& p)
                 if (m_outTab == 1) m_out.pull();
                 break;
             case MdSeqBar::Edit: editMenu(); return;
+            case MdSeqBar::Mute: toggleMute(m_track); break;
             case MdSeqBar::TrkPrev: selectTrack((m_track + kTracks - 1) % kTracks); break;
             case MdSeqBar::TrkNext: selectTrack((m_track + 1) % kTracks); break;
             case MdSeqBar::PtnPrev: case MdSeqBar::PtnNext:
@@ -826,8 +830,21 @@ void MdEditor::bindTrackPage(one::KnobPage& page, const spec::Param* params, std
                 if (auto* a = m_proc.apvts.getParameter(id(k))) a->setValueNotifyingHost(a->convertTo0to1(float(v)));
                 return;
             }
-            m_proc.editPattern(slot, [&](mnm::mddump::Pattern& pat) { pat.trigs[t] |= 1ull << step; pat.setLock(t, p, step, v); });
+            doEdit(slot, "lock", [&](mnm::mddump::Pattern& pat) { pat.trigs[t] |= 1ull << step; pat.setLock(t, p, step, v); }, 1000 + 24 * step + p);
             refreshGrid();
+        },
+        [this, t, step, slot, mdParam](int k) {   // a double-click: that parameter's lock goes (the knob shows the track's value)
+            const int p = mdParam(k);
+            if (p >= 0) doEdit(slot, "clear lock", [&](mnm::mddump::Pattern& pat) { pat.clearLock(t, p, step); });
+            refreshGrid();
+        },
+        [this, t, step, slot, mdParam](int k) {   // locked on this step: the value box inverted
+            const int p = mdParam(k);
+            if (p < 0) return false;
+            const auto pat = m_proc.bankPattern(slot);
+            if (!pat) return false;
+            const int row = pat->lockRow(t, p);
+            return row >= 0 && pat->locks[row][step] <= 127;
         });
 }
 
@@ -873,7 +890,8 @@ void MdEditor::bindOutPage(int tab)
                 refreshGrid();
                 return;
             }
-            m_proc.editPattern(editSlot(), [&](mnm::mddump::Pattern& p) {
+            static const char* const what[5] = {"length", "speed", "swing", "accent", "kit"};
+            doEdit(editSlot(), what[juce::jlimit(0, 4, k)], [&](mnm::mddump::Pattern& p) {
                 switch (k) {
                     case 0: p.length = uint8_t(v + 1); p.scale = uint8_t(v / 16); break;   // SCALE: the pages the length needs
                     case 1: p.doubleTempo = uint8_t(v & 3); break;
@@ -914,7 +932,8 @@ void MdEditor::stepMenu(int s)
         if (r >= 100) { selectTrack(r - 100); return; }
         if (r == 5) { holdStep(m_heldStep == s ? -1 : s); return; }
         if (r <= 0) return;
-        m_proc.editPattern(slot, [&](mnm::mddump::Pattern& p) {
+        static const char* const names[8] = {"", "trig", "accent", "slide", "swing", "", "clear locks", "per-track marks"};
+        doEdit(slot, names[juce::jlimit(0, 7, r)], [&](mnm::mddump::Pattern& p) {
             auto flip = [&](uint32_t editAll, uint64_t& global, uint64_t& perTrack) { (editAll ? global : perTrack) ^= 1ull << s; };
             switch (r) {
                 case 1: if ((p.trigs[t] >> s) & 1) { p.trigs[t] &= ~(1ull << s); p.clearStepLocks(t, s); } else p.trigs[t] |= 1ull << s; break;
@@ -937,6 +956,66 @@ void MdEditor::stepMenu(int s)
     });
 }
 
+void MdEditor::doEdit(int slot, const juce::String& label, const std::function<void(mnm::mddump::Pattern&)>& fn, int coalesce)
+{
+    const auto now = juce::Time::currentTimeMillis();
+    const bool merge = coalesce >= 0 && !m_undo.empty() && m_undo.back().slot == slot && m_lastCoalesce == coalesce && now - m_lastEditMs < 1000;
+    if (!merge) {
+        m_undo.push_back({slot, m_proc.bankPattern(slot), nullptr, label});
+        if (m_undo.size() > 200) m_undo.erase(m_undo.begin());
+    }
+    m_redo.clear();
+    m_lastCoalesce = coalesce;
+    m_lastEditMs = now;
+    m_proc.editPattern(slot, fn);
+    m_undo.back().after = m_proc.bankPattern(slot);
+}
+
+void MdEditor::undo()
+{
+    if (m_undo.empty()) return;
+    auto s = m_undo.back();
+    m_undo.pop_back();
+    m_proc.setBankPattern(s.slot, s.before);
+    m_redo.push_back(s);
+    m_lastCoalesce = -1;
+    refreshGrid();
+    for (auto* pg : {&m_syn, &m_fx, &m_routing, &m_lfo, &m_out}) { pg->pull(); pg->repaint(); }
+}
+
+void MdEditor::redo()
+{
+    if (m_redo.empty()) return;
+    auto s = m_redo.back();
+    m_redo.pop_back();
+    m_proc.setBankPattern(s.slot, s.after);
+    m_undo.push_back(s);
+    m_lastCoalesce = -1;
+    refreshGrid();
+    for (auto* pg : {&m_syn, &m_fx, &m_routing, &m_lfo, &m_out}) { pg->pull(); pg->repaint(); }
+}
+
+bool MdEditor::keyPressed(const juce::KeyPress& k)
+{
+    const auto mods = k.getModifiers();
+    if (!mods.isCommandDown() && !mods.isCtrlDown()) return false;
+    const int code = k.getKeyCode();
+    if ((code == 'Z' || code == 'z') && mods.isShiftDown()) { redo(); return true; }
+    if (code == 'Z' || code == 'z') { undo(); return true; }
+    if (code == 'Y' || code == 'y') { redo(); return true; }
+    return false;
+}
+
+void MdEditor::toggleMute(int t)
+{
+    if (auto* p = m_proc.apvts.getParameter(muteId(t))) {
+        p->beginChangeGesture();
+        p->setValueNotifyingHost(p->getValue() >= 0.5f ? 0.0f : 1.0f);
+        p->endChangeGesture();
+    }
+    refreshGrid();
+}
+
 void MdEditor::editMenu()
 {
     const int slot = editSlot(), t = m_track;
@@ -947,6 +1026,9 @@ void MdEditor::editMenu()
     juce::String what;
     if (m_clip.kind == 1) what = " (page " + juce::String(m_clip.page + 1) + (m_clip.all ? ", all tracks)" : ", T" + juce::String(m_clip.track + 1) + ")");
     juce::PopupMenu m;
+    m.addItem(20, m_undo.empty() ? juce::String("Undo") : "Undo " + m_undo.back().label + "  (Ctrl+Z)", !m_undo.empty());
+    m.addItem(21, m_redo.empty() ? juce::String("Redo") : "Redo " + m_redo.back().label + "  (Ctrl+Shift+Z)", !m_redo.empty());
+    m.addSeparator();
     m.addSectionHeader(pn + "  -  " + pg.toUpperCase() + "  -  " + tr);
     m.addItem(1, "Copy " + pg + " (all tracks)", p != nullptr);
     m.addItem(2, "Copy " + pg + " of " + tr, p != nullptr);
@@ -965,11 +1047,14 @@ void MdEditor::editMenu()
     m.addItem(12, "Double: steps 1-" + juce::String(len) + " again after themselves (length " + juce::String(juce::jmin(64, 2 * len)) + ")", p != nullptr && len <= 32);
     m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&m_seqBar), [this, slot, t, page, p, len](int r) {
         if (r <= 0) return;
+        if (r == 20) { undo(); return; }
+        if (r == 21) { redo(); return; }
         if (r == 1 || r == 2) { m_clip = {1, r == 1, t, page, *p}; return; }
         if (r == 6) { m_clip = {2, false, t, 0, *p}; return; }
         if (r == 9) { m_clip = {3, true, 0, 0, *p}; return; }
         const auto clip = m_clip;
-        m_proc.editPattern(slot, [&](mnm::mddump::Pattern& x) {
+        static const char* const names[13] = {"", "", "", "paste page", "clear page", "clear page", "", "paste track", "clear track", "", "paste pattern", "clear pattern", "double"};
+        doEdit(slot, names[juce::jlimit(0, 12, r)], [&](mnm::mddump::Pattern& x) {
             switch (r) {
                 case 3:   // the copied page onto this one (the pattern grows to reach it)
                     x.copySteps(clip.pat, clip.page * 16, page * 16, 16, clip.all ? -1 : clip.track, t);
@@ -1007,6 +1092,7 @@ void MdEditor::refreshGrid()
         s.hostPlaying = m_proc.hostPlaying();
         s.grid = m_gridOn;
         s.track = m_track;
+        s.muted = m_proc.apvts.getRawParameterValue(muteId(m_track))->load() >= 0.5f;
         const int mi = juce::jlimit(0, kNumMachines - 1, int(std::lround(m_proc.apvts.getRawParameterValue(machineId(m_track))->load())));
         s.machine = shortOf(mi) == "---" ? familyOf(mi) : shortOf(mi);
         s.pattern = slot;

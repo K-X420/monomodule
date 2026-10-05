@@ -17,6 +17,7 @@ class KnobCell : public juce::Slider {
 public:
     KnobCell();
     std::function<void()> onValueClick;
+    std::function<bool()> onReset;   // a double-click on the knob: true = handled (not the default value)
     void setValueArea(juce::Rectangle<int> r, juce::MouseCursor valueCursor) { m_valueArea = r; m_valueCursor = valueCursor; }
     void paint(juce::Graphics&) override {}
     void mouseEnter(const juce::MouseEvent& e) override { Slider::mouseEnter(e); notifyPage(); }
@@ -58,9 +59,14 @@ public:
     void bind(const spec::Param* params8, const std::function<juce::String(int)>& paramId);
     // Binds the cells to values that are not parameters (MD pattern settings, a held step's locks): get(k) gives the
     // value, set(k, v) takes a turn. pull() refreshes the cells from get (the editor's timer).
-    void bindCustom(const spec::Param* params8, std::function<int(int)> get, std::function<void(int, int)> set);
+    // reset(k): a double-click on knob k (null: back to its default value); marked(k): its value box drawn inverted
+    void bindCustom(const spec::Param* params8, std::function<int(int)> get, std::function<void(int, int)> set,
+                    std::function<void(int)> reset = nullptr, std::function<bool(int)> marked = nullptr);
     void pull();
     bool isCustom() const { return m_custom; }
+    void devTurn(int k, int v) { m_cells[size_t(k)].setValue(double(v), juce::sendNotificationSync); }   // dev/tests: a turn
+    void devReset(int k) { auto& c = m_cells[size_t(k)]; if (c.onReset) c.onReset(); }                  // dev/tests: a double-click
+    bool devMarked(int k) const { return m_custom && m_marked && m_marked(k); }
     void paint(juce::Graphics&) override;
     void resized() override;
     void mouseDown(const juce::MouseEvent&) override;   // any press outside the inline editor commits it
@@ -88,6 +94,8 @@ private:
     bool m_custom = false, m_pulling = false;
     std::function<int(int)> m_get;
     std::function<void(int, int)> m_set;
+    std::function<void(int)> m_reset;
+    std::function<bool(int)> m_marked;
     juce::Component::SafePointer<juce::Component> m_listenedTop;   // window we listen on while editing
 };
 

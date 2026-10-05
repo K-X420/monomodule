@@ -86,7 +86,7 @@ void MdSeqBar::resized()
     x += 1 + gap;
     take(Grid, 30);
     x += 1 + gap;
-    take(TrkPrev, arrowW); take(Trk, 64); take(TrkNext, arrowW);
+    take(TrkPrev, arrowW); take(Trk, 64); take(TrkNext, arrowW); take(Mute, 13);
     x += 1 + gap;
     take(PtnPrev, arrowW); take(Ptn, 46); take(PtnNext, arrowW);
     x += 1 + gap;
@@ -131,6 +131,10 @@ void MdSeqBar::paint(juce::Graphics& g)
         cv.text(spec::kFontBold8, fit(spec::kFontBold8, text, r.getRight() - (r.getX() + 8 + lw) - 3).toRawUTF8(), r.getX() + 8 + lw, r.getY() + 4, true);
     };
     arrows(TrkPrev, TrkNext);
+    {   // MUTE of the selected track: solid while muted
+        const auto r = box(Mute, m_s.muted);
+        cv.text(spec::kFontBold8, "M", r.getX() + 3, r.getY() + 4, !m_s.muted);
+    }
     labelled(Trk, "TRK", "T" + juce::String(m_s.track + 1) + " " + m_s.machine);
     arrows(PtnPrev, PtnNext);
     labelled(Ptn, "PTN", juce::String(kPatternNames[juce::jlimit(0, 127, m_s.pattern)]) + (m_s.empty ? "-" : ""));
@@ -187,6 +191,8 @@ void MdSeqBar::mouseMove(const juce::MouseEvent& e)
         case Play: setTooltip(m_s.hostPlaying ? "The host's transport is running: the pattern follows it" : "Play / stop the pattern on the plugin's own clock (while the host is stopped)"); break;
         case Grid: setTooltip(m_s.grid ? "GRID: the keys are the selected track's steps (click a step to place a trig). Click to get the tracks back"
                                        : "GRID: click to place steps with the keys (the selected track's steps; TRK < > picks the track)"); break;
+        case Mute: setTooltip(m_s.muted ? "The track is muted: its trigs don't play. Click to unmute (Alt+click a key in GRID: that key's track)"
+                                         : "Mute the track (Alt+click a key in GRID: that key's track)"); break;
         case TrkPrev: case TrkNext: case Trk: setTooltip("The track whose steps GRID shows and edits"); break;
         case PtnPrev: case PtnNext: case Ptn: setTooltip("The pattern (PTN): played by SEQ, edited by GRID (\"-\" = an empty slot)"); break;
         case Pages: setTooltip("Pages of 16 steps: solid = playing, underlined = shown by GRID. Click one to show it; right-click: EDIT"); break;

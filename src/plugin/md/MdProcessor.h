@@ -133,6 +133,7 @@ public:
     // pattern takes it from its next block. With no bank, a new one ("PLUGIN") is made. Kept in the plugin state.
     std::shared_ptr<const mnm::mddump::Pattern> bankPattern(int slot) const;
     void editPattern(int slot, const std::function<void(mnm::mddump::Pattern&)>& fn);
+    void setBankPattern(int slot, std::shared_ptr<const mnm::mddump::Pattern> p);   // undo / redo: that pattern (null: the slot empty)
     int seqStep() const { return m_seqStepUi.load(); }        // the playing step, -1 when not playing
     int seqLength() const { return m_seqLenUi.load(); }       // the pattern's length (steps)
     int seqPattern() const { return m_seqPatternUi.load(); }  // the playing (or next, when stopped) pattern slot, -1 = none
