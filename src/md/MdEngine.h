@@ -61,6 +61,7 @@ private:
     struct TrackState {
         Track target;
         int accent = -128, sentAccent = 0, sentMachine = -1, sentRoute = -1;
+        bool trigPending = false;
         std::array<int, 8> synSent{};
         std::array<int, 14> mixSent{};
     };

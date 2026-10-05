@@ -237,7 +237,36 @@ void ControlCpu::setLevelTarget(int index, uint8_t value)
 
 ControlCpu::~ControlCpu() = default;
 
-int ControlCpu::convert(uint32_t handler, int dspType, const std::array<uint16_t, 8>& raw, std::array<uint32_t, kMaxPacket>& packet)
+int ControlCpu::convertInPlace(uint32_t handler, uint32_t slot0, const std::array<uint16_t, 8>& raw, std::array<uint32_t, kMaxPacket>& buffer)
+{
+    if (handler < kMainOsBase || handler >= kReturnPc) return 0;
+    std::lock_guard<std::mutex> lock(g_cpuLock);
+    g_ram = &m_ram;
+    g_tempo = m_tempo;
+    auto put16 = [&](uint32_t a, uint16_t v) { m_ram[a] = uint8_t(v >> 8); m_ram[a + 1] = uint8_t(v); };
+    auto put32 = [&](uint32_t a, uint32_t v) { for (int k = 0; k < 4; ++k) m_ram[a + uint32_t(k)] = uint8_t(v >> (8 * (3 - k))); };
+    auto get32 = [&](uint32_t a) { return (uint32_t(m_ram[a]) << 24) | (uint32_t(m_ram[a + 1]) << 16) | (uint32_t(m_ram[a + 2]) << 8) | m_ram[a + 3]; };
+    for (int k = 0; k < 8; ++k) put16(kRawAddr + 2 * uint32_t(k), raw[size_t(k)]);
+    for (int k = 0; k < kMaxPacket; ++k) put32(kPacketAddr + 4 * uint32_t(k), buffer[size_t(k)]);
+    put32(kPacketAddr, slot0);
+    const uint32_t sp = kStackTop - 12;
+    put32(sp, kReturnPc);
+    put32(sp + 4, kPacketAddr);
+    put32(sp + 8, kRawAddr);
+    ensureCpu();
+    m68k_pulse_reset();
+    m68k_set_reg(M68K_REG_SP, sp);
+    m68k_set_reg(M68K_REG_PC, handler);
+    g_returned = false;
+    int cycles = 0;
+    while (!g_returned && cycles < kMaxCycles) cycles += m68k_execute(10000);
+    g_ram = nullptr;
+    if (!g_returned) { m_error = "handler did not return"; return 0; }
+    for (int k = 0; k < kMaxPacket; ++k) buffer[size_t(k)] = get32(kPacketAddr + 4 * uint32_t(k));
+    return int(m68k_get_reg(nullptr, M68K_REG_D0));
+}
+
+int ControlCpu::convert(uint32_t handler, bool trig, const std::array<uint16_t, 8>& raw, std::array<uint32_t, kMaxPacket>& packet)
 {
     if (handler < kMainOsBase || handler >= kReturnPc) return 0;
     std::lock_guard<std::mutex> lock(g_cpuLock);
@@ -248,7 +277,7 @@ int ControlCpu::convert(uint32_t handler, int dspType, const std::array<uint16_t
     auto get32 = [&](uint32_t a) { return (uint32_t(m_ram[a]) << 24) | (uint32_t(m_ram[a + 1]) << 16) | (uint32_t(m_ram[a + 2]) << 8) | m_ram[a + 3]; };
     for (int k = 0; k < 8; ++k) put16(kRawAddr + 2 * uint32_t(k), raw[size_t(k)]);
     for (int k = 0; k < kMaxPacket; ++k) put32(kPacketAddr + 4 * uint32_t(k), 0);
-    put32(kPacketAddr, uint32_t(dspType));
+    put32(kPacketAddr, trig ? 1u : 0u);
     // C call frame: return address, packet, raw
     const uint32_t sp = kStackTop - 12;
     put32(sp, kReturnPc);
@@ -266,6 +295,7 @@ int ControlCpu::convert(uint32_t handler, int dspType, const std::array<uint16_t
     m_lastPc = m68k_get_reg(nullptr, M68K_REG_PC);
     if (!g_returned) { m_error = "handler did not return"; return 0; }
     const int n = int(m68k_get_reg(nullptr, M68K_REG_D0));
+    if (n == 0) { m_error = ""; return 0; }   // nothing to send this tick
     if (n < 1 || n > kMaxPacket) { m_error = "bad packet word count"; m_lastPc = uint32_t(n); return 0; }
     m_error = "";
     for (int k = 0; k < n; ++k) packet[size_t(k)] = get32(kPacketAddr + 4 * uint32_t(k)) & 0xFFFFFF;

@@ -135,12 +135,12 @@ bool VoiceEngine::runToPark(uint64_t maxExec)
     return false;
 }
 
-void VoiceEngine::setPacket(int track, const uint32_t* words, int count)
+void VoiceEngine::setPacket(int track, const uint32_t* words, int count, bool whole)
 {
     if (track < 0 || track >= kTracks) return;
     const int n = std::min(count, 0x40);
     for (int k = 1; k < n; ++k) m_packet[size_t(track)][size_t(k)] = words[k] & 0xFFFFFF;
-    m_packetLen[size_t(track)] = n;
+    m_packetLen[size_t(track)] = whole ? n : std::max(m_packetLen[size_t(track)], n);
 }
 
 void VoiceEngine::trig(int track, int dspType)

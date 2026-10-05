@@ -30,8 +30,9 @@ public:
     ~VoiceEngine();
 
     void reset();   // reload, boot to the first pass; throws on failure
-    // Control words for Y:S+1.. (packet[1..n-1] from ControlCpu::convert)
-    void setPacket(int track, const uint32_t* words, int count);
+    // Control words for Y:S+1.. (packet[1..n-1] from ControlCpu::convert). whole: a trig tick's packet (its length is
+    // the packet's); otherwise only words 1..count-1 change and the rest (the voice's state) stay as they are.
+    void setPacket(int track, const uint32_t* words, int count, bool whole = true);
     void trig(int track, int dspType);   // takes effect at the next pass (init on a type change, then update)
     // Audio input for the INP machines: 32 stereo frames (L/R interleaved, 24-bit) for the next pass. Each INP
     // voice reads 32 frames per block from the ADC ring X:0x100..0x1FF at its own pointer (+0x40 per block), so

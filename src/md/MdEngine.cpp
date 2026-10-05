@@ -15,6 +15,7 @@ void Engine::trig(int t, int machine, int accent)
 {
     m_voices->trig(t, machine + 1);
     m_cpu->lfoTrig(t);
+    m_tracks[size_t(t)].trigPending = true;   // the next conversion is the trig tick's (the whole packet)
     m_tracks[size_t(t)].accent = accent;
 }
 
@@ -57,14 +58,16 @@ void Engine::refresh()
         const int id = st.target.machine;
         std::array<int, 8> syn{};
         for (int k = 0; k < 8; ++k) syn[size_t(k)] = m_cpu->liveParam(t, k);
-        if (snap || id != st.sentMachine || syn != st.synSent) {
+        const bool trigTick = st.trigPending;
+        st.trigPending = false;
+        if (trigTick || snap || id != st.sentMachine || syn != st.synSent) {
             st.sentMachine = id; st.synSent = syn;
             if (const auto* m = m_fw.byId(id)) {
                 std::array<uint16_t, 8> raw{};
                 for (int k = 0; k < 8; ++k) raw[size_t(k)] = uint16_t(syn[size_t(k)]);
                 std::array<uint32_t, ControlCpu::kMaxPacket> packet{};
-                const int n = m_cpu->convert(m->handler, m->dspType(), raw, packet);
-                if (n > 0) m_voices->setPacket(t, packet.data(), n);
+                const int n = m_cpu->convert(m->handler, trigTick, raw, packet);
+                if (n > 0) m_voices->setPacket(t, packet.data(), n, trigTick);
             }
         }
         // DSP1: track effects (AMD..SRR, DIST) and routing (level, VOL, PAN, sends)

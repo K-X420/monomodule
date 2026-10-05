@@ -201,6 +201,25 @@ int main(int argc, char** argv)
             }
             return 0;
         }
+        if (std::strcmp(argv[2], "handler") == 0 && argc > 3) {
+            // md-render <os.syx> handler <machine> [k1..k8]: the machine's control handler called as the OS does, with the
+            // buffer prefilled with a marker (0xAAAAAA), slot 0 = 0 / 1 / the DSP type: which words it writes, what it returns
+            const mnm::md::Machine* m = nullptr;
+            for (int id = 0; id < 192 && !m; ++id) if (const auto* c = fw.byId(id); c && c->name() == argv[3]) m = c;
+            if (!m) { std::printf("no machine\n"); return 1; }
+            std::array<uint16_t, 8> raw{};
+            for (int k = 0; k < 8; ++k) raw[size_t(k)] = ControlCpu::rawFromValue(4 + k < argc && argv[4 + k][0] != '-' ? std::atoi(argv[4 + k]) : m->defaults[size_t(k)]);
+            ControlCpu cpu(fw.mainOs);
+            for (uint32_t slot0 : {0u, 1u, uint32_t(m->dspType())}) {
+                std::array<uint32_t, ControlCpu::kMaxPacket> buf{};
+                buf.fill(0xAAAAAA);
+                const int n = cpu.convertInPlace(m->handler, slot0, raw, buf);
+                std::printf("slot0 %3u -> returns %2d:", slot0, n);
+                for (int k = 0; k < 14; ++k) std::printf(" %06x", buf[size_t(k)] & 0xFFFFFF);
+                std::printf("\n");
+            }
+            return 0;
+        }
         if (std::strcmp(argv[2], "directcheck") == 0 && argc > 4) {
             // md-render <os.syx> directcheck <dump.syx> <kit>: each track of the kit alone, once in the mix and once on its
             // own output (Engine::setDirect); its own output against the main, sample by sample (neutral master section)
@@ -318,7 +337,7 @@ int main(int argc, char** argv)
         std::array<uint16_t, 8> raw{};
         for (int k = 0; k < 8; ++k) raw[size_t(k)] = ControlCpu::rawFromValue(knobs[size_t(k)]);
         std::array<uint32_t, ControlCpu::kMaxPacket> packet{};
-        const int n = cpu.convert(m->handler, m->dspType(), raw, packet);
+        const int n = cpu.convert(m->handler, true, raw, packet);
         std::printf("%s knobs", m->name().c_str());
         for (int k = 0; k < 8; ++k) if (!m->labels[size_t(k)].empty()) std::printf(" %s=%d", m->labels[size_t(k)].c_str(), knobs[size_t(k)]);
         std::printf("\npacket (%d words):", n);

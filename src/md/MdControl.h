@@ -18,9 +18,15 @@ public:
     explicit ControlCpu(const std::vector<uint8_t>& mainOs);
     ~ControlCpu();
 
-    // packet[1..n-1] are the DSP words (24 bits used). Returns n (0 on failure: bad handler or runaway code).
-    // packet[0] is the type slot the OS fills before the call (some handlers send nothing while it is zero).
-    int convert(uint32_t handler, int dspType, const std::array<uint16_t, 8>& raw, std::array<uint32_t, kMaxPacket>& packet);
+    // packet[1..n-1] are the DSP words (24 bits used). Returns n (0: nothing to send, or a failure: lastError()).
+    // trig: what the OS puts in packet[0] before its per-tick call (MainOS 0x20B330..0x20B398): 1 on the tick of the
+    // track's trig, else 0. On a trig tick a handler returns its whole packet; otherwise it may return fewer words:
+    // the trailing ones are the voice's starting state, which the DSP then runs in place (TRX-XT 10 -> 8, TRX-CH
+    // 11 -> 9, TRX-MA 12 -> 0), so a knob or LFO change between trigs never resets a sounding voice.
+    int convert(uint32_t handler, bool trig, const std::array<uint16_t, 8>& raw, std::array<uint32_t, kMaxPacket>& packet);
+    // As the OS calls it every control tick: the packet buffer is the track's own (kept between calls, in and out,
+    // all kMaxPacket words) and slot 0 holds what the OS puts there (the trig flag). Returns the handler's D0.
+    int convertInPlace(uint32_t handler, uint32_t slot0, const std::array<uint16_t, 8>& raw, std::array<uint32_t, kMaxPacket>& buffer);
     static uint16_t rawFromValue(int value) { return uint16_t(value < 0 ? 0 : value > 127 ? 127 << 7 : value << 7); }
 
     // Master effects: the OS converts the eight raw knob words of each effect inline in its per-tick task
