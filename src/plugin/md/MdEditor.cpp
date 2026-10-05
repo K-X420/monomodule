@@ -127,10 +127,28 @@ void MdMachineBlock::setMachine(int index)
 // The machine block, as Monomodule's: the family's logo (its name for GND), the machine, the picker arrow. The logo is
 // drawn in screen pixels, kLogoPx per logo pixel, after the LCD canvas.
 namespace {
-constexpr int kLogoPx = 2, kLogoX = 4, kLogoGap = 6;   // screen px per logo pixel (fine detail, as the Monomachine's logos); LCD px
+constexpr int kLogoPx = 2, kLogoX = 4, kLogoGap = 6;   // the picker's screen px per logo pixel (its columns are narrow); LCD px
+// The block sizes a logo as Monomodule One / Six do (drawGroupLogo): its lit rows fill an 18-row band, the scale capped
+// so the widest stays about as wide as theirs (SUPERWAVE's)
+constexpr int kLogoBand = 18 * kScale, kLogoMaxW = 150;   // screen px
+struct LitBox { int x = 0, y = 0, w = 0, h = 0; };
+LitBox litBox(const text::LogoArt& a)
+{
+    int x0 = a.w, x1 = -1, y0 = a.h, y1 = -1;
+    for (int y = 0; y < a.h; ++y)
+        for (int x = 0; x < a.w; ++x)
+            if (text::logoLit(a, x, y)) { x0 = juce::jmin(x0, x); x1 = juce::jmax(x1, x); y0 = juce::jmin(y0, y); y1 = juce::jmax(y1, y); }
+    return x1 < 0 ? LitBox{} : LitBox{x0, y0, x1 - x0 + 1, y1 - y0 + 1};
+}
+int blockLogoPx(const text::LogoArt& a)
+{
+    const auto b = litBox(a);
+    if (b.h <= 0) return 1;
+    return juce::jmax(1, juce::jmin(int(std::lround(double(kLogoBand) / juce::jmax(9, b.h))), kLogoMaxW / b.w));
+}
 int logoWidthLcd(const juce::String& fam)
 {
-    if (const auto* art = text::logoArt(fam.toRawUTF8())) return (art->w * kLogoPx + kScale - 1) / kScale;
+    if (const auto* art = text::logoArt(fam.toRawUTF8())) return (litBox(*art).w * blockLogoPx(*art) + kScale - 1) / kScale;
     return LcdCanvas::textWidth(spec::kFontBold8, fam.toRawUTF8());
 }
 }
@@ -170,10 +188,12 @@ void MdMachineBlock::paint(juce::Graphics& g)
     cv.draw(g, 0, 0);
     if (art) {
         g.setColour(lcd::paper);
-        const int x0 = logoX * kScale, y0 = (getHeight() - art->h * kLogoPx) / 2;
-        for (int y = 0; y < art->h; ++y)
-            for (int x = 0; x < art->w; ++x)
-                if (text::logoLit(*art, x, y)) g.fillRect(x0 + x * kLogoPx, y0 + y * kLogoPx, kLogoPx, kLogoPx);
+        const auto b = litBox(*art);
+        const int px = blockLogoPx(*art);
+        const int x0 = logoX * kScale, y0 = (getHeight() - b.h * px) / 2;
+        for (int y = 0; y < b.h; ++y)
+            for (int x = 0; x < b.w; ++x)
+                if (text::logoLit(*art, b.x + x, b.y + y)) g.fillRect(x0 + x * px, y0 + y * px, px, px);
     }
 }
 
