@@ -422,6 +422,15 @@ int main(int argc, char** argv)
         if (auto* med = dynamic_cast<MdEditor*>(ed.get())) {
             med->refresh();
             if (const char* pk = std::getenv("MD_UI_PICKER")) med->showMachinePicker(std::atoi(pk) > 1 ? machineIndexOf(std::atoi(pk)) : -1);   // the picker open (=<id>: that machine hovered)
+            if (const char* keys = std::getenv("MD_UI_PICKKEYS")) {   // arrow keys into the open picker: L R U D, E = Return
+                for (const char* c = keys; *c; ++c) {
+                    const int code = *c == 'L' ? juce::KeyPress::leftKey : *c == 'R' ? juce::KeyPress::rightKey : *c == 'U' ? juce::KeyPress::upKey
+                                   : *c == 'D' ? juce::KeyPress::downKey : *c == 'E' ? juce::KeyPress::returnKey : 0;
+                    if (code) med->pickerKey(juce::KeyPress(code));
+                }
+                med->refresh();
+                std::printf("after keys %s: track 1 machine %s\n", keys, kMachines[size_t(std::lround(proc.apvts.getRawParameterValue(machineId(0))->load()))].name);
+            }
             if (std::getenv("MD_UI_KITS")) med->showKitList();
             if (std::getenv("MD_UI_ABOUT")) med->showAbout();
             if (std::getenv("MD_UI_SKIN")) med->showSkinDialog();

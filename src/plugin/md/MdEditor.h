@@ -71,7 +71,8 @@ private:
 // The machine picker over the pages, as Monomodule's: a column per family (GND TRX EFM E12 P-I INP, ROM over three
 // columns, RAM MID CTR) with a logo and name header and a blurb (a hovered machine's description takes its place),
 // then the machines as rows (ROM rows with their sample's name); the current one inverted. It unrolls from the top
-// edge when opened and rolls back up when closed; Escape or a click outside a row closes it.
+// edge when opened and rolls back up when closed. Keys: arrows move the cursor (up/down in a column, left/right to
+// the next column at the same row), Return picks, Escape or a click outside a row closes.
 class MdMachinePicker : public juce::Component, private juce::Timer {
 public:
     MdMachinePicker();
@@ -99,6 +100,7 @@ private:
     void timerCallback() override;
     void applyAnimation();
     std::vector<Family> m_families;
+    std::vector<std::vector<int>> m_grid;       // the visual columns (ROM's three apart): kMachines indices top to bottom
     std::vector<juce::Rectangle<int>> m_rows;   // per kMachines index (empty when not laid out)
     juce::Rectangle<int> m_target;
     int m_current = 0, m_hover = -1;
@@ -122,6 +124,7 @@ public:
     void resized() override;
     void selectTrack(int t);
     void refresh() { timerCallback(); }   // dev/snapshot: apply pending state without the message loop
+    void pickerKey(const juce::KeyPress& k) { m_picker.keyPressed(k); }   // dev/snapshot
     void showMachinePicker(int hover = -1) { m_picker.open(m_machineIndex, false); m_picker.setHover(hover); }   // dev/snapshot
     void showKitList() { openKitList(); }                         // dev/snapshot
     void showLibrary(int tab) { m_panel.open(false); m_panel.setTab(MdLibraryPanel::Tab(tab)); }   // dev/snapshot

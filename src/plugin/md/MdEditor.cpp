@@ -241,7 +241,11 @@ MdMachinePicker::MdMachinePicker()
         m_families.back().items.push_back(i);
     }
     int col = 0;
-    for (auto& f : m_families) { f.firstCol = col; f.cols = (int(f.items.size()) + 15) / 16; col += f.cols; }
+    for (auto& f : m_families) {
+        f.firstCol = col; f.cols = (int(f.items.size()) + 15) / 16; col += f.cols;
+        for (int sub = 0; sub < f.cols; ++sub)
+            m_grid.emplace_back(f.items.begin() + sub * 16, f.items.begin() + std::min(int(f.items.size()), (sub + 1) * 16));
+    }
     m_rows.resize(size_t(kNumMachines));
 }
 
@@ -255,6 +259,7 @@ void MdMachinePicker::setTargetBounds(juce::Rectangle<int> fullyOpen)
 void MdMachinePicker::open(int current, bool animate)
 {
     m_current = current;
+    m_hover = current;   // the keyboard cursor starts on the current machine (its description shows)
     m_wantOpen = true;
     setVisible(true);
     toFront(false);
@@ -410,7 +415,28 @@ void MdMachinePicker::mouseDown(const juce::MouseEvent& e)
 bool MdMachinePicker::keyPressed(const juce::KeyPress& k)
 {
     if (k == juce::KeyPress::escapeKey) { close(); return true; }
-    return false;
+    if (k == juce::KeyPress::returnKey) {
+        const int idx = m_hover >= 0 ? m_hover : m_current;
+        if (onPick) onPick(idx);
+        close();
+        return true;
+    }
+    const bool up = k == juce::KeyPress::upKey, down = k == juce::KeyPress::downKey;
+    const bool left = k == juce::KeyPress::leftKey, right = k == juce::KeyPress::rightKey;
+    if (!(up || down || left || right) || m_grid.empty()) return false;
+    const int at = m_hover >= 0 ? m_hover : m_current;
+    int c = 0, r = 0;
+    for (int ci = 0; ci < int(m_grid.size()); ++ci)
+        for (int ri = 0; ri < int(m_grid[size_t(ci)].size()); ++ri)
+            if (m_grid[size_t(ci)][size_t(ri)] == at) { c = ci; r = ri; }
+    if (up) r = juce::jmax(0, r - 1);
+    if (down) r = juce::jmin(int(m_grid[size_t(c)].size()) - 1, r + 1);
+    if (left) c = juce::jmax(0, c - 1);
+    if (right) c = juce::jmin(int(m_grid.size()) - 1, c + 1);
+    r = juce::jmin(r, int(m_grid[size_t(c)].size()) - 1);
+    m_hover = m_grid[size_t(c)][size_t(r)];
+    repaint();
+    return true;
 }
 
 // ---------------------------------------------------------------------------------------------- badge button
