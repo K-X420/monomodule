@@ -3,6 +3,7 @@
 //                  the master effects, the patterns that use the kit and where it came from
 //   MdSoundView    a sound (one track): a summary, its four pages drawn as in Monomodule MD, actions, references
 //   MdPatternView  a pattern: summary, a trig grid per track (accents, locked steps), its kit and sources
+//   MdSongsView    a project's songs: each song's rows (pattern, repeats, steps, tempo, mutes; LOOP and END rows)
 // Machine names come from mdnames; the synthesis labels from the user's Machinedrum OS file (Monomodule MD's
 // "mdOsPath" shared setting), or SYN1-8 without one.
 #pragma once
@@ -114,6 +115,19 @@ private:
     LinkList m_sources;
     int m_playing = -2, m_hover = -1;
     bool m_dragging = false;
+};
+
+// The song rows as the unit keeps them (MdDump: 10 bytes, unpacked): pattern (0..127; 0xFE LOOP, 0xFF END), kit (unused
+// here), repeats - 1, the LOOP row's target, the muted tracks (16 bits, track 1 = bit 0), the tempo (BPM x 24,
+// 0xFFFF = unchanged), the first and the last step + 1.
+class MdSongsView : public juce::Component {
+public:
+    void set(const std::vector<mnm::mddump::Song>& songs);
+    int preferredHeight() const;
+    void paint(juce::Graphics&) override;
+private:
+    static constexpr int kTitleH = 11 * kScale, kRowH = 18, kGap = 14;
+    std::vector<mnm::mddump::Song> m_songs;
 };
 
 } // namespace mnm::app

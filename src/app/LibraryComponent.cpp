@@ -80,7 +80,7 @@ LibraryComponent::LibraryComponent(std::unique_ptr<Store> store, bool audio) : m
     addAndMakeVisible(m_search);
 
     // rail
-    for (auto* vp : {&m_railView, &m_kitGridView, &m_historyView, &m_slotKitViewport, &m_filterView, &m_detail}) { vp->setScrollBarsShown(true, false); vp->setScrollBarThickness(8); addChildComponent(*vp); }
+    for (auto* vp : {&m_railView, &m_kitGridView, &m_historyView, &m_slotKitViewport, &m_filterView, &m_detail, &m_songsView}) { vp->setScrollBarsShown(true, false); vp->setScrollBarThickness(8); addChildComponent(*vp); }
     m_railView.setViewedComponent(&m_rail, false); m_railView.setVisible(true);
     m_rail.onSelect = [this](const juce::String& id) { if (id == "import") importChooser(); else setNav(id); };
 
@@ -101,6 +101,7 @@ LibraryComponent::LibraryComponent(std::unique_ptr<Store> store, bool audio) : m
     addChildComponent(m_bankGrid); addChildComponent(m_tray); addChildComponent(m_changes);
     m_kitGridView.setViewedComponent(&m_kitGrid, false);
     m_historyView.setViewedComponent(&m_history, false);
+    m_songsView.setViewedComponent(&m_mdSongs, false);
     m_slotKitViewport.setViewedComponent(&m_slotKitView, false);
     m_bankGrid.onBank = [this](int b) { selectBank(b); };
     m_bankGrid.onOpen = [this](int pos) { openSlot("pat", pos); };
@@ -389,6 +390,7 @@ void LibraryComponent::refresh()
     m_kitGridView.setVisible(proj && m_nav.tab == "kits");
     m_slotKitViewport.setVisible(proj && m_nav.tab == "kits" && !edit);
     m_historyView.setVisible(proj && m_nav.tab == "history");
+    m_songsView.setVisible(proj && m_nav.tab == "songs" && shownMdState() != nullptr);
     m_tray.setVisible(edit && (m_nav.tab == "patterns" || m_nav.tab == "kits"));
     m_changes.setVisible(edit && (m_nav.tab == "patterns" || m_nav.tab == "kits"));
     m_filterView.setVisible(!proj); m_list.setVisible(!proj); m_detail.setVisible(!proj);
@@ -503,6 +505,8 @@ void LibraryComponent::refreshMdProject()
     m_bankGrid.set(pats, m_nav.bank, edit, m_selPat, fillPat);
     m_kitGrid.set(kits, edit, juce::jmin(m_nav.selKit, 63), fillKit, md::kKitSlots);
     m_kitGrid.setSize(m_kitGridView.getWidth() - m_kitGridView.getScrollBarThickness(), m_kitGrid.preferredHeight());
+    m_mdSongs.set(d->songs);
+    m_mdSongs.setSize(juce::jmax(100, m_songsView.getWidth() - m_songsView.getScrollBarThickness()), juce::jmax(m_songsView.getHeight(), m_mdSongs.preferredHeight()));
     if (m_nav.tab == "kits" && !edit) showSlotKit();
     if (m_nav.tab == "history") {
         m_history.setSize(m_historyView.getWidth() - m_historyView.getScrollBarThickness(), 100);
@@ -1982,7 +1986,7 @@ void LibraryComponent::paint(juce::Graphics& g)
                     ui::textRight(g, "Leave edit mode with SAVE", m_saveBtn.getX() - 12, m_tabsRow.getY(), m_tabsRow.getHeight(), kDim(), ui::font(false, 12.0f)); }
         g.setColour(lcd::ink);
         for (int x = m_tabsRow.getX(); x < m_tabsRow.getRight(); x += 4) g.fillRect(x, m_tabsRow.getBottom() - 1, 2, 1);
-        if (m_nav.tab == "songs" || m_nav.tab == "globals")
+        if ((m_nav.tab == "songs" && !shownMdState()) || m_nav.tab == "globals")
             ui::wrapped(g, juce::String(m_nav.tab == "songs" ? "Songs" : "Globals") + " are kept exactly as received and travel with every whole-project export. A readable view comes once their format is decoded.", m_bodyBounds.reduced(14, 12), kDim());
         else if (m_nav.tab == "patterns" && !edit)
             ui::wrapped(g, "The unit's layout: 8 banks of 16 patterns. Each slot shows its kit, how many tracks it uses and its length. Click a pattern to open its page, the glyph to hear it. EDIT PROJECT turns the slots into an editor.",
@@ -2041,6 +2045,10 @@ void LibraryComponent::resized()
             else { m_kitGridView.setBounds(body.removeFromLeft(660)); body.removeFromLeft(12); m_slotKitViewport.setBounds(body.withWidth((body.getWidth() / kScale) * kScale)); }
             m_kitGrid.setSize(m_kitGridView.getWidth() - m_kitGridView.getScrollBarThickness(), m_kitGrid.preferredHeight());
         } else if (m_nav.tab == "history") m_historyView.setBounds(body);
+        else if (m_nav.tab == "songs") {
+            m_songsView.setBounds(body);
+            m_mdSongs.setSize(m_songsView.getWidth() - m_songsView.getScrollBarThickness(), juce::jmax(m_songsView.getHeight(), m_mdSongs.preferredHeight()));
+        }
     } else {
         m_bodyBounds = r;
         auto body = r;

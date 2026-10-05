@@ -183,7 +183,8 @@ private:
     LcdChip m_editBtn{"EDIT PROJECT", spec::kFontBold8, 2, false}, m_exportBtn{"EXPORT SYSEX", spec::kFontBold8, 2, false}, m_saveBtn{"SAVE...", spec::kFontBold8, 2, false},
             m_backToCurrent{"BACK TO CURRENT", spec::kFontSmall4x5, 2, false};
     BankGrid m_bankGrid;
-    juce::Viewport m_kitGridView, m_historyView, m_slotKitViewport;
+    juce::Viewport m_kitGridView, m_historyView, m_slotKitViewport, m_songsView;
+    MdSongsView m_mdSongs;   // a Machinedrum project's SONGS tab
     KitGrid m_kitGrid;
     HistoryView m_history;
     KitView m_slotKitView;

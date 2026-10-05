@@ -257,6 +257,22 @@ int main(int argc, char** argv)
             std::printf("\n");
             return 0;
         }
+        if (std::strcmp(argv[2], "songs") == 0 && argc > 3) {   // md-render <os.syx> songs <dump.syx>: every song's rows, raw
+            std::FILE* f = std::fopen(argv[3], "rb");
+            std::vector<uint8_t> bytes;
+            for (int c; f && (c = std::fgetc(f)) != EOF;) bytes.push_back(uint8_t(c));
+            if (f) std::fclose(f);
+            const auto d = mnm::mddump::parseDump(bytes.data(), bytes.size(), "dump");
+            for (const auto& s : d.songs) {
+                std::printf("song %2d '%s' %d rows\n", s.position, s.name.c_str(), int(s.rows.size()));
+                for (size_t r = 0; r < s.rows.size() && r < 12; ++r) {
+                    std::printf("   ");
+                    for (int b = 0; b < 10; ++b) std::printf(" %02x", s.rows[r].bytes[b]);
+                    std::printf("\n");
+                }
+            }
+            return 0;
+        }
         if (std::strcmp(argv[2], "kitfx") == 0 && argc > 3) {   // md-render <os.syx> kitfx <dump.syx>: each kit's master effects
             std::FILE* f = std::fopen(argv[3], "rb");
             std::vector<uint8_t> bytes;

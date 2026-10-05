@@ -406,4 +406,79 @@ void MdPatternView::mouseMove(const juce::MouseEvent& e)
     setMouseCursor(t >= 0 || playZone(e.getPosition()) != 0 ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor);
 }
 
+// ---------------------------------------------------------------------------------------------- songs
+
+void MdSongsView::set(const std::vector<mnm::mddump::Song>& songs)
+{
+    m_songs.clear();
+    for (const auto& s : songs) if (!s.rows.empty()) m_songs.push_back(s);
+    std::sort(m_songs.begin(), m_songs.end(), [](const auto& a, const auto& b) { return a.position < b.position; });
+    repaint();
+}
+
+int MdSongsView::preferredHeight() const
+{
+    int h = 8;
+    for (const auto& s : m_songs) h += kTitleH + 4 + kRowH * (1 + int(s.rows.size())) + kGap;
+    return juce::jmax(60, h);
+}
+
+void MdSongsView::paint(juce::Graphics& g)
+{
+    g.fillAll(lcd::paper);
+    const int w = getWidth();
+    if (m_songs.empty()) {
+        ui::text(g, "This project has no songs.", 12, 10, 20, lcd::ink.withAlpha(0.6f));
+        return;
+    }
+    const int cNum = 10, cPat = 48, cRep = 150, cSteps = 230, cTempo = 330, cMutes = 440;
+    const auto dim = lcd::ink.withAlpha(0.6f);
+    const auto small = ui::font(false, ui::kSmallPx);
+    int y = 4;
+    for (const auto& s : m_songs) {
+        {   // title bar: the song's slot and name, its rows
+            LcdCanvas cv(w / kScale, kTitleH / kScale);
+            const juce::String title = "SONG " + juce::String(s.position + 1).paddedLeft('0', 2) + "  " + juce::String(s.name).toUpperCase().trim();
+            drawTitleBar(cv, 0, 0, w / kScale, title.toRawUTF8(), nullptr, 0);
+            cv.draw(g, 0, y);
+            int bars = 0;
+            for (const auto& r : s.rows) if (r.pattern() < 128) bars += r.bytes[2] + 1;
+            ui::textRight(g, juce::String(int(s.rows.size())) + " rows, " + juce::String(bars) + " pattern plays", w - 10, y, kTitleH, lcd::paper.withAlpha(0.85f), small);
+        }
+        y += kTitleH + 4;
+        ui::text(g, "#", cNum, y, kRowH, dim, small);
+        ui::text(g, "PATTERN", cPat, y, kRowH, dim, small);
+        ui::text(g, "REPEATS", cRep, y, kRowH, dim, small);
+        ui::text(g, "STEPS", cSteps, y, kRowH, dim, small);
+        ui::text(g, "TEMPO", cTempo, y, kRowH, dim, small);
+        ui::text(g, "MUTED TRACKS (1-16)", cMutes, y, kRowH, dim, small);
+        y += kRowH;
+        for (size_t i = 0; i < s.rows.size(); ++i) {
+            const auto& r = s.rows[i];
+            const auto* b = r.bytes;
+            if (i % 2 == 1) { g.setColour(lcd::ink.withAlpha(0.04f)); g.fillRect(0, y, w, kRowH); }
+            ui::text(g, juce::String(int(i) + 1), cNum, y, kRowH, dim, small);
+            if (b[0] == 0xFF) { ui::text(g, "END", cPat, y, kRowH, lcd::ink, ui::font(true, ui::kSmallPx)); y += kRowH; continue; }
+            if (b[0] == 0xFE) {
+                ui::text(g, "LOOP", cPat, y, kRowH, lcd::ink, ui::font(true, ui::kSmallPx));
+                ui::text(g, "to row " + juce::String(int(b[3]) + 1) + (b[2] ? ", " + juce::String(int(b[2])) + " times" : juce::String(", forever")), cRep, y, kRowH, lcd::ink, small);
+                y += kRowH; continue;
+            }
+            ui::text(g, juce::String(mnm::mddump::patternSlotName(b[0])), cPat, y, kRowH, lcd::ink, ui::font(true, ui::kSmallPx));
+            ui::text(g, "x" + juce::String(int(b[2]) + 1), cRep, y, kRowH, lcd::ink, small);
+            ui::text(g, juce::String(int(b[8]) + 1) + "-" + juce::String(juce::jmax(int(b[8]) + 1, int(b[9]))), cSteps, y, kRowH, lcd::ink, small);
+            const int tempo = (int(b[6]) << 8) | b[7];
+            ui::text(g, tempo == 0xFFFF ? juce::String("-") : juce::String(tempo / 24.0, 1) + " BPM", cTempo, y, kRowH, tempo == 0xFFFF ? dim : lcd::ink, small);
+            const int mutes = (int(b[4]) << 8) | b[5];
+            for (int t = 0; t < 16; ++t) {   // a cell per track, filled when muted
+                const juce::Rectangle<int> cell(cMutes + t * 11 + (t / 4) * 4, y + 4, 9, kRowH - 8);
+                g.setColour(lcd::ink);
+                if ((mutes >> t) & 1) g.fillRect(cell); else g.drawRect(cell, 1);
+            }
+            y += kRowH;
+        }
+        y += kGap;
+    }
+}
+
 } // namespace mnm::app
