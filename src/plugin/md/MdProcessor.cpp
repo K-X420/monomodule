@@ -67,6 +67,8 @@ MdProcessor::MdProcessor()
     m_accent = apvts.getRawParameterValue(accentId());
     m_seqOn = apvts.getRawParameterValue(seqId());
     m_patternParam = apvts.getRawParameterValue(patternId());
+    m_seqMode = apvts.getRawParameterValue(seqModeId());
+    m_songParam = apvts.getRawParameterValue(songId());
     for (auto& a : m_lockVal) a.fill(-1);
     for (auto& a : m_ctlWrite) a.fill(-1);
     m_firmwarePath = loadOsPath();
@@ -324,6 +326,9 @@ void MdProcessor::setPatternBank(const juce::String& projectId, const juce::Stri
         if (p.position >= 0 && p.position < 128) { bank->patterns[size_t(p.position)] = p; bank->hasPattern[size_t(p.position)] = true; }
     for (const auto& k : dump.kits)
         if (k.position >= 0 && k.position < 64) { bank->kits[size_t(k.position)] = k; bank->hasKit[size_t(k.position)] = true; }
+    bank->songs.resize(32);
+    for (const auto& s : dump.songs)
+        if (s.position >= 0 && s.position < 32 && !s.rows.empty()) { bank->songs[size_t(s.position)] = s; bank->hasSong[size_t(s.position)] = true; }
     {
         const juce::SpinLock::ScopedLockType l(m_bankLock);
         m_bankOld = std::move(m_bank);   // the audio thread may still hold it this block
@@ -371,17 +376,22 @@ void MdProcessor::seqStop()
     m_seqStepUi.store(-1);
 }
 
-// The pattern of `slot` plays from now on (the caller sets the origin). A different kit comes in at the pattern
-// change's time: atEnginePos >= 0 = a switch event in the pending list, else at once.
-void MdProcessor::seqSwitch(int slot, const SeqBank* bank, const std::shared_ptr<const SeqBank>& hold, double atEnginePos)
+void MdProcessor::seqStart(Segment& seg, int slot, int start, int end, int64_t steps, uint16_t mutes, double origin,
+                           const SeqBank* bank, const std::shared_ptr<const SeqBank>& hold, double atEnginePos)
 {
-    m_playerSlot = slot;
+    seg.slot = slot;
+    seg.origin = origin;
+    seg.steps = steps;
+    seg.mutes = mutes;
+    seg.valid = bank && slot >= 0 && slot < 128 && bank->hasPattern[size_t(slot)];
     m_seqPatternUi.store(slot);
-    m_playerValid = bank && slot >= 0 && slot < 128 && bank->hasPattern[size_t(slot)];
-    if (!m_playerValid) return;
+    if (!seg.valid) { for (auto& u : m_seqTrigsUi) u.store(0); return; }
     const auto& pat = bank->patterns[size_t(slot)];
-    m_player.set(pat);
-    m_seqLenUi.store(m_player.length());
+    seg.player.set(pat);
+    seg.player.setRange(start, end);
+    seg.accentOn = 0x80 + 2 * int(pat.accentAmount);
+    m_seqLenUi.store(seg.player.length());
+    for (int t = 0; t < kTracks; ++t) m_seqTrigsUi[size_t(t)].store(pat.trigs[t]);
     const int k = pat.kit;
     if (k < 0 || k >= 64 || !bank->hasKit[size_t(k)] || k == m_seqKitSlot.load()) return;
     m_seqKitSlot.store(k);
@@ -389,6 +399,45 @@ void MdProcessor::seqSwitch(int slot, const SeqBank* bank, const std::shared_ptr
     m_kitSwitch = &bank->kits[size_t(k)];
     if (atEnginePos >= 0) m_pending.push_back({-2, atEnginePos, 0});
     else applyKitSwitch();
+}
+
+// SONG rows (MdDump SongRow): pattern 0..127 (0xFE LOOP, 0xFF END), -, repeats - 1, the LOOP's target row, the muted
+// tracks (16 bits, track 1 = bit 0), the tempo (the host's tempo rules here), start step, end step (exclusive). A LOOP
+// row jumps back to its target as often as it says (0 = forever); END, or the rows running out, ends the song.
+void MdProcessor::seqNext(double origin, const SeqBank* bank, const std::shared_ptr<const SeqBank>& hold, double atEnginePos, bool song)
+{
+    if (!song) {   // PATTERN: the queued one, else the same one on
+        const int slot = m_seqQueued >= 0 ? m_seqQueued : m_seg.slot;
+        m_seqQueued = -1;
+        seqStart(m_seg, slot, 0, 64, -1, 0, origin, bank, hold, atEnginePos);
+        m_seqRowUi.store(-1);
+        return;
+    }
+    const int sl = juce::jlimit(0, 31, int(std::lround(m_songParam->load())));
+    const mnm::mddump::Song* s = bank && bank->hasSong[size_t(sl)] ? &bank->songs[size_t(sl)] : nullptr;
+    for (int guard = 0; s && guard < 4096; ++guard) {
+        auto& cur = m_cursor;
+        if (cur.row < 0 || cur.row >= int(s->rows.size()) || cur.row >= 256) break;
+        const auto* r = s->rows[size_t(cur.row)].bytes;
+        if (r[0] == 0xFF) break;   // END
+        if (r[0] == 0xFE) {        // LOOP
+            auto& n = cur.loops[size_t(cur.row)];
+            if (r[2] == 0 || n < r[2]) { ++n; cur.row = r[3]; }
+            else { n = 0; ++cur.row; }
+            continue;
+        }
+        const int row = cur.row++;
+        if (r[0] >= 128 || !bank->hasPattern[r[0]]) continue;   // an empty slot plays nothing: skip it
+        seqStart(m_seg, r[0], r[8], r[9], 0, uint16_t((r[4] << 8) | r[5]), origin, bank, hold, atEnginePos);
+        m_seg.steps = int64_t(m_seg.player.span()) * (int(r[2]) + 1);
+        m_seg.row = row;
+        m_seqRowUi.store(row);
+        return;
+    }
+    m_seg.valid = false;   // the song has ended
+    m_seg.steps = -1;
+    m_seg.row = -1;
+    m_seqRowUi.store(-1);
 }
 
 void MdProcessor::applyKitSwitch()
@@ -405,24 +454,24 @@ void MdProcessor::applyKitSwitch()
     triggerAsyncUpdate();
 }
 
-void MdProcessor::seqGenerate(double from, double to, double ratio)
+void MdProcessor::seqGenerate(const Segment& seg, double from, double to, double ratio)
 {
-    if (!m_playerValid || to <= from) return;
+    if (!seg.valid || to <= from) return;
     const size_t first = m_seqTrigs.size();
-    m_player.trigs(from - m_seqOrigin, to - m_seqOrigin, m_seqTrigs);
-    const int accentOn = 0x80 + 2 * int(m_player.pattern().accentAmount);
+    seg.player.trigs(from - seg.origin, to - seg.origin, m_seqTrigs, seg.steps);
     for (size_t i = first; i < m_seqTrigs.size(); ++i) {
         auto& s = m_seqTrigs[i];
-        s.clock += m_seqOrigin;
-        if (m_tracks[size_t(s.track)].mute->load() >= 0.5f) continue;   // a muted track's trigs don't play
+        s.clock += seg.origin;
+        if (m_tracks[size_t(s.track)].mute->load() >= 0.5f || ((seg.mutes >> s.track) & 1)) continue;   // muted: no trig
         const double host = (s.clock - m_seqClock0) / m_seqCps;
-        m_pending.push_back({s.track, juce::jmax(0.0, host * ratio), s.accent ? accentOn : -128, int(i)});
+        m_pending.push_back({s.track, juce::jmax(0.0, host * ratio), s.accent ? seg.accentOn : -128, int(i)});
     }
 }
 
-// Once per host block, before the MIDI: the pattern's trigs in this block, timed from the host's position (clock =
-// quarter notes x 24). Playback follows the transport; a jump in the position (a loop, a locate) re-places the
-// pattern as if it had played from the start of the song. A new pattern starts when the playing one ends.
+// Once per host block, before the MIDI: the trigs in this block, timed from the host's position (clock = quarter
+// notes x 24). Playback follows the transport; at a jump in the position (a loop, a locate), a start, or a new MODE /
+// SONG / bank, it is placed again as if it had played from the start of the timeline: PATTERN = the pattern looping
+// from there, SONG = the song's rows walked from there (LOOP counts and all).
 void MdProcessor::scheduleSequencer(int n, double ratio)
 {
     std::shared_ptr<const SeqBank> bank;
@@ -431,50 +480,73 @@ void MdProcessor::scheduleSequencer(int n, double ratio)
         bank = m_bank;
     }
     m_seqTrigs.clear();
+    const bool song = m_seqMode->load() >= 0.5f;
+    const int songSlot = juce::jlimit(0, 31, int(std::lround(m_songParam->load())));
+    bool relocate = false;
+    if (m_bankFresh.exchange(false)) { m_patternSeen = -1; m_seg.slot = -1; relocate = true; }
+    if (int(song) != m_modeSeen || songSlot != m_songSeen) { m_modeSeen = int(song); m_songSeen = songSlot; relocate = true; }
     const int want = juce::jlimit(0, 127, int(std::lround(m_patternParam->load())));
-    if (m_bankFresh.exchange(false)) { m_patternSeen = -1; m_playerSlot = -1; }
-    if (want != m_patternSeen) { m_patternSeen = want; m_seqQueued = want == m_playerSlot ? -1 : want; }
+    if (want != m_patternSeen) { m_patternSeen = want; m_seqQueued = want == m_seg.slot ? -1 : want; }
     const bool on = m_seqOn->load() >= 0.5f && bank != nullptr;
-    if (!on || !m_hostPlaying) {   // stopped: a new pattern is there at once
+    if (!on || !m_hostPlaying) {   // stopped: PATTERN shows the next pattern at once; SONG starts over
         if (m_seqRunning) seqStop();
-        if (bank && m_seqQueued >= 0) { seqSwitch(m_seqQueued, bank.get(), bank, -1.0); m_seqQueued = -1; }
+        m_prevSeg.valid = false;
+        if (bank && !song && (m_seqQueued >= 0 || m_seg.slot < 0)) seqNext(0.0, bank.get(), bank, -1.0, false);
         return;
     }
     const double c0 = m_hostPpq * 24.0;
     const double cps = juce::jmax(1.0, m_hostBpm.load()) * 24.0 / 60.0 / m_hostRate;
-    if (!m_seqRunning || std::abs(c0 - m_seqExpect) > 0.25) {   // start, or the host jumped
-        if (m_seqRunning) seqStop();
-        m_seqRunning = true;
-        m_seqOrigin = 0;
-        if (m_seqQueued >= 0 || m_playerSlot < 0) { seqSwitch(m_seqQueued >= 0 ? m_seqQueued : want, bank.get(), bank, -1.0); m_seqQueued = -1; }
-    }
     m_seqClock0 = c0;
     m_seqCps = cps;
     const double c1 = c0 + n * cps;
-    m_seqExpect = c1;
-    if (m_seqQueued >= 0 && m_playerValid) {
-        const double len = m_player.lengthClocks();
-        const double boundary = m_seqOrigin + (std::floor((c0 - m_seqOrigin) / len) + 1.0) * len;
-        if (boundary < c1) {
-            seqGenerate(c0, boundary, ratio);
-            const double at = juce::jmax(0.0, (boundary - c0) / cps * ratio);
-            seqSwitch(m_seqQueued, bank.get(), bank, at);
-            m_seqQueued = -1;
-            m_seqOrigin = boundary;
-            seqGenerate(boundary, c1, ratio);
+    auto engineAt = [&](double clock) { return juce::jmax(0.0, (clock - c0) / cps * ratio); };
+    if (!m_seqRunning || relocate || std::abs(c0 - m_seqExpect) > 0.25) {   // start, a jump, a new mode / song / bank
+        if (m_seqRunning) seqStop();
+        m_seqRunning = true;
+        m_prevSeg.valid = false;
+        if (!song) {
+            if (m_seqQueued < 0) m_seqQueued = want;
+            seqNext(0.0, bank.get(), bank, -1.0, false);
         } else {
-            seqGenerate(c0, c1, ratio);
+            m_cursor = {};
+            seqNext(0.0, bank.get(), bank, -1.0, true);
+            for (int guard = 0; guard < 100000 && m_seg.valid && m_seg.steps >= 0 && m_seg.endClock() <= c0; ++guard)
+                seqNext(m_seg.endClock(), bank.get(), bank, -1.0, true);
         }
-    } else {
-        if (m_seqQueued >= 0) {   // nothing playing: the new one at once, in place
-            seqSwitch(m_seqQueued, bank.get(), bank, 0.0);
-            m_seqQueued = -1;
-        }
-        seqGenerate(c0, c1, ratio);
     }
-    if (m_playerValid && c1 >= m_seqOrigin) {
-        const auto k = int64_t(std::floor((c1 - m_seqOrigin) / m_player.clocksPerStep()));
-        m_seqStepUi.store(int(k % m_player.length()));
+    m_seqExpect = c1;
+    // the segment that ended last: its swung steps' trigs after its end
+    if (m_prevSeg.valid) {
+        seqGenerate(m_prevSeg, c0, c1, ratio);
+        if (c0 > m_prevSeg.endClock() + m_prevSeg.player.swingClocks() + 1.0) m_prevSeg.valid = false;
+    }
+    for (int guard = 0; guard < 256; ++guard) {
+        if (!song) {
+            if (m_seqQueued >= 0) {
+                if (!m_seg.valid) {   // nothing playing: the new pattern at once, in step with the timeline
+                    const double origin = std::floor(c0 / 96.0) * 96.0;
+                    seqNext(origin, bank.get(), bank, engineAt(c0), false);
+                } else if (m_seg.steps < 0) {   // ends at the end of its pass
+                    const double len = m_seg.player.lengthClocks();
+                    m_seg.steps = int64_t(std::floor((c0 - m_seg.origin) / len) + 1.0) * m_seg.player.span();
+                }
+            } else if (m_seg.steps >= 0 && m_seg.endClock() > c0) {
+                m_seg.steps = -1;   // the queue was taken back: play on
+            }
+        }
+        seqGenerate(m_seg, c0, c1, ratio);
+        if (m_seg.valid && m_seg.steps >= 0 && m_seg.endClock() < c1) {
+            const double end = m_seg.endClock();
+            m_prevSeg = m_seg;
+            seqNext(end, bank.get(), bank, engineAt(end), song);
+            continue;
+        }
+        break;
+    }
+    if (m_seg.valid && c1 >= m_seg.origin) {
+        int64_t k = int64_t(std::floor((c1 - m_seg.origin) / m_seg.player.clocksPerStep()));
+        if (m_seg.steps >= 0 && k >= m_seg.steps) k = m_seg.steps - 1;
+        m_seqStepUi.store(m_seg.player.stepOf(k));
     } else {
         m_seqStepUi.store(-1);
     }
@@ -728,7 +800,7 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
         const auto m = meta.getMessage();
         if (m.isProgramChange()) {   // as on the unit: the next pattern
             const int pc = m.getProgramChangeNumber();
-            m_seqQueued = pc == m_playerSlot ? -1 : pc;
+            m_seqQueued = pc == m_seg.slot ? -1 : pc;
             m_patternSeen = pc;
             m_programChange.store(pc);
             triggerAsyncUpdate();
@@ -1310,6 +1382,7 @@ void MdProcessor::getStateInformation(juce::MemoryBlock& destData)
             juce::MemoryBlock syx;
             for (int s = 0; s < 64; ++s) if (bank->hasKit[size_t(s)]) { const auto m = mnm::mddump::encodeKit(bank->kits[size_t(s)]); syx.append(m.data(), m.size()); }
             for (int s = 0; s < 128; ++s) if (bank->hasPattern[size_t(s)]) { const auto m = mnm::mddump::encodePattern(bank->patterns[size_t(s)]); syx.append(m.data(), m.size()); }
+            for (int s = 0; s < 32; ++s) if (bank->hasSong[size_t(s)]) { const auto m = mnm::mddump::encodeSong(bank->songs[size_t(s)]); syx.append(m.data(), m.size()); }
             juce::ValueTree b("BANK");
             b.setProperty("project", m_bankProjectId, nullptr);
             b.setProperty("name", m_bankName, nullptr);

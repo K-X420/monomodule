@@ -42,10 +42,15 @@ public:
     PatternPlayer() = default;
     explicit PatternPlayer(const mddump::Pattern& p) { set(p); }
     void set(const mddump::Pattern& p);
+    // A song row plays steps [start, end) of its pattern (0x1001F48 / 0x1001F4C; a slide's next trig wraps in there too)
+    void setRange(int start, int end);
     const mddump::Pattern& pattern() const { return m_p; }
     int length() const { return m_len; }
+    int rangeStart() const { return m_start; }
+    int span() const { return m_span; }        // the steps of one pass (the range)
     int clocksPerStep() const { return m_step; }
-    double lengthClocks() const { return double(m_len) * m_step; }
+    double lengthClocks() const { return double(m_span) * m_step; }
+    int stepOf(int64_t stepIndex) const { return m_start + int(stepIndex % m_span); }
     double swingClocks() const { return m_swing; }    // the delay of a swung step
 
     bool swung(int track, int step) const { return bit(m_p.swingEditAll, m_p.swing, m_p.swingPerTrack[track], step); }
@@ -54,15 +59,16 @@ public:
     bool hasTrig(int track, int step) const { return step >= 0 && step < 64 && ((m_p.trigs[track] >> step) & 1); }
     int lock(int track, int param, int step) const;   // -1 = none
 
-    // The trigs that fire in [from, to) (clocks from the origin, where step 0 of the first pass starts), in time
-    // order. Steps before the origin never fire.
-    void trigs(double from, double to, std::vector<SeqTrig>& out) const;
+    // The trigs that fire in [from, to) (clocks from the origin, where the first pass starts), in time order, of the
+    // steps 0 .. maxSteps - 1 counted from the origin (-1 = no end). A swung step's trigs belong to it even when they
+    // come after the last step's end (a pattern change, a song row's end).
+    void trigs(double from, double to, std::vector<SeqTrig>& out, int64_t maxSteps = -1) const;
     SeqTrig trigAt(int64_t stepIndex, int track) const;   // the trig of that step (it must have one)
 
 private:
     static bool bit(uint32_t editAll, uint64_t global, uint64_t perTrack, int step) { return ((editAll ? global : perTrack) >> step) & 1; }
     mddump::Pattern m_p;
-    int m_len = 16, m_step = 6;
+    int m_len = 16, m_step = 6, m_start = 0, m_span = 16;
     double m_swing = 0;
     int m_swingWhole = 0;   // the OS's integer clocks of the swing delay (slide durations)
     std::array<std::array<int16_t, 24>, 16> m_row{};   // lock row per (track, param), -1 = not locked

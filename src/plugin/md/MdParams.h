@@ -201,6 +201,11 @@ inline juce::String outputModeId() { return "outputs"; }
 // PATTERN (the knob, its automation or a MIDI program change) starts when the playing one ends, with its kit.
 inline juce::String seqId() { return "seq"; }
 inline juce::String patternId() { return "pattern"; }
+// MODE SONG plays SONG (its rows: a pattern's steps, repeats, mutes; LOOP and END rows) from the start of the host's
+// timeline; the position in the song follows the host's position.
+inline juce::String seqModeId() { return "seqmode"; }
+inline juce::String songId() { return "song"; }
+constexpr const char* kSongNames[32] = {"01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32"};
 constexpr const char* kPatternNames[128] = {"A01", "A02", "A03", "A04", "A05", "A06", "A07", "A08", "A09", "A10", "A11", "A12", "A13", "A14", "A15", "A16", "B01", "B02", "B03", "B04", "B05", "B06", "B07", "B08", "B09", "B10", "B11", "B12", "B13", "B14", "B15", "B16", "C01", "C02", "C03", "C04", "C05", "C06", "C07", "C08", "C09", "C10", "C11", "C12", "C13", "C14", "C15", "C16", "D01", "D02", "D03", "D04", "D05", "D06", "D07", "D08", "D09", "D10", "D11", "D12", "D13", "D14", "D15", "D16", "E01", "E02", "E03", "E04", "E05", "E06", "E07", "E08", "E09", "E10", "E11", "E12", "E13", "E14", "E15", "E16", "F01", "F02", "F03", "F04", "F05", "F06", "F07", "F08", "F09", "F10", "F11", "F12", "F13", "F14", "F15", "F16", "G01", "G02", "G03", "G04", "G05", "G06", "G07", "G08", "G09", "G10", "G11", "G12", "G13", "G14", "G15", "G16", "H01", "H02", "H03", "H04", "H05", "H06", "H07", "H08", "H09", "H10", "H11", "H12", "H13", "H14", "H15", "H16"};
 inline juce::String bpmSyncId() { return "bpmsync"; }
 inline juce::String bpmId() { return "bpm"; }
@@ -254,6 +259,8 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     layout.add(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{outputModeId(), 1}, "OUTPUTS", juce::StringArray{"Hardware", "Per Track"}, 0));
     layout.add(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{bpmSyncId(), 1}, "BPM sync to host", true));
     layout.add(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{seqId(), 1}, "SEQ", juce::StringArray{"OFF", "ON"}, 0));
+    layout.add(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{seqModeId(), 1}, "MODE", juce::StringArray{"PATTERN", "SONG"}, 0));
+    layout.add(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{songId(), 1}, "SONG", 0, 31, 0, juce::AudioParameterIntAttributes().withStringFromValueFunction([](int v, int) { return juce::String(kSongNames[juce::jlimit(0, 31, v)]); })));
     layout.add(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{patternId(), 1}, "PATTERN", 0, 127, 0, juce::AudioParameterIntAttributes().withStringFromValueFunction([](int v, int) { return juce::String(kPatternNames[juce::jlimit(0, 127, v)]); })));
     layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{bpmId(), 1}, "BPM", 30.0f, 300.0f, 120.0f));
     return layout;

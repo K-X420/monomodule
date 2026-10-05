@@ -130,6 +130,60 @@ int main(int argc, char** argv)
         check(t1After == 0, "A01's trigs stop at the change");
         check(p.seqPattern() == 1 && p.kitName() == "", "kit 1 loaded by the pattern change (kit name '" + p.kitName() + "')");
         check(base.back() == 30, "kit 1's T1 PTCH in place (" + juce::String(base.back()) + ")");
+        // SONG 01: A01 steps 1-8 x2 with T2 muted; LOOP to row 1 once; A02 x1; END. From clock 0: row 1 at 0-96, again
+        // at 96-192, A02 at 192-256, then nothing.
+        {
+            mnm::mddump::Song s;
+            s.position = 0;
+            mnm::mddump::SongRow r0, loop, r2, end;
+            r0.bytes[0] = 0; r0.bytes[2] = 1; r0.bytes[4] = 0; r0.bytes[5] = 0x02; r0.bytes[6] = r0.bytes[7] = 0xFF; r0.bytes[8] = 0; r0.bytes[9] = 8;
+            loop.bytes[0] = 0xFE; loop.bytes[2] = 1; loop.bytes[3] = 0;
+            r2.bytes[0] = 1; r2.bytes[6] = r2.bytes[7] = 0xFF; r2.bytes[9] = 8;
+            end.bytes[0] = 0xFF;
+            s.rows = {r0, loop, r2, end};
+            d.songs.push_back(s);
+            p.setPatternBank("test", "SEQ TEST", d, -1);
+            setParam(seqModeId(), 1.0f);
+            setParam(songId(), 0.0f);
+            head.ppq = 0;
+            auto songRun = [&](double fromClock, double toClock) {
+                head.ppq = fromClock / 24.0;
+                p.setTrigLogging(true);
+                run(int((toClock - fromClock) * spc / block) + 1);
+                std::vector<std::pair<int, double>> got;   // track, clock
+                for (const auto& e : p.trigLog()) if (e.step >= 0) got.push_back({e.track, fromClock + double(e.sample) / spc});
+                return got;
+            };
+            auto got = songRun(0, 300);
+            std::vector<double> t1, t3;
+            int t2 = 0;
+            for (const auto& [tr, c] : got) { if (tr == 0) t1.push_back(c); else if (tr == 1) ++t2; else if (tr == 2) t3.push_back(c); }
+            const std::vector<double> want1 = {0, 24, 48, 72, 96, 120, 144, 168};
+            bool ok1 = t1.size() == want1.size();
+            for (size_t i = 0; ok1 && i < t1.size(); ++i) ok1 = std::abs(t1[i] - want1[i]) < 0.01;
+            juce::String s1; for (auto c : t1) s1 << juce::String(c, 1) << " ";
+            check(ok1, "row 1 (steps 1-8, x2) twice through the LOOP: T1 at " + s1);
+            check(t2 == 0, "row 1's mute: T2 silent (" + juce::String(t2) + " trigs)");
+            check(t3.size() == 1 && std::abs(t3[0] - 192) < 0.01, "row 3: A02 once at clock 192, then END (" + juce::String(int(t3.size())) + " trigs)");
+            // a jump into the middle: clock 150 = the LOOP's second time through row 1, step 10 of its 16
+            got = songRun(150, 260);
+            t1.clear(); t3.clear();
+            for (const auto& [tr, c] : got) { if (tr == 0) t1.push_back(c); else if (tr == 2) t3.push_back(c); }
+            check(t1.size() == 1 && std::abs(t1[0] - 168) < 0.01 && t3.size() == 1 && std::abs(t3[0] - 192) < 0.01,
+                  "a locate to clock 150 picks the song up there: T1 at 168, A02 at 192");
+        }
+        if (argc > 3) {   // the editor mid-pattern, the keys showing the steps (T1 selected)
+            setParam(seqModeId(), 0.0f); setParam(patternId(), 0.0f);
+            head.ppq = 0; run(2);
+            head.ppq = 50.0 / 24.0; run(3);
+            std::unique_ptr<juce::AudioProcessorEditor> ed(p.createEditor());
+            if (auto* med = dynamic_cast<MdEditor*>(ed.get())) med->refresh();
+            auto img = ed->createComponentSnapshot(ed->getLocalBounds(), true, 1.0f);
+            juce::File png{juce::String(argv[3])};
+            png.deleteFile();
+            juce::PNGImageFormat pf;
+            if (auto st = std::unique_ptr<juce::FileOutputStream>(png.createOutputStream())) pf.writeImageToStream(img, *st);
+        }
         std::printf(fails ? "SEQ TEST FAILED (%d)\n" : "SEQ TEST OK\n", fails);
         return fails ? 1 : 0;
     }

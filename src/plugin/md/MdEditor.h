@@ -58,6 +58,13 @@ public:
     int trackAt(juce::Point<int> local) const { for (int t = 0; t < kTracks; ++t) if (keyRect(t).contains(local / one::kScale)) return t; return -1; }
     juce::Rectangle<int> keyBounds(int t) const { return keyRect(t); }   // LCD px
     void setDropTarget(int t) { if (m_dropTarget != t) { m_dropTarget = t; repaint(); } }   // a sound dragged over a key
+    // Pattern playback, as the hardware's trig keys: key n is step n of the playing page (16 steps a page); a step LED
+    // per key (solid = the selected track has a trig there), the playing step marked along the key's top.
+    // length 0 = no pattern (keys as usual); step -1 = not playing (page 1)
+    void setSeq(int step, int length, uint64_t trigs)
+    {
+        if (m_seqStep != step || m_seqLen != length || m_seqTrigs != trigs) { m_seqStep = step; m_seqLen = length; m_seqTrigs = trigs; repaint(); }
+    }
 private:
     juce::Rectangle<int> keyRect(int t) const;   // LCD px
     juce::Rectangle<int> lockBox(int t) const { const auto r = keyRect(t); return {r.getX() + 2, r.getBottom() - 10, 8, 8}; }
@@ -67,6 +74,8 @@ private:
     std::array<int, kTracks> m_machine{};
     std::array<bool, kTracks> m_active{}, m_muted{}, m_locked{};
     int m_dropTarget = -1;
+    int m_seqStep = -1, m_seqLen = 0;
+    uint64_t m_seqTrigs = 0;
 };
 
 // The machine picker over the pages, as Monomodule's: a column per family (GND TRX EFM E12 P-I INP, ROM over three

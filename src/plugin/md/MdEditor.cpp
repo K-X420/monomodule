@@ -55,8 +55,9 @@ const spec::Param kRoutingParams[8] = {numeric("DIST", 0), numeric("VOL", 100), 
 const spec::Param kLfoParams[8] = {readout("TRK", kTrackNames, kTracks), readout("PARAM", kLfoParamNames, 24), readout("SHP1", kShapeNames, 8),
                                    readout("SHP2", kShapeNames, 8), readout("TYPE", kLfoTypes, 3), numeric("SPD", 64), numeric("DEP", 0), numeric("MIX", 0)};
 constexpr const char* kSeqNames[2] = {"OFF", "ON"};
+constexpr const char* kModeNames[2] = {"PATTERN", "SONG"};
 const spec::Param kOutParams[8] = {numeric("VOL", 80), readout("VEL", kVelNames, 2), numeric("ACNT", 64), blank(),
-                                   readout("SEQ", kSeqNames, 2), readout("PTN", kPatternNames, 128), blank(), blank()};
+                                   readout("SEQ", kSeqNames, 2), readout("PTN", kPatternNames, 128), readout("MODE", kModeNames, 2), readout("SONG", kSongNames, 32)};
 constexpr const char* kMasterTabs[4] = {"REV", "DEL", "EQ", "DYN"};
 
 // The pages of the MID and CTR machines (their parameters 8..23 are not track effects / routing)
@@ -211,6 +212,14 @@ void MdTrackKeys::paint(juce::Graphics& g)
         };
         key(lockBox(t), "L", m_locked[size_t(t)]);
         key(muteBox(t), "M", m_muted[size_t(t)]);
+        if (m_seqLen > 0) {   // the step this key stands for, on the playing page
+            const int page = m_seqStep >= 0 ? m_seqStep / 16 : 0, s = page * 16 + t;
+            if (s < m_seqLen) {
+                const int bx = r.getCentreX() - 3, by = r.getBottom() - 9;
+                if ((m_seqTrigs >> s) & 1) cv.fillRect(bx, by, 6, 6, ink);   // unlit: nothing (the L and M keys stay clear)
+                if (s == m_seqStep) cv.invertRect(r.getX() + 1, r.getY() + 1, r.getWidth() - 2, 2);
+            }
+        }
         if (t == m_dropTarget) {   // a sound from the library would land here: an inner frame
             cv.invertRect(r.getX() + 1, r.getY() + 1, r.getWidth() - 2, 1); cv.invertRect(r.getX() + 1, r.getBottom() - 2, r.getWidth() - 2, 1);
             cv.invertRect(r.getX() + 1, r.getY() + 2, 1, r.getHeight() - 4); cv.invertRect(r.getRight() - 2, r.getY() + 2, 1, r.getHeight() - 4);
@@ -597,7 +606,7 @@ MdEditor::MdEditor(MdProcessor& p)
 
     for (auto* pg : {&m_syn, &m_fx, &m_routing, &m_lfo, &m_master, &m_out}) addAndMakeVisible(pg);
     m_master.setTabs({kMasterTabs[0], kMasterTabs[1], kMasterTabs[2], kMasterTabs[3]}, 0, [this](int tab) { bindMasterFx(tab); });
-    m_out.bind(kOutParams, [](int k) { return k == 0 ? masterId() : k == 1 ? velModeId() : k == 2 ? accentId() : k == 4 ? seqId() : k == 5 ? patternId() : juce::String(); });
+    m_out.bind(kOutParams, [](int k) { return k == 0 ? masterId() : k == 1 ? velModeId() : k == 2 ? accentId() : k == 4 ? seqId() : k == 5 ? patternId() : k == 6 ? seqModeId() : k == 7 ? songId() : juce::String(); });
     bindMasterFx(0);
 
     m_sample.onClick = [this] { sampleMenu(); };
@@ -1118,6 +1127,10 @@ void MdEditor::timerCallback()
         const int idx = juce::jlimit(0, kNumMachines - 1, int(std::lround(m_proc.apvts.getRawParameterValue(machineId(t))->load())));
         m_keys.setMachine(t, idx);
         m_keys.setActive(t, m_proc.trackActivity(t) > 0.012f);
+        if (t == 0) {
+            const bool seq = m_proc.apvts.getRawParameterValue(seqId())->load() >= 0.5f && m_proc.seqPattern() >= 0 && m_proc.bankHasPattern(m_proc.seqPattern());
+            m_keys.setSeq(m_proc.seqStep(), seq ? m_proc.seqLength() : 0, m_proc.seqTrigs(m_track));
+        }
         m_keys.setFlags(t, m_proc.apvts.getRawParameterValue(muteId(t))->load() >= 0.5f, m_proc.trackLocked(t));
         if (t == m_track && idx != m_machineIndex) { m_machineIndex = idx; m_machineBlock.setMachine(idx); }
     }

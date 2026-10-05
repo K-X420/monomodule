@@ -129,8 +129,10 @@ public:
     juce::String bankProjectId() const { return m_bankProjectId; }
     bool bankHasPattern(int slot) const;
     int seqStep() const { return m_seqStepUi.load(); }        // the playing step, -1 when not playing
-    int seqLength() const { return m_seqLenUi.load(); }
-    int seqPattern() const { return m_seqPatternUi.load(); }  // the playing pattern slot, -1 = none
+    int seqLength() const { return m_seqLenUi.load(); }       // the pattern's length (steps)
+    int seqPattern() const { return m_seqPatternUi.load(); }  // the playing (or next, when stopped) pattern slot, -1 = none
+    uint64_t seqTrigs(int t) const { return m_seqTrigsUi[size_t(t)].load(); }   // that pattern's trig steps of track t
+    int seqSongRow() const { return m_seqRowUi.load(); }      // SONG: the playing row, -1 = none
     // dev: the trigs the last blocks fired (track, host sample from the start of logging), when logging is on
     struct TrigLog { int track; int64_t sample; int step; };
     void setTrigLogging(bool on) { m_trigLogOn = on; m_trigLog.clear(); m_trigLog.reserve(on ? 8192 : 0); m_logClock = 0; }
@@ -262,20 +264,38 @@ private:
     struct SeqBank {
         std::vector<mnm::mddump::Pattern> patterns;   // by slot (128)
         std::vector<mnm::mddump::Kit> kits;           // by slot (64)
+        std::vector<mnm::mddump::Song> songs;         // by slot (32)
         std::array<bool, 128> hasPattern{};
         std::array<bool, 64> hasKit{};
+        std::array<bool, 32> hasSong{};
     };
     std::shared_ptr<const SeqBank> m_bank, m_bankOld;   // message thread swaps (under m_bankLock); the old one stays alive
     juce::SpinLock m_bankLock;
     juce::String m_bankName, m_bankProjectId;
     std::atomic<float>* m_seqOn = nullptr;
     std::atomic<float>* m_patternParam = nullptr;
-    mnm::md::PatternPlayer m_player;
-    bool m_playerValid = false;
-    int m_playerSlot = -1, m_patternSeen = -1, m_seqQueued = -1;
+    // What plays: a pattern until another is queued (PATTERN), or a song row's pattern steps x repeats (SONG). The one
+    // that ended last keeps playing its swung steps' trigs that come after its end.
+    struct Segment {
+        mnm::md::PatternPlayer player;
+        bool valid = false;
+        int slot = -1, row = -1, accentOn = 0x80;
+        double origin = 0;          // the clock its first step starts at
+        int64_t steps = -1;         // how many steps it plays (-1: until a change)
+        uint16_t mutes = 0;         // a song row's muted tracks (bit t)
+        double endClock() const { return origin + double(steps) * player.clocksPerStep(); }
+    };
+    Segment m_seg, m_prevSeg;
+    struct SongCursor { int row = 0; std::array<int16_t, 256> loops{}; };   // the next row; each LOOP row's jumps so far
+    SongCursor m_cursor;
+    int m_patternSeen = -1, m_seqQueued = -1, m_modeSeen = -1, m_songSeen = -1;
+    std::atomic<float>* m_seqMode = nullptr;
+    std::atomic<float>* m_songParam = nullptr;
+    std::array<std::atomic<uint64_t>, kTracks> m_seqTrigsUi{};
+    std::atomic<int> m_seqRowUi{-1};
     std::atomic<int> m_programChange{-1};                // a MIDI program change for the message thread (PATTERN follows)
     bool m_seqRunning = false;
-    double m_seqOrigin = 0, m_seqExpect = 0, m_seqClock0 = 0, m_seqCps = 0;   // clocks: step 0 of the pass, the block's start, per host sample
+    double m_seqExpect = 0, m_seqClock0 = 0, m_seqCps = 0;   // clocks: the block's expected start, its start, per host sample
     std::vector<mnm::md::SeqTrig> m_seqTrigs;
     std::array<std::array<int16_t, 24>, kTracks> m_lockVal{};      // a parameter held by a lock or a slide (-1 = the kit's)
     std::array<std::array<mnm::md::Glide, 24>, kTracks> m_glide{};
@@ -295,8 +315,13 @@ private:
     std::array<std::array<int16_t, 24>, kTracks + 4> m_ctlWrite{};
     std::array<int64_t, kTracks + 4> m_ctlWriteUntil{};
     void scheduleSequencer(int n, double ratio);
-    void seqGenerate(double from, double to, double ratio);
-    void seqSwitch(int slot, const SeqBank* bank, const std::shared_ptr<const SeqBank>& hold, double atEnginePos);
+    void seqGenerate(const Segment& seg, double from, double to, double ratio);
+    // seg plays `slot` from `origin`: steps [start, end) of it, `steps` of them (-1: on); its kit comes in at its start
+    // (atEnginePos >= 0: a switch event in the pending list, else at once)
+    void seqStart(Segment& seg, int slot, int start, int end, int64_t steps, uint16_t mutes, double origin,
+                  const SeqBank* bank, const std::shared_ptr<const SeqBank>& hold, double atEnginePos);
+    // the segment after the current one, from `origin` (PATTERN: the queued pattern; SONG: the next row)
+    void seqNext(double origin, const SeqBank* bank, const std::shared_ptr<const SeqBank>& hold, double atEnginePos, bool song);
     void seqStop();
     void applyKitSwitch();   // at a pattern change's time: its kit plays (m_kitSwitch) until the message thread has loaded it
     static int overrideMachine(const mnm::mddump::Kit& kit, int t);   // the kit's machine, GND--- for one the plugin has not
