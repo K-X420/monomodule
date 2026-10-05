@@ -1,4 +1,5 @@
 #include "MdEditor.h"
+#include "MdMachineText.h"
 #include <cmath>
 #include "ShnolkLogo.h"
 #include "ParamDisplay.h"
@@ -11,6 +12,8 @@ using one::kScale;
 using one::LcdCanvas;
 using one::KnobPage;
 namespace lcd = one::lcd;
+using one::drawLcdText;
+using one::wrapLcdText;
 
 namespace {
 
@@ -219,73 +222,195 @@ void MdTrackKeys::mouseMove(const juce::MouseEvent& e)
 
 // ---------------------------------------------------------------------------------------------- machine picker
 
+namespace {
+// Geometry in screen pixels, as Monomodule's picker: a column per family (ROM three), a black header with the logo
+// and name, the blurb (or the hovered machine's description), then the machines as rows.
+constexpr int kPickGap = 4, kPickBorder = 2, kPickHeaderH = 50, kPickPad = 6, kTextScale = 2, kLineH = 12, kBlurbLines = 4;
+constexpr int kPickAnimHz = 60; constexpr float kPickAnimSeconds = 0.16f;
+
+void pickDottedH(juce::Graphics& g, int x0, int x1, int y) { for (int x = x0; x < x1; x += 4) g.fillRect(x, y, 2, 2); }
+}
+
 MdMachinePicker::MdMachinePicker()
 {
     setOpaque(true);
-    auto add = [this](const juce::String& fam, int span = 1) { m_columns.push_back({fam, span, {}}); };
-    for (int i = 0; i < kNumMachines; ++i) {
-        const auto fam = familyOf(i);
-        if (m_columns.empty() || (m_columns.back().title != fam && !(fam == "ROM" && m_columns.back().title.isEmpty())))
-            add(fam);
-        if (fam == "ROM" && m_columns.back().items.size() == 16) add({});   // ROM continues in untitled columns
-        m_columns.back().items.push_back(i);
+    setWantsKeyboardFocus(true);
+    for (int i = 0; i < kNumMachines; ++i) {   // families are contiguous in kMachines (the picker's order)
+        const auto fam = ::mnm::plugin::md::familyOf(i);
+        if (m_families.empty() || m_families.back().name != fam) m_families.push_back({fam, {}});
+        m_families.back().items.push_back(i);
     }
-    for (size_t c = 0; c < m_columns.size(); ++c)   // the ROM header spans its columns
-        if (m_columns[c].title == "ROM") for (size_t k = c + 1; k < m_columns.size() && m_columns[k].title.isEmpty(); ++k) ++m_columns[c].span;
+    int col = 0;
+    for (auto& f : m_families) { f.firstCol = col; f.cols = (int(f.items.size()) + 15) / 16; col += f.cols; }
+    m_rows.resize(size_t(kNumMachines));
+}
+
+void MdMachinePicker::setTargetBounds(juce::Rectangle<int> fullyOpen)
+{
+    m_target = fullyOpen;
+    layout();
+    applyAnimation();
+}
+
+void MdMachinePicker::open(int current, bool animate)
+{
+    m_current = current;
+    m_wantOpen = true;
+    setVisible(true);
+    toFront(false);
+    grabKeyboardFocus();
+    if (!animate) { m_anim = 1.0f; stopTimer(); applyAnimation(); }
+    else if (!isTimerRunning()) startTimerHz(kPickAnimHz);
+    repaint();
+}
+
+void MdMachinePicker::close(bool animate)
+{
+    const bool was = m_wantOpen;
+    m_wantOpen = false;
+    m_hover = -1;
+    if (!animate) { m_anim = 0.0f; stopTimer(); applyAnimation(); }
+    else if (!isTimerRunning()) startTimerHz(kPickAnimHz);
+    if (was && onClosed) onClosed();
+}
+
+// It unrolls from the top edge: the bounds grow down from the target's top with an ease-out; the layout stays the
+// fully open one, so the pages are covered progressively (Monomodule's picker does the same)
+void MdMachinePicker::applyAnimation()
+{
+    const float eased = 1.0f - (1.0f - m_anim) * (1.0f - m_anim) * (1.0f - m_anim);
+    setBounds(m_target.withHeight(juce::jmax(0, int(std::lround(m_target.getHeight() * eased)))));
+    if (m_anim <= 0.0f && !m_wantOpen) setVisible(false);
+}
+
+void MdMachinePicker::timerCallback()
+{
+    const float step = 1.0f / (kPickAnimSeconds * float(kPickAnimHz));
+    m_anim = m_wantOpen ? juce::jmin(1.0f, m_anim + step) : juce::jmax(0.0f, m_anim - step);
+    applyAnimation();
+    if (m_anim <= 0.0f || m_anim >= 1.0f) stopTimer();
 }
 
 void MdMachinePicker::layout()
 {
-    m_cells.clear(); m_heads.clear();
-    const int w = getWidth() / kScale, gap = 4, n = int(m_columns.size());
-    const int cw = juce::jmax(16, (w - 8 - (n - 1) * gap) / juce::jmax(1, n));
-    const int headY = 14, cellY = headY + 12, cellH = 8;
-    for (int c = 0; c < n; ++c) {
-        const auto& col = m_columns[size_t(c)];
-        const int x = 4 + c * (cw + gap);
-        if (col.title.isNotEmpty()) m_heads.push_back({col.title, {x, headY, col.span * cw + (col.span - 1) * gap, 10}});
-        for (size_t i = 0; i < col.items.size(); ++i) m_cells.push_back({col.items[i], {x, cellY + int(i) * cellH, cw, cellH}});
+    for (auto& r : m_rows) r = {};
+    const int nCols = m_families.empty() ? 1 : m_families.back().firstCol + m_families.back().cols;
+    const int W = m_target.getWidth(), H = m_target.getHeight();
+    const int colW = (W - (nCols - 1) * kPickGap) / nCols;
+    const int rowsTop = kPickBorder + kPickHeaderH + 4 + kBlurbLines * kLineH + 6;
+    const int rowH = juce::jlimit(14, 24, (H - rowsTop - kPickBorder - 2) / 16);
+    for (auto& f : m_families) {
+        const int x = f.firstCol * (colW + kPickGap), w = f.cols * colW + (f.cols - 1) * kPickGap;
+        f.bounds = {x, 0, w, H};
+        f.header = {x + kPickBorder, kPickBorder, w - 2 * kPickBorder, kPickHeaderH};
+        f.blurb = {x + kPickPad, kPickBorder + kPickHeaderH + 4, w - 2 * kPickPad, kBlurbLines * kLineH};
+        for (size_t i = 0; i < f.items.size(); ++i) {
+            const int sub = int(i) / 16, row = int(i) % 16;
+            const int sx = f.firstCol * (colW + kPickGap) + sub * (colW + kPickGap);
+            m_rows[size_t(f.items[i])] = {sx + kPickBorder, rowsTop + row * rowH, colW - 2 * kPickBorder, rowH};
+        }
     }
 }
 
-int MdMachinePicker::itemAt(juce::Point<int> lcd) const
+int MdMachinePicker::itemAt(juce::Point<int> p) const
 {
-    for (const auto& [idx, r] : m_cells) if (r.contains(lcd)) return idx;
+    for (int i = 0; i < kNumMachines; ++i) if (m_rows[size_t(i)].contains(p)) return i;
     return -1;
+}
+
+int MdMachinePicker::familyOf(int index) const
+{
+    for (int k = 0; k < int(m_families.size()); ++k)
+        for (int i : m_families[size_t(k)].items) if (i == index) return k;
+    return -1;
+}
+
+juce::String MdMachinePicker::describe(int index) const
+{
+    const int id = kMachines[index].id;
+    if (isRomMachine(id)) {
+        const auto s = sampleName ? sampleName(index) : juce::String();
+        return juce::String(kMachines[index].name) + " " + (s.isEmpty() ? juce::String("EMPTY SLOT") : s.toUpperCase());
+    }
+    if (isMidMachine(id)) return "MIDI OUT ON CH " + juce::String(id - 95);
+    if (const char* t = text::machineText(id)) return t;
+    return kMachines[index].name;
 }
 
 void MdMachinePicker::paint(juce::Graphics& g)
 {
-    const int w = getWidth() / kScale, h = getHeight() / kScale;
-    LcdCanvas cv(w, h);
-    dottedFrame(cv, 0, 0, w, h);
-    cv.text(spec::kFontBold8, "MACHINES", 4, 3);
-    for (const auto& [title, r] : m_heads) {
-        cv.fillRect(r.getX(), r.getY(), r.getWidth(), r.getHeight(), true);
-        cv.text(spec::kFontBold8, title.toRawUTF8(), r.getX() + 2, r.getY() + 1, false);
+    g.fillAll(lcd::paper);
+    for (const auto& f : m_families) drawFamily(g, f);
+}
+
+void MdMachinePicker::drawFamily(juce::Graphics& g, const Family& f) const
+{
+    g.setColour(lcd::ink);
+    g.drawRect(f.bounds, kPickBorder);
+    // header: the logo above the family name, paper on ink
+    g.fillRect(f.header);
+    const auto logo = text::familyLogo(f.name.toRawUTF8());
+    const int ls = 2, lw = text::Logo::kW * ls, lx = f.header.getCentreX() - lw / 2, ly = f.header.getY() + 6;
+    g.setColour(lcd::paper);
+    for (int y = 0; y < text::Logo::kH; ++y)
+        for (int x = 0; x < text::Logo::kW; ++x)
+            if (logo.lit(x, y)) g.fillRect(lx + x * ls, ly + y * ls, ls, ls);
+    const int nw = LcdCanvas::textWidth(spec::kFontBold8, f.name.toRawUTF8()) * 2;
+    drawLcdText(g, spec::kFontBold8, f.name.toRawUTF8(), f.header.getCentreX() - nw / 2, ly + text::Logo::kH * ls + 3, 2, lcd::paper);
+    // the blurb, or what the hovered machine of this family is
+    const bool hovered = m_hover >= 0 && familyOf(m_hover) == int(&f - m_families.data());
+    const auto words = hovered ? describe(m_hover) : juce::String(text::familyBlurb(f.name.toRawUTF8()));
+    {
+        juce::Graphics::ScopedSaveState s(g);
+        g.reduceClipRegion(f.blurb);
+        int n = 0;
+        for (const auto& line : wrapLcdText(spec::kFontSmall4x5, words.toUpperCase(), f.blurb.getWidth() / kTextScale)) {
+            if (n >= kBlurbLines) break;
+            drawLcdText(g, spec::kFontSmall4x5, line.toRawUTF8(), f.blurb.getX(), f.blurb.getY() + n++ * kLineH, kTextScale, lcd::ink);
+        }
     }
-    for (const auto& [idx, r] : m_cells) {
+    g.setColour(lcd::ink);
+    pickDottedH(g, f.bounds.getX() + kPickBorder, f.bounds.getRight() - kPickBorder, f.blurb.getBottom() + 3);
+    // the machines
+    for (int idx : f.items) {
+        const auto& r = m_rows[size_t(idx)];
         const bool cur = idx == m_current;
-        if (cur) cv.fillRect(r.getX(), r.getY(), r.getWidth(), r.getHeight(), true);
-        cv.text(spec::kFontSmall4x5, shortOf(idx).toRawUTF8(), r.getX() + 2, r.getY() + (r.getHeight() - spec::kFontSmall4x5.h) / 2, !cur);
-        if (hasSample && hasSample(idx)) cv.fillRect(r.getRight() - 4, r.getY() + 3, 2, 2, !cur);   // a ROM slot holding a sample
-        if (idx == m_hover && !cur) cv.invertRect(r.getX(), r.getY(), r.getWidth(), r.getHeight());
+        if (cur) { g.setColour(lcd::ink); g.fillRect(r); }
+        const auto colour = cur ? lcd::paper : lcd::ink;
+        const int id = kMachines[idx].id;
+        juce::Graphics::ScopedSaveState s(g);
+        g.reduceClipRegion(r);
+        const auto label = isRomMachine(id) ? juce::String(kMachines[idx].name).substring(4) : shortOf(idx);
+        const int ty = r.getY() + (r.getHeight() - spec::kFontBold8.h * 2) / 2;
+        drawLcdText(g, spec::kFontBold8, label.toRawUTF8(), r.getX() + 4, ty, 2, colour);
+        if (isRomMachine(id) && sampleName) {   // the slot's sample, as far as it fits
+            const auto name = sampleName(idx).toUpperCase();
+            if (name.isNotEmpty())
+                drawLcdText(g, spec::kFontSmall4x5, name.toRawUTF8(), r.getX() + 4 + LcdCanvas::textWidth(spec::kFontBold8, label.toRawUTF8()) * 2 + 6,
+                            r.getY() + (r.getHeight() - spec::kFontSmall4x5.h * 2) / 2, 2, colour);
+        }
+        if (idx == m_hover && !cur) { g.setColour(lcd::ink); g.drawRect(r, 2); }
     }
-    cv.draw(g, 0, 0);
 }
 
 void MdMachinePicker::mouseMove(const juce::MouseEvent& e)
 {
-    const int h = itemAt(e.getPosition() / kScale);
+    const int h = itemAt(e.getPosition());
     setMouseCursor(h >= 0 ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor);
     if (h != m_hover) { m_hover = h; repaint(); }
 }
 
 void MdMachinePicker::mouseDown(const juce::MouseEvent& e)
 {
-    const int idx = itemAt(e.getPosition() / kScale);
+    const int idx = itemAt(e.getPosition());
     if (idx >= 0 && onPick) onPick(idx);
     close();
+}
+
+bool MdMachinePicker::keyPressed(const juce::KeyPress& k)
+{
+    if (k == juce::KeyPress::escapeKey) { close(); return true; }
+    return false;
 }
 
 // ---------------------------------------------------------------------------------------------- badge button
@@ -324,10 +449,10 @@ MdEditor::MdEditor(MdProcessor& p)
     one::loadLcdArt(m_artPath);
 
     addAndMakeVisible(m_machineBlock);
-    m_machineBlock.onOpen = [this] { if (m_picker.isVisible()) m_picker.close(); else { m_picker.open(m_machineIndex); m_machineBlock.setOpen(true); } };
+    m_machineBlock.onOpen = [this] { if (m_picker.isOpen()) m_picker.close(); else { m_picker.open(m_machineIndex); m_machineBlock.setOpen(true); } };
     m_picker.onPick = [this](int idx) { setMachine(idx); };
     m_picker.onClosed = [this] { m_machineBlock.setOpen(false); };
-    m_picker.hasSample = [this](int idx) { const int id = kMachines[idx].id; return isRomMachine(id) && m_proc.sampleName(romSlotOf(id)).isNotEmpty(); };
+    m_picker.sampleName = [this](int idx) { const int id = kMachines[idx].id; return isRomMachine(id) ? m_proc.sampleName(romSlotOf(id)) : juce::String(); };
     addChildComponent(m_picker);
 
     m_menuButton.onClick = [this] { showMenu(); };
@@ -356,7 +481,7 @@ MdEditor::MdEditor(MdProcessor& p)
                 m_saveDialog.open("SAVE SOUND T" + juce::String(m_track + 1), soundDisplayName(m_track).isEmpty() || soundDisplayName(m_track) == "-" ? juce::String("NEW SOUND") : soundDisplayName(m_track),
                                   slotText(m_lib->projectSlotOfSound(m_proc.loadedSoundKey(m_track))));
                 break;
-            case MdKitStrip::Library:   if (m_panel.isOpen()) m_panel.close(); else { m_picker.setVisible(false); m_panel.open(); } break;
+            case MdKitStrip::Library:   if (m_panel.isOpen()) m_panel.close(); else { m_picker.close(false); m_panel.open(); } break;
             case MdKitStrip::None: break;
         }
     };
@@ -909,7 +1034,11 @@ void MdEditor::resized()
     auto keys = body.removeFromBottom(MdTrackKeys::kLcdH * kScale);
     body.removeFromBottom(gap);
     // the track keys run from the LEV column's left edge to the pages' right edge (the LEV column ends above them)
-    m_keys.setBounds(keys.withLeft(lev.getX()).withRight(keys.getX() + 3 * KnobPage::kWidth + 2 * gap));
+    {   // ... at a whole number of LCD pixels (the keys paint in LCD pixels; a remainder would stay unpainted)
+        const int right = keys.getX() + 3 * KnobPage::kWidth + 2 * gap;
+        const int w = (right - lev.getX()) / kScale * kScale;
+        m_keys.setBounds(keys.withLeft(right - w).withRight(right));
+    }
     lev = lev.withTop(body.getY() - 11 * kScale).withBottom(body.getY() + 2 * KnobPage::kHeight + gap);
     m_level.setBounds(lev.withHeight((lev.getHeight() / kScale) * kScale));
 
@@ -931,7 +1060,7 @@ void MdEditor::resized()
     m_about.setBounds(getLocalBounds());
     m_skinDialog.setBounds(getLocalBounds());
     m_engineStatus.setBounds(m_machineBlock.getRight() + 12, m_strip.getBottom() + 1, getWidth() - m_machineBlock.getRight() - 22, 16);
-    m_picker.setBounds(juce::Rectangle<int>(m_syn.getX(), m_syn.getY(), m_routing.getRight() - m_syn.getX(), m_out.getBottom() - m_syn.getY()));
+    m_picker.setTargetBounds(juce::Rectangle<int>(m_syn.getX(), m_syn.getY(), m_routing.getRight() - m_syn.getX(), m_out.getBottom() - m_syn.getY()));
     m_panel.setTargetBounds(juce::Rectangle<int>(m_syn.getX(), m_syn.getY(), m_routing.getRight() - m_syn.getX(), m_out.getBottom() - m_syn.getY()));
 }
 

@@ -68,29 +68,42 @@ private:
     int m_dropTarget = -1;
 };
 
-// The machine picker over the pages: a column per family (GND TRX EFM E12 P-I INP, ROM over three columns, RAM),
-// one cell per machine; the current one inverted, ROM slots holding a sample marked.
-class MdMachinePicker : public juce::Component {
+// The machine picker over the pages, as Monomodule's: a column per family (GND TRX EFM E12 P-I INP, ROM over three
+// columns, RAM MID CTR) with a logo and name header and a blurb (a hovered machine's description takes its place),
+// then the machines as rows (ROM rows with their sample's name); the current one inverted. It unrolls from the top
+// edge when opened and rolls back up when closed; Escape or a click outside a row closes it.
+class MdMachinePicker : public juce::Component, private juce::Timer {
 public:
     MdMachinePicker();
-    std::function<void(int)> onPick;        // kMachines index
-    std::function<bool(int)> hasSample;     // kMachines index -> a ROM slot with a sample
-    void open(int current) { m_current = current; setVisible(true); toFront(false); repaint(); }
-    void close() { setVisible(false); if (onClosed) onClosed(); }
-    std::function<void()> onClosed;
+    std::function<void(int)> onPick;                 // kMachines index
+    std::function<juce::String(int)> sampleName;     // kMachines index -> the ROM slot's sample name ("" = empty)
+    std::function<void()> onClosed;                  // when it starts to close (the machine block's arrow follows)
+    void setTargetBounds(juce::Rectangle<int> fullyOpen);   // the six pages' area, in the parent
+    void open(int current, bool animate = true);
+    void close(bool animate = true);
+    bool isOpen() const { return m_wantOpen; }
+    void setHover(int index) { m_hover = index; repaint(); }   // dev/snapshot
     void paint(juce::Graphics&) override;
-    void resized() override { layout(); }
     void mouseDown(const juce::MouseEvent&) override;
     void mouseMove(const juce::MouseEvent&) override;
     void mouseExit(const juce::MouseEvent&) override { if (m_hover >= 0) { m_hover = -1; repaint(); } }
+    bool keyPressed(const juce::KeyPress&) override;
 private:
-    struct Column { juce::String title; int span; std::vector<int> items; };   // span: header width in columns
+    // A family: its machines in sub-columns of up to 16 (ROM takes three), under one header (logo + name) and blurb
+    struct Family { juce::String name; std::vector<int> items; int firstCol = 0, cols = 1; juce::Rectangle<int> bounds, header, blurb; };
     void layout();
-    int itemAt(juce::Point<int> lcd) const;
-    std::vector<Column> m_columns;
-    std::vector<std::pair<int, juce::Rectangle<int>>> m_cells;      // kMachines index, LCD rect
-    std::vector<std::pair<juce::String, juce::Rectangle<int>>> m_heads;
+    int itemAt(juce::Point<int> p) const;
+    int familyOf(int index) const;
+    juce::String describe(int index) const;
+    void drawFamily(juce::Graphics& g, const Family& f) const;
+    void timerCallback() override;
+    void applyAnimation();
+    std::vector<Family> m_families;
+    std::vector<juce::Rectangle<int>> m_rows;   // per kMachines index (empty when not laid out)
+    juce::Rectangle<int> m_target;
     int m_current = 0, m_hover = -1;
+    bool m_wantOpen = false;
+    float m_anim = 0.0f;   // 0 rolled up, 1 open
 };
 
 // A paper box with ink text standing in a page's title bar (the SYNTHESIS page's sample slot), clickable.
@@ -109,7 +122,7 @@ public:
     void resized() override;
     void selectTrack(int t);
     void refresh() { timerCallback(); }   // dev/snapshot: apply pending state without the message loop
-    void showMachinePicker() { m_picker.open(m_machineIndex); }   // dev/snapshot
+    void showMachinePicker(int hover = -1) { m_picker.open(m_machineIndex, false); m_picker.setHover(hover); }   // dev/snapshot
     void showKitList() { openKitList(); }                         // dev/snapshot
     void showLibrary(int tab) { m_panel.open(false); m_panel.setTab(MdLibraryPanel::Tab(tab)); }   // dev/snapshot
     void showAbout() { m_about.setVisible(true); m_about.toFront(false); }                     // dev/snapshot

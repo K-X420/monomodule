@@ -421,7 +421,7 @@ int main(int argc, char** argv)
         std::unique_ptr<juce::AudioProcessorEditor> ed(proc.createEditor());
         if (auto* med = dynamic_cast<MdEditor*>(ed.get())) {
             med->refresh();
-            if (std::getenv("MD_UI_PICKER")) med->showMachinePicker();   // the machine picker open over the pages
+            if (const char* pk = std::getenv("MD_UI_PICKER")) med->showMachinePicker(std::atoi(pk) > 1 ? machineIndexOf(std::atoi(pk)) : -1);   // the picker open (=<id>: that machine hovered)
             if (std::getenv("MD_UI_KITS")) med->showKitList();
             if (std::getenv("MD_UI_ABOUT")) med->showAbout();
             if (std::getenv("MD_UI_SKIN")) med->showSkinDialog();
