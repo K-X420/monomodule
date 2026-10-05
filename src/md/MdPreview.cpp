@@ -105,6 +105,7 @@ md::Engine::Track Renderer::trackFor(const Kit& kit, int t) const
     tr.level = kit.levels[t];
     std::copy(kit.lfos[t], kit.lfos[t] + 5, tr.lfoConfig.begin());
     tr.route = 6;   // MAIN: the outputs are a global setting of the unit, not the kit's
+    tr.muteGroup = kit.muteGroups[t] < kTracks ? kit.muteGroups[t] : -1;
     if (md::isMidMachine(tr.machine)) {   // no voice (the plugin plays its MIDI; a preview has nowhere to send it)
         tr.machine = 0; tr.level = 0;
     } else if (md::isCtrMachine(tr.machine)) {   // no voice; CTR-RE..DX keep SYNTHESIS and the LFO knobs (an LFO on
@@ -196,7 +197,17 @@ bool Renderer::render(const Spec& spec, double bpm, const std::function<void(uin
             const auto& e = spec.events[next];
             const int t = e.track;
             const int id = kit.model(t);
+            const int g = kit.trigGroups[t] < kTracks && kit.trigGroups[t] != t ? kit.trigGroups[t] : -1;   // its TRIG GROUP
+            const auto groupTrig = [&] {   // the group track plays too, with its kit values and the same accent
+                if (g < 0) return;
+                const int gid = kit.model(g);
+                if (md::isCtrMachine(gid) || md::isMidMachine(gid)) { m_engine->groupTrig(g); return; }
+                if (locked[size_t(g)]) { m_engine->setTrack(g, trackFor(kit, g)); locked[size_t(g)] = false; snap = true; }
+                m_engine->trig(g, gid, e.accent);
+            };
             if (md::isCtrMachine(id) || md::isMidMachine(id)) {   // no voice: a CTR track's locks act on the kit
+                m_engine->groupTrig(t);
+                groupTrig();
                 std::array<bool, kTracks> changed{};
                 for (const auto& [q, v] : e.locks) control(kit, t, q, v, changed);
                 for (int u = 0; u < kTracks; ++u)
@@ -211,6 +222,7 @@ bool Renderer::render(const Spec& spec, double bpm, const std::function<void(uin
                 snap = true;
             }
             m_engine->trig(t, id, e.accent);
+            groupTrig();
         }
         if (snap) m_engine->snap();   // a lock is the step's value at once, not a slew
         try { m_engine->render(); }

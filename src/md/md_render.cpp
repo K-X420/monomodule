@@ -273,6 +273,22 @@ int main(int argc, char** argv)
             }
             return 0;
         }
+        if (std::strcmp(argv[2], "groups") == 0 && argc > 3) {   // md-render <os.syx> groups <dump.syx>: the kits' trig / mute groups
+            std::FILE* f = std::fopen(argv[3], "rb");
+            std::vector<uint8_t> bytes;
+            for (int c; f && (c = std::fgetc(f)) != EOF;) bytes.push_back(uint8_t(c));
+            if (f) std::fclose(f);
+            const auto d = mnm::mddump::parseDump(bytes.data(), bytes.size(), "dump");
+            for (const auto& kit : d.kits) {
+                std::string s;
+                for (int tr = 0; tr < 16; ++tr) {
+                    if (kit.trigGroups[tr] < 16) s += " T" + std::to_string(tr + 1) + " trigs T" + std::to_string(kit.trigGroups[tr] + 1) + ";";
+                    if (kit.muteGroups[tr] < 16) s += " T" + std::to_string(tr + 1) + " mutes T" + std::to_string(kit.muteGroups[tr] + 1) + ";";
+                }
+                if (!s.empty()) std::printf("kit %2d %-16s%s\n", kit.position, kit.name.c_str(), s.c_str());
+            }
+            return 0;
+        }
         if (std::strcmp(argv[2], "kitfx") == 0 && argc > 3) {   // md-render <os.syx> kitfx <dump.syx>: each kit's master effects
             std::FILE* f = std::fopen(argv[3], "rb");
             std::vector<uint8_t> bytes;

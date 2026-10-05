@@ -172,6 +172,7 @@ void MdProcessor::refreshParameters()
         e.level = val(tr.mix[13]);
         for (int k = 0; k < 5; ++k) e.lfoConfig[size_t(k)] = val(tr.lfo[k]);
         e.route = juce::jlimit(0, kNumRoutes - 1, int(std::lround(tr.route->load())));
+        e.muteGroup = m_baseKit.muteGroups[t] < kTracks ? m_baseKit.muteGroups[t] : -1;
         if (isMidMachine(e.machine)) {   // no voice; the parameters stay (the OS's LFOs move them: midStream)
             e.machine = 0; e.level = 0;
         } else if (isCtrMachine(e.machine)) {   // no voice; CTR-RE..DX keep SYNTHESIS (an LFO moves the master effect from it)
@@ -510,16 +511,26 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
         m_directMask.store(mask);
     }
 
+    // A trig of track t, and of the track in its TRIG GROUP with the same velocity (MainOS 0x20CE20 / 0x20ADF0: once,
+    // the group's own group doesn't follow). The mute group side is the engine's (Engine::groupTrig).
+    auto fire = [&](int t, int pos, int velocity) {
+        const auto one = [&](int u) {
+            const int id = machineIdOf(u);
+            if (isMidMachine(id)) { midTrig(u, pos); m_engine->groupTrig(u); }
+            else if (isCtrMachine(id)) m_engine->groupTrig(u);
+            else m_pending.push_back({u, pos * ratio, velocity});
+            m_activity[size_t(u)].store(1.0f);
+        };
+        one(t);
+        const int g = m_baseKit.trigGroups[t];
+        if (g < kTracks && g != t && m_tracks[size_t(g)].mute->load() < 0.5f) one(g);
+    };
     for (const auto meta : midi) {
         const auto m = meta.getMessage();
         if (m.isNoteOn()) {
             for (int t = 0; t < kTracks; ++t)
-                if (kTrackNotes[t] == m.getNoteNumber() && m_tracks[size_t(t)].mute->load() < 0.5f) {
-                    const int id = machineIdOf(t);
-                    if (isMidMachine(id)) { midTrig(t, meta.samplePosition); m_activity[size_t(t)].store(1.0f); }
-                    else if (isCtrMachine(id)) m_activity[size_t(t)].store(1.0f);
-                    else m_pending.push_back({t, meta.samplePosition * ratio, int(m.getVelocity())});
-                }
+                if (kTrackNotes[t] == m.getNoteNumber() && m_tracks[size_t(t)].mute->load() < 0.5f)
+                    fire(t, meta.samplePosition, int(m.getVelocity()));
         } else if (m.isAllNotesOff() || m.isAllSoundOff()) {   // the host stopping: the MID machines' notes end
             for (auto& notes : m_midNotes) {
                 for (const auto& nt : notes) midSend(meta.samplePosition, uint8_t(nt.status & 0xEF), nt.note, 0);
@@ -531,11 +542,7 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
     }
     midi.clear();
     for (int t = 0; t < kTracks; ++t)
-        if (m_audition[size_t(t)].exchange(false)) {
-            const int id = machineIdOf(t);
-            if (isMidMachine(id)) { midTrig(t, 0); m_activity[size_t(t)].store(1.0f); }
-            else if (!isCtrMachine(id)) m_pending.push_back({t, 0.0, 100});
-        }
+        if (m_audition[size_t(t)].exchange(false)) fire(t, 0, 100);
     controlMachines(n);
     for (auto& p : m_peak) p.store(p.load() * 0.8f);   // the meters' fall-off
 

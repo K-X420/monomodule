@@ -26,6 +26,7 @@ public:
         int route = 6;                        // 0-5 = A..F, 6 = MAIN
         int ctrMasterFx = -1;                 // a CTR-RE / GB / EQ / DX track: the master effect (0 reverb .. 3 dynamix)
                                               // its SYNTHESIS knobs are; an LFO on one moves that master parameter
+        int muteGroup = -1;                   // the kit's MUTE GROUP: the track a trig of this one silences (-1 = none)
     };
 
     explicit Engine(const Firmware& fw);   // throws when a DSP cannot boot
@@ -42,6 +43,11 @@ public:
     // A trig: the voice starts, its LFO restarts, and the volume law gets the trig's accent factor (VOLUME mode: the
     // velocity; ACCENT mode: 0x80, accented 0x80 + 2 x ACCENT)
     void trig(int t, int machine, int accent);   // machine: the track's machine now (the targets follow at the next pass)
+    // The mute group side of a trig (trig() does it; the MID / CTR tracks, which the engine doesn't play, call it
+    // themselves). As MainOS 0x20B3B0 / 0x20B210: a trig of a track sets its mute group track's flag, and while the flag
+    // is set that track's routing words (volume, pan, sends) go to the mixer as 0; the track's own next trig clears it.
+    void groupTrig(int t);
+    bool groupMuted(int t) const { return m_tracks[size_t(t)].groupMuted; }
     void setInput(const int32_t* lr64) { m_voices->setInput(lr64); }   // 32 stereo frames for the INP machines
     void render();
     const VoiceEngine::Block& voiceBlock() const { return m_block; }
@@ -65,6 +71,7 @@ private:
         Track target;
         int accent = -128, sentAccent = 0, sentMachine = -1, sentRoute = -1;
         bool trigPending = false;
+        bool groupMuted = false, sentGroupMuted = false;
         std::array<int, 8> synSent{};
         std::array<int, 14> mixSent{};
     };

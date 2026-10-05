@@ -17,6 +17,14 @@ void Engine::trig(int t, int machine, int accent)
     m_cpu->lfoTrig(t);
     m_tracks[size_t(t)].trigPending = true;   // the next conversion is the trig tick's (the whole packet)
     m_tracks[size_t(t)].accent = accent;
+    groupTrig(t);
+}
+
+void Engine::groupTrig(int t)
+{
+    m_tracks[size_t(t)].groupMuted = false;
+    const int m = m_tracks[size_t(t)].target.muteGroup;
+    if (m >= 0 && m < kTracks && m != t) m_tracks[size_t(m)].groupMuted = true;
 }
 
 void Engine::refresh()
@@ -75,12 +83,14 @@ void Engine::refresh()
         for (int k = 0; k < 13; ++k) mix[size_t(k)] = m_cpu->liveParam(t, 8 + k);   // AMD..SRR DIST, VOL PAN DEL REV
         mix[13] = m_cpu->liveLevel(t);
         const int route = st.target.route < 0 ? 0 : st.target.route > 6 ? 6 : st.target.route;
-        if (snap || mix != st.mixSent || route != st.sentRoute || st.accent != st.sentAccent) {
+        if (snap || mix != st.mixSent || route != st.sentRoute || st.accent != st.sentAccent || st.groupMuted != st.sentGroupMuted) {
             std::array<uint16_t, 9> fx{};
             for (int k = 0; k < 9; ++k) fx[size_t(k)] = uint16_t(mix[size_t(k)]);
             m_mixer->setTrackFx(t, fx);
-            m_mixer->setRouting(t, MixEngine::routingWords(uint32_t(mix[13]), uint32_t(mix[9]), uint32_t(mix[10]), uint32_t(mix[12]), uint32_t(mix[11]), route, st.accent));
-            st.mixSent = mix; st.sentRoute = route; st.sentAccent = st.accent;
+            auto words = MixEngine::routingWords(uint32_t(mix[13]), uint32_t(mix[9]), uint32_t(mix[10]), uint32_t(mix[12]), uint32_t(mix[11]), route, st.accent);
+            if (st.groupMuted) std::fill(words.begin() + 1, words.end(), 0u);   // muted by its mute group: the route stays
+            m_mixer->setRouting(t, words);
+            st.mixSent = mix; st.sentRoute = route; st.sentAccent = st.accent; st.sentGroupMuted = st.groupMuted;
         }
     }
     // master effects (the delay also follows the tempo)

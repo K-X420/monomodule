@@ -33,6 +33,55 @@ int main(int argc, char** argv)
     const int block = 480;
     proc.setPlayConfigDetails(0, 2, rate, block);
     proc.prepareToPlay(rate, block);
+    if (std::getenv("MD_GROUP_TEST")) {
+        // Trig and mute groups. T1-T3 are GND-SN sines with a long decay, each on its own output (PER TRACK).
+        // Mute group: T2 rings, T1 is trigged at 0.25 s with MUTE GROUP T2: T2 must go silent (vs the same run without it).
+        // Trig group: only T1 is trigged, with TRIG GROUP T3: T3 must sound (vs silent without it).
+        int fails = 0;
+        auto run = [&](int trigGroup, int muteGroup, bool trigT2, double& t2After, double& t3) {
+            MdProcessor p;
+            p.setFirmwarePath(juce::String(argv[1]), false);
+            p.enableAllBuses();
+            if (auto* q = p.apvts.getParameter(outputModeId())) q->setValueNotifyingHost(1.0f);
+            p.prepareToPlay(rate, block);
+            auto kit = p.captureMdKit();
+            for (int tr = 0; tr < 3; ++tr) {
+                kit.models[tr] = 1;   // GND-SN: pitch, a long decay, no pitch sweep
+                kit.params[tr][0] = uint8_t(40 + 12 * tr); kit.params[tr][1] = 127; kit.params[tr][2] = 0; kit.params[tr][3] = 0;
+                kit.levels[tr] = 100;
+            }
+            kit.trigGroups[0] = uint8_t(trigGroup); kit.muteGroups[0] = uint8_t(muteGroup);
+            p.loadMdKit("grouptest", kit, "GROUPS");
+            p.syncMachineSideEffects();
+            juce::AudioBuffer<float> buf(p.getTotalNumOutputChannels(), block);
+            t2After = t3 = 0;
+            for (int blk = 0; blk < 100; ++blk) {   // 1 s
+                juce::MidiBuffer midi;
+                if (blk == 0 && trigT2) midi.addEvent(juce::MidiMessage::noteOn(1, kTrackNotes[1], uint8_t(100)), 0);
+                if (blk == 25) midi.addEvent(juce::MidiMessage::noteOn(1, kTrackNotes[0], uint8_t(100)), 0);
+                buf.clear();
+                p.processBlock(buf, midi);
+                auto e = [&](int tr) {
+                    auto b2 = p.getBusBuffer(buf, false, 3 + tr);
+                    double s = 0;
+                    for (int c = 0; c < b2.getNumChannels(); ++c) for (int i = 0; i < block; ++i) s += double(b2.getSample(c, i)) * b2.getSample(c, i);
+                    return s;
+                };
+                if (blk >= 30) t2After += e(1);
+                t3 += e(2);
+            }
+        };
+        auto check = [&](bool ok, const char* what, double a2, double b2) { std::printf("  %s %s (%.4g vs %.4g)\n", ok ? "ok  " : "FAIL", what, a2, b2); fails += ok ? 0 : 1; };
+        double plainT2, plainT3, mutedT2, x, y, groupT3;
+        run(127, 127, true, plainT2, plainT3);
+        run(127, 1, true, mutedT2, x);
+        check(plainT2 > 1.0 && mutedT2 < plainT2 * 1e-4, "MUTE GROUP T2: T1's trig silences the ringing T2", mutedT2, plainT2);
+        check(plainT3 < 1e-6, "no trig group: T3 stays silent", plainT3, 0.0);
+        run(2, 127, false, y, groupT3);
+        check(groupT3 > 1.0, "TRIG GROUP T3: T1's trig plays T3", groupT3, plainT3);
+        std::printf(fails ? "GROUP TEST FAILED (%d)\n" : "GROUP TEST OK\n", fails);
+        return fails ? 1 : 0;
+    }
     bool kitLoaded = false;
     // MD_OUTS_TEST: every output bus live, PER TRACK outputs (MD_OUTS_OFF=n leaves track n's bus off: it stays on
     // the main); prints each bus's level. MD_OUTS_TEST=hw: the same buses in HARDWARE mode
