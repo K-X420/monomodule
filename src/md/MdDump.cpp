@@ -168,6 +168,52 @@ void Pattern::clearStepLocks(int track, int step)
     for (int q = 0; q < 24; ++q) clearLock(track, q, step);
 }
 
+namespace {
+void setBit(uint64_t& m, int s, bool on) { if (on) m |= 1ull << s; else m &= ~(1ull << s); }
+bool getBit(uint64_t m, int s) { return (m >> s) & 1; }
+}
+
+void Pattern::copySteps(const Pattern& src, int from, int to, int count, int track, int dstTrack)
+{
+    const bool all = track < 0;
+    for (int i = 0; i < count; ++i) {
+        const int s = from + i, d = to + i;
+        if (s < 0 || s >= 64 || d < 0 || d >= 64) continue;
+        if (all) {
+            setBit(accent, d, getBit(src.accent, s)); setBit(slide, d, getBit(src.slide, s)); setBit(swing, d, getBit(src.swing, s));
+        }
+        for (int t = all ? 0 : track; t < (all ? kTracks : track + 1); ++t) {
+            const int dt = all ? t : dstTrack;
+            if (dt < 0 || dt >= kTracks) continue;
+            setBit(trigs[dt], d, getBit(src.trigs[t], s));
+            setBit(accentPerTrack[dt], d, getBit(src.accentPerTrack[t], s));
+            setBit(slidePerTrack[dt], d, getBit(src.slidePerTrack[t], s));
+            setBit(swingPerTrack[dt], d, getBit(src.swingPerTrack[t], s));
+            for (int q = 0; q < 24; ++q) {
+                const int row = src.lockRow(t, q);
+                const int v = row >= 0 ? src.locks[row][s] : 0xFF;
+                if (v <= 127) setLock(dt, q, d, v); else clearLock(dt, q, d);
+            }
+        }
+    }
+}
+
+void Pattern::clearSteps(int from, int count, int track)
+{
+    const bool all = track < 0;
+    for (int i = 0; i < count; ++i) {
+        const int s = from + i;
+        if (s < 0 || s >= 64) continue;
+        if (all) { setBit(accent, s, false); setBit(slide, s, false); setBit(swing, s, false); }
+        for (int t = all ? 0 : track; t < (all ? kTracks : track + 1); ++t) {
+            if (t < 0 || t >= kTracks) continue;
+            setBit(trigs[t], s, false);
+            setBit(accentPerTrack[t], s, false); setBit(slidePerTrack[t], s, false); setBit(swingPerTrack[t], s, false);
+            clearStepLocks(t, s);
+        }
+    }
+}
+
 std::string patternSlotName(int position)
 {
     if (position < 0 || position > 127) return "?";

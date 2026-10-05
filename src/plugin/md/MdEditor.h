@@ -185,6 +185,9 @@ private:
     int editSlot() const;        // PTN: the pattern GRID and the PATTERN tab edit
     void holdStep(int step);     // -1 releases
     void stepMenu(int step);
+    void editMenu();   // copy / paste / clear: the page GRID shows, the selected track, the pattern; double
+    struct Clip { int kind = 0; bool all = false; int track = 0, page = 0; mnm::mddump::Pattern pat; };   // kind 1 page, 2 track, 3 pattern
+    Clip m_clip;
     void refreshGrid();
     void bindMasterFx(int fx);
     void showMenu();

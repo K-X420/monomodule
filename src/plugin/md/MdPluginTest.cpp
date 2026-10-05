@@ -104,6 +104,59 @@ int main(int argc, char** argv)
             run(1);
             check(!p.internalPlay(), "the host's transport takes over");
         }
+        {   // PLAY with no pattern at all (a fresh instance, no bank): the steps run all the same
+            MdProcessor q;
+            q.setFirmwarePath(juce::String(argv[1]), false);
+            Head h2; h2.playing = false;
+            q.setPlayHead(&h2);
+            q.prepareToPlay(rate, block);
+            if (auto* a = q.apvts.getParameter(seqId())) a->setValueNotifyingHost(1.0f);
+            q.setInternalPlay(true);
+            juce::AudioBuffer<float> b2(2, block);
+            std::vector<int> seen;
+            for (int i = 0; i < 100; ++i) { juce::MidiBuffer mm; b2.clear(); q.processBlock(b2, mm); if (seen.empty() || seen.back() != q.seqStep()) seen.push_back(q.seqStep()); }
+            check(q.seqPlaying() && seen.size() >= 6 && seen.front() == 0, "PLAY on an empty pattern (no bank): the step moves (" + juce::String(int(seen.size())) + " steps seen)");
+        }
+        {   // copy / clear / double on the pattern
+            mnm::mddump::Pattern a;
+            for (auto& row : a.locks) std::fill(std::begin(row), std::end(row), uint8_t(0xFF));
+            a.length = 16;
+            a.trigs[0] = (1u << 0) | (1u << 4); a.trigs[2] = 1u << 8;
+            a.setLock(0, 0, 4, 99);
+            a.accentPerTrack[0] = 1u << 4;
+            a.accent = 1u << 8;
+            mnm::mddump::Pattern b = a;
+            b.copySteps(a, 0, 16, 16, -1, 0);
+            const int row = b.lockRow(0, 0);
+            check(((b.trigs[0] >> 16) & 1) && ((b.trigs[0] >> 20) & 1) && ((b.trigs[2] >> 24) & 1) && row >= 0 && b.locks[row][20] == 99
+                  && ((b.accentPerTrack[0] >> 20) & 1) && ((b.accent >> 24) & 1) && b.locks[row][4] == 99,
+                  "copy page 1 -> 2 (all tracks): trigs, the lock, the marks");
+            mnm::mddump::Pattern c = b;
+            c.clearSteps(16, 16, 0);
+            check(!((c.trigs[0] >> 16) & 1) && !((c.trigs[0] >> 20) & 1) && ((c.trigs[2] >> 24) & 1) && c.locks[c.lockRow(0, 0)][20] == 0xFF && c.locks[c.lockRow(0, 0)][4] == 99,
+                  "clear page 2 of T1: its trigs and locks go, T3's and page 1's stay");
+            mnm::mddump::Pattern d = a;
+            d.copySteps(a, 0, 3, 1, 0, 5);
+            check(((d.trigs[5] >> 3) & 1) && d.lockRow(5, 0) < 0 && ((d.trigs[0] >> 0) & 1), "copy one track's step onto another track");
+            p.editPattern(0, [](mnm::mddump::Pattern& x) { const auto copy = x; x.copySteps(copy, 0, 16, 16, -1, 0); x.length = 32; x.scale = 1; });
+            const auto doubled = p.bankPattern(0);
+            check(doubled && doubled->length == 32 && ((doubled->trigs[0] >> 16) & 1) && ((doubled->trigs[0] >> 20) & 1) && ((doubled->trigs[0] >> 28) & 1), "double: 32 steps, the first 16 again");
+            // it plays: two passes' worth of steps
+            head.playing = true; head.ppq = 0;
+            p.setTrigLogging(true);
+            run(int(192 * spc / block) + 1);
+            std::vector<int> st3;
+            for (const auto& e : p.trigLog()) if (e.step >= 0 && e.track == 0) st3.push_back(e.step);
+            juce::String s3; for (int s : st3) s3 << s + 1 << " ";
+            check(st3.size() >= 6 && st3[0] == 0 && st3[1] == 4 && st3[2] == 12 && st3[3] == 16 && st3[4] == 20 && st3[5] == 28, "the doubled pattern plays steps 1 5 13 17 21 29: " + s3);
+            // the edits are kept: state round trip
+            juce::MemoryBlock state;
+            p.getStateInformation(state);
+            MdProcessor r;
+            r.setStateInformation(state.getData(), int(state.getSize()));
+            const auto back = r.bankPattern(0);
+            check(back && back->length == 32 && back->trigs[0] == doubled->trigs[0] && back->locks[back->lockRow(0, 0)][20] == 100, "the edited pattern comes back with the plugin state");
+        }
         if (argc > 3) {
             std::unique_ptr<juce::AudioProcessorEditor> ed(p.createEditor());
             if (auto* med = dynamic_cast<MdEditor*>(ed.get())) { med->showGrid(12); med->refresh(); }

@@ -42,7 +42,7 @@ private:
 // page GRID shows; a click shows that page) and the playing step (SONG: the row as well).
 class MdSeqBar : public juce::Component, public juce::SettableTooltipClient {
 public:
-    enum Part { None = -1, Play, Grid, TrkPrev, Trk, TrkNext, PtnPrev, Ptn, PtnNext, Pages, Step, kParts };
+    enum Part { None = -1, Play, Grid, TrkPrev, Trk, TrkNext, PtnPrev, Ptn, PtnNext, Pages, Edit, Step, kParts };
     static constexpr int kS = 2, kLcdH = 15;
     struct State {
         bool playing = false, hostPlaying = false, grid = false, empty = true;

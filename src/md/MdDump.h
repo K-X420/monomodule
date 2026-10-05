@@ -58,6 +58,11 @@ struct Pattern {
     bool setLock(int track, int param, int step, int value);
     void clearLock(int track, int param, int step);
     void clearStepLocks(int track, int step);
+    // Copy / clear across steps (pages, tracks): steps [from, from + count) of src's track `track` (-1: every track,
+    // each onto itself) onto [to, to + count) of dstTrack here: the trigs, the accent / slide / swing marks (the
+    // all-tracks marks too when every track is copied) and the locks. src must be another object than this one.
+    void copySteps(const Pattern& src, int from, int to, int count, int track, int dstTrack);
+    void clearSteps(int from, int count, int track);   // track -1: every track and the all-tracks marks
 };
 
 struct SongRow {

@@ -721,6 +721,7 @@ MdEditor::MdEditor(MdProcessor& p)
                 if (!m_gridOn) holdStep(-1);
                 if (m_outTab == 1) m_out.pull();
                 break;
+            case MdSeqBar::Edit: editMenu(); return;
             case MdSeqBar::TrkPrev: selectTrack((m_track + kTracks - 1) % kTracks); break;
             case MdSeqBar::TrkNext: selectTrack((m_track + 1) % kTracks); break;
             case MdSeqBar::PtnPrev: case MdSeqBar::PtnNext:
@@ -932,6 +933,66 @@ void MdEditor::stepMenu(int s)
             }
         });
         if (r == 1 && s == m_heldStep) holdStep(-1);
+        refreshGrid();
+    });
+}
+
+void MdEditor::editMenu()
+{
+    const int slot = editSlot(), t = m_track;
+    const auto p = m_proc.bankPattern(slot);
+    const int len = p ? juce::jlimit(1, 64, int(p->length)) : 16;
+    const int page = juce::jlimit(0, 3, m_gridPage);
+    const juce::String pg = "page " + juce::String(page + 1), tr = "T" + juce::String(t + 1), pn = kPatternNames[slot];
+    juce::String what;
+    if (m_clip.kind == 1) what = " (page " + juce::String(m_clip.page + 1) + (m_clip.all ? ", all tracks)" : ", T" + juce::String(m_clip.track + 1) + ")");
+    juce::PopupMenu m;
+    m.addSectionHeader(pn + "  -  " + pg.toUpperCase() + "  -  " + tr);
+    m.addItem(1, "Copy " + pg + " (all tracks)", p != nullptr);
+    m.addItem(2, "Copy " + pg + " of " + tr, p != nullptr);
+    m.addItem(3, "Paste onto " + pg + what, m_clip.kind == 1);
+    m.addItem(4, "Clear " + pg + " (all tracks)", p != nullptr);
+    m.addItem(5, "Clear " + pg + " of " + tr, p != nullptr);
+    m.addSeparator();
+    m.addItem(6, "Copy track " + tr, p != nullptr);
+    m.addItem(7, "Paste track onto " + tr + (m_clip.kind == 2 ? " (T" + juce::String(m_clip.track + 1) + ")" : juce::String()), m_clip.kind == 2);
+    m.addItem(8, "Clear track " + tr, p != nullptr);
+    m.addSeparator();
+    m.addItem(9, "Copy pattern " + pn, p != nullptr);
+    m.addItem(10, "Paste pattern onto " + pn, m_clip.kind == 3);
+    m.addItem(11, "Clear pattern " + pn + " (its steps; the settings stay)", p != nullptr);
+    m.addSeparator();
+    m.addItem(12, "Double: steps 1-" + juce::String(len) + " again after themselves (length " + juce::String(juce::jmin(64, 2 * len)) + ")", p != nullptr && len <= 32);
+    m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&m_seqBar), [this, slot, t, page, p, len](int r) {
+        if (r <= 0) return;
+        if (r == 1 || r == 2) { m_clip = {1, r == 1, t, page, *p}; return; }
+        if (r == 6) { m_clip = {2, false, t, 0, *p}; return; }
+        if (r == 9) { m_clip = {3, true, 0, 0, *p}; return; }
+        const auto clip = m_clip;
+        m_proc.editPattern(slot, [&](mnm::mddump::Pattern& x) {
+            switch (r) {
+                case 3:   // the copied page onto this one (the pattern grows to reach it)
+                    x.copySteps(clip.pat, clip.page * 16, page * 16, 16, clip.all ? -1 : clip.track, t);
+                    if (x.length < (page + 1) * 16) { x.length = uint8_t((page + 1) * 16); x.scale = uint8_t(page); }
+                    break;
+                case 4: x.clearSteps(page * 16, 16, -1); break;
+                case 5: x.clearSteps(page * 16, 16, t); break;
+                case 7: x.copySteps(clip.pat, 0, 0, 64, clip.track, t); break;
+                case 8: x.clearSteps(0, 64, t); break;
+                case 10: { const int pos = x.position; x = clip.pat; x.position = pos; break; }
+                case 11: x.clearSteps(0, 64, -1); break;
+                case 12: {
+                    const auto copy = x;
+                    x.copySteps(copy, 0, len, len, -1, 0);
+                    x.length = uint8_t(juce::jmin(64, 2 * len));
+                    x.scale = uint8_t((x.length - 1) / 16);
+                    break;
+                }
+                default: break;
+            }
+        });
+        if (r == 3) m_gridPage = page;
+        holdStep(-1);
         refreshGrid();
     });
 }

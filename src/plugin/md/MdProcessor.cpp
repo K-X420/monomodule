@@ -430,15 +430,25 @@ void MdProcessor::seqStart(Segment& seg, int slot, int start, int end, int64_t s
     seg.origin = origin;
     seg.steps = steps;
     seg.mutes = mutes;
-    seg.valid = bank && slot >= 0 && slot < 128 && bank->hasPattern[size_t(slot)];
+    // an empty slot (or no bank) plays as an empty pattern, as on the unit: 16 steps at 1x, nothing on them
+    static const mnm::mddump::Pattern empty = [] {
+        mnm::mddump::Pattern p;
+        p.length = 16;
+        p.accentEditAll = p.slideEditAll = p.swingEditAll = 1;
+        for (auto& row : p.locks) std::fill(std::begin(row), std::end(row), uint8_t(0xFF));
+        return p;
+    }();
+    seg.valid = slot >= 0 && slot < 128;
     m_seqPatternUi.store(slot);
     if (!seg.valid) { for (auto& u : m_seqTrigsUi) u.store(0); return; }
-    const auto& pat = *bank->patterns[size_t(slot)];
+    const bool real = bank && bank->hasPattern[size_t(slot)];
+    const auto& pat = real ? *bank->patterns[size_t(slot)] : empty;
     seg.player.set(pat);
     seg.player.setRange(start, end);
     seg.accentOn = 0x80 + 2 * int(pat.accentAmount);
     m_seqLenUi.store(seg.player.length());
     for (int t = 0; t < kTracks; ++t) m_seqTrigsUi[size_t(t)].store(pat.trigs[t]);
+    if (!real) return;   // no kit to bring in
     const int k = pat.kit;
     if (k < 0 || k >= 64 || !bank->hasKit[size_t(k)] || k == m_seqKitSlot.load()) return;
     m_seqKitSlot.store(k);
@@ -550,11 +560,11 @@ void MdProcessor::scheduleSequencer(int n, double ratio)
     if (int(song) != m_modeSeen || songSlot != m_songSeen) { m_modeSeen = int(song); m_songSeen = songSlot; relocate = true; }
     const int want = juce::jlimit(0, 127, int(std::lround(m_patternParam->load())));
     if (want != m_patternSeen) { m_patternSeen = want; m_seqQueued = want == m_seg.slot ? -1 : want; }
-    const bool on = m_seqOn->load() >= 0.5f && bank != nullptr;
+    const bool on = m_seqOn->load() >= 0.5f;   // with no bank, the pattern is empty: the steps still run
     if (!on || !m_hostPlaying) {   // stopped: PATTERN shows the next pattern at once; SONG starts over
         if (m_seqRunning) seqStop();
         m_prevSeg.valid = false;
-        if (bank && !song && (m_seqQueued >= 0 || m_seg.slot < 0)) seqNext(0.0, bank.get(), bank, -1.0, false);
+        if (!song && (m_seqQueued >= 0 || m_seg.slot < 0)) seqNext(0.0, bank.get(), bank, -1.0, false);
         return;
     }
     const double c0 = m_hostPpq * 24.0;

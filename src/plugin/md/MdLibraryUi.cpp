@@ -92,6 +92,8 @@ void MdSeqBar::resized()
     x += 1 + gap;
     take(Pages, 22 + 4 * 11 + 2);
     x += 1 + gap;
+    take(Edit, 30);
+    x += 1 + gap;
     take(Step, juce::jmax(40, getWidth() / kS - x));
 }
 
@@ -146,6 +148,10 @@ void MdSeqBar::paint(juce::Graphics& g)
             if (m_s.grid && i == m_s.page) cv.fillRect(x, y + 9, 7, 1, true);
         }
     }
+    {   // EDIT: the copy / paste / clear menu
+        const auto r = box(Edit, false);
+        cv.text(spec::kFontBold8, "EDIT", r.getX() + 4, r.getY() + 4, true);
+    }
     {
         juce::String s = m_s.step >= 0 ? juce::String(m_s.step + 1).paddedLeft('0', 2) + "/" + juce::String(m_s.length) : "--/" + juce::String(m_s.length);
         if (m_s.row >= 0) s << "  ROW " << (m_s.row + 1);
@@ -164,6 +170,7 @@ void MdSeqBar::mouseDown(const juce::MouseEvent& e)
 {
     const auto lcd = e.getPosition() / kS;
     const auto p = partAt(lcd);
+    if (p == Pages && e.mods.isPopupMenu()) { if (onPart) onPart(Edit); return; }
     if (p == Pages) {
         for (int i = 0; i < 4; ++i)
             if (lcd.x >= dotX(i) - 2 && lcd.x <= dotX(i) + 8) { if (onPage) onPage(i); return; }
@@ -182,7 +189,8 @@ void MdSeqBar::mouseMove(const juce::MouseEvent& e)
                                        : "GRID: click to place steps with the keys (the selected track's steps; TRK < > picks the track)"); break;
         case TrkPrev: case TrkNext: case Trk: setTooltip("The track whose steps GRID shows and edits"); break;
         case PtnPrev: case PtnNext: case Ptn: setTooltip("The pattern (PTN): played by SEQ, edited by GRID (\"-\" = an empty slot)"); break;
-        case Pages: setTooltip("Pages of 16 steps: solid = playing, underlined = shown by GRID. Click one to show it"); break;
+        case Pages: setTooltip("Pages of 16 steps: solid = playing, underlined = shown by GRID. Click one to show it; right-click: EDIT"); break;
+        case Edit: setTooltip("Copy / paste / clear the shown page, the track or the pattern; double the pattern"); break;
         default: setTooltip({}); break;
     }
 }
