@@ -74,11 +74,19 @@ for r, line in enumerate(w):
         for c, ch in enumerate(line):
             if ch == "#": cv[r + 1][c] = "#"
 L["E12"] = rows(cv)
-# P-I: heavy rounded letters with a dot between
+# P-I: the letters with a dash, and the vibration of a struck object rippling off them: three arcs growing outward
+import math
 p, i = F["P"], F["I"]
-cv = canvas(8 + 6 + 6, 12)
-paste(cv, p, 0, 1); paste(cv, ["##", "##"], 10, 5); paste(cv, i, 14, 1)
-for (x, y) in [(0, 1), (7, 1), (7, 6), (14, 1), (19, 1), (14, 10), (19, 10)]: cv[y][x] = "."
+cv = canvas(8 + 2 + 4 + 2 + 6 + 2 + 9, 12)
+paste(cv, p, 0, 1); paste(cv, ["####", "####"], 10, 5); paste(cv, i, 16, 1)
+for (x, y) in [(7, 1), (7, 6)]: cv[y][x] = "."          # the P's bowl rounded
+cx, cy = 22.0, 5.5                                       # the arcs' centre: at the I's right edge
+for r in (2.6, 4.9, 7.2):
+    for y in range(12):
+        dy = y - cy
+        if abs(dy) > r * 0.86: continue                  # an arc, not a full circle
+        x = int(round(cx + math.sqrt(r * r - dy * dy)))
+        if 23 < x < len(cv[0]): cv[y][x] = "#"
 L["P-I"] = rows(cv)
 # INP: an arrow running into the letters
 w = word("INP")
