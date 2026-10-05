@@ -4,8 +4,9 @@
 //            the mix and the 16 voices come out of the same render
 //   kit      its best pattern (the caller picks it), else a demo pattern: each track in turn, then all together
 //   sound    one trig of the sound alone (track 1 of an otherwise empty kit)
-// The sequencer plays what the pattern holds: trigs, accents (the pattern's accent amount), swing, parameter locks and
-// double tempo, at the preview tempo (patterns carry none; it is global on the unit). MID and CTR tracks make no sound;
+// The sequencer is the hardware's (md/MdSequencer, as the plugin's pattern playback): trigs, accents (the pattern's
+// accent amount), swing, the tempo multiplier, parameter locks (a jump at the trig, released at the track's next one)
+// and slides, at the preview tempo (patterns carry none; it is global on the unit). MID and CTR tracks make no sound;
 // a CTR track's locks act as on the unit, into the kit (they last until the next one): CTR-RE / GB / EQ / DX set
 // their master effect's parameter, CTR-AL moves that parameter on every audio track by the change, CTR-8P sets the
 // parameter its P knob is assigned to; an LFO on a CTR-RE..DX knob moves the master effect (MdEngine).
@@ -18,6 +19,7 @@
 #include "MdDump.h"
 #include "MdEngine.h"
 #include "MdMachines.h"
+#include "MdSequencer.h"
 
 namespace mnm::mdpreview {
 
@@ -36,6 +38,10 @@ struct Event {
     int track = 0;
     int accent = -128;                     // the trig's accent factor (-128 = none)
     std::vector<std::pair<int, int>> locks;   // (param 0-23, value) for this trig
+    double clock = 0;                      // a pattern trig: its clock (24 per quarter note), for the slides
+    uint32_t slideMask = 0;                // the parameters that slide from it (md::SeqTrig)
+    std::array<int16_t, 24> slideTo{};
+    std::array<int32_t, 24> slideClocks{};
 };
 
 struct Spec {
@@ -44,6 +50,7 @@ struct Spec {
     uint32_t frames = 0, loopFrames = 0;
     int loops = 1;
     bool stems = true;                    // the 16 voices are of interest (patterns and kits)
+    double framesPerClock = 0;            // a pattern's: the slides step once per clock (0 = none)
 };
 
 Spec patternPreview(const mddump::Kit& kit, const mddump::Pattern& pat, const Options& opt);

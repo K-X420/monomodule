@@ -65,6 +65,10 @@ MdProcessor::MdProcessor()
     m_bpmSync = apvts.getRawParameterValue(bpmSyncId());
     m_bpm = apvts.getRawParameterValue(bpmId());
     m_accent = apvts.getRawParameterValue(accentId());
+    m_seqOn = apvts.getRawParameterValue(seqId());
+    m_patternParam = apvts.getRawParameterValue(patternId());
+    for (auto& a : m_lockVal) a.fill(-1);
+    for (auto& a : m_ctlWrite) a.fill(-1);
     m_firmwarePath = loadOsPath();
     loadEngine();
 }
@@ -131,7 +135,10 @@ void MdProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
     m_inLen = 0;
     for (auto& i : m_inInterp) i.reset();
     m_pending.clear();
-    m_pending.reserve(256);
+    m_pending.reserve(1024);
+    m_seqTrigs.clear();
+    m_seqTrigs.reserve(2048);
+    m_seqRunning = false;
     for (auto& v : m_midNotes) { v.clear(); v.reserve(8); }
     m_midLastPb.fill(-1); m_midLastMw.fill(-1); m_midLastPc.fill(-1);
     m_midiOut.ensureSize(4096);
@@ -160,19 +167,27 @@ bool MdProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
 void MdProcessor::refreshParameters()
 {
     auto val = [](std::atomic<float>* p) { return uint8_t(juce::jlimit(0, 127, int(std::lround(p->load())))); };
+    // CTR writes that have reached their parameter (or never will) stop standing in for it
+    for (int target = 0; target < kTracks + 4; ++target)
+        for (int p = 0; p < 24; ++p) {
+            auto& w = m_ctlWrite[size_t(target)][size_t(p)];
+            if (w < 0) continue;
+            const int now = target < kTracks ? trackParam(target, p) : p < 8 ? int(val(m_masterFx[size_t(target - kTracks)][size_t(p)])) : w;
+            if (now == w || m_clock > m_ctlWriteUntil[size_t(target)]) w = -1;
+        }
+    const auto* ok = m_kitOverride.load();
+    const auto& groups = ok ? *ok : m_baseKit;
     for (int t = 0; t < kTracks; ++t) {
         auto& tr = m_tracks[size_t(t)];
         mnm::md::Engine::Track e;
-        e.machine = machineIdOf(t);
+        e.machine = ok ? overrideMachine(*ok, t) : machineIdOf(t);
         auto& p = e.params;
-        for (int k = 0; k < 8; ++k) p[size_t(k)] = val(tr.knobs[k]);
-        for (int k = 0; k < 8; ++k) p[size_t(8 + k)] = val(tr.mix[k]);
-        p[16] = val(tr.mix[8]); p[17] = val(tr.mix[9]); p[18] = val(tr.mix[10]); p[19] = val(tr.mix[11]); p[20] = val(tr.mix[12]);
-        p[21] = val(tr.lfo[5]); p[22] = val(tr.lfo[6]); p[23] = val(tr.lfo[7]);
-        e.level = val(tr.mix[13]);
-        for (int k = 0; k < 5; ++k) e.lfoConfig[size_t(k)] = val(tr.lfo[k]);
+        for (int k = 0; k < 24; ++k) p[size_t(k)] = uint8_t(seqParam(t, k));
+        e.level = ok ? uint8_t(juce::jlimit(0, 127, int(ok->levels[t]))) : val(tr.mix[13]);
+        static const int lfoMax[5] = {15, 23, 7, 7, 2};
+        for (int k = 0; k < 5; ++k) e.lfoConfig[size_t(k)] = ok ? uint8_t(juce::jlimit(0, lfoMax[k], int(ok->lfos[t][k]))) : val(tr.lfo[k]);
         e.route = juce::jlimit(0, kNumRoutes - 1, int(std::lround(tr.route->load())));
-        e.muteGroup = m_baseKit.muteGroups[t] < kTracks ? m_baseKit.muteGroups[t] : -1;
+        e.muteGroup = groups.muteGroups[t] < kTracks ? groups.muteGroups[t] : -1;
         if (isMidMachine(e.machine)) {   // no voice; the parameters stay (the OS's LFOs move them: midStream)
             e.machine = 0; e.level = 0;
         } else if (isCtrMachine(e.machine)) {   // no voice; CTR-RE..DX keep SYNTHESIS (an LFO moves the master effect from it)
@@ -187,8 +202,12 @@ void MdProcessor::refreshParameters()
         m_engine->setTrack(t, e);
     }
     std::array<std::array<uint8_t, 8>, 4> master{};
+    const uint8_t* kitFx[4] = {ok ? ok->reverb : nullptr, ok ? ok->delay : nullptr, ok ? ok->eq : nullptr, ok ? ok->dynamics : nullptr};
     for (int fx = 0; fx < 4; ++fx)
-        for (int k = 0; k < 8; ++k) master[size_t(fx)][size_t(k)] = val(m_masterFx[size_t(fx)][size_t(k)]);
+        for (int k = 0; k < 8; ++k) {
+            const int w = m_ctlWrite[size_t(kTracks + fx)][size_t(k)];
+            master[size_t(fx)][size_t(k)] = ok ? uint8_t(kitFx[fx][k] & 0x7F) : w >= 0 ? uint8_t(w) : val(m_masterFx[size_t(fx)][size_t(k)]);
+        }
     m_engine->setMasterFx(master);
     if (m_snap.exchange(false)) { m_engine->snap(); m_ctlQuietUntil = m_clock + int64_t(0.2 * m_hostRate); }
     {   // switching sync off hands the current host tempo over to BPM, so nothing jumps
@@ -274,6 +293,193 @@ void MdProcessor::runPass()
     m_fifoLen += kBlock;
 }
 
+// ---------------------------------------------------------------------------------------------- pattern playback
+
+int MdProcessor::overrideMachine(const mnm::mddump::Kit& kit, int t)
+{
+    const int id = kit.model(t);
+    return kMachines[machineIndexOf(id)].id == id ? id : 0;
+}
+
+int MdProcessor::kitParam(int t, int p) const
+{
+    if (const auto* k = m_kitOverride.load()) return juce::jlimit(0, 127, int(k->params[t][p]));
+    const int w = m_ctlWrite[size_t(t)][size_t(p)];
+    return w >= 0 ? w : trackParam(t, p);
+}
+
+bool MdProcessor::bankHasPattern(int slot) const
+{
+    const juce::SpinLock::ScopedLockType l(m_bankLock);
+    return m_bank && slot >= 0 && slot < 128 && m_bank->hasPattern[size_t(slot)];
+}
+
+void MdProcessor::setPatternBank(const juce::String& projectId, const juce::String& name, const mnm::mddump::Dump& dump, int kitSlot)
+{
+    m_seqKitSlot.store(kitSlot);
+    auto bank = std::make_shared<SeqBank>();
+    bank->patterns.resize(128);
+    bank->kits.resize(64);
+    for (const auto& p : dump.patterns)
+        if (p.position >= 0 && p.position < 128) { bank->patterns[size_t(p.position)] = p; bank->hasPattern[size_t(p.position)] = true; }
+    for (const auto& k : dump.kits)
+        if (k.position >= 0 && k.position < 64) { bank->kits[size_t(k.position)] = k; bank->hasKit[size_t(k.position)] = true; }
+    {
+        const juce::SpinLock::ScopedLockType l(m_bankLock);
+        m_bankOld = std::move(m_bank);   // the audio thread may still hold it this block
+        m_bank = std::move(bank);
+    }
+    m_bankProjectId = projectId;
+    m_bankName = name;
+    m_bankFresh.store(true);
+}
+
+// A trig's locks (MainOS 0x23B342..0x23B7D8, applied at 0x20B0D8): each parameter locked on the step jumps to the lock;
+// one its last trig locked and this one does not jumps back to the kit value; every glide of the track ends, and the
+// step's slides start. A MIDI / UI trig (s = null) releases the locks as a trig without any. MID and CTR tracks have
+// no voice to jump: their values move (midStream / controlMachines read seqParam).
+void MdProcessor::trigLocks(int t, const mnm::md::SeqTrig* s)
+{
+    const auto* ok = m_kitOverride.load();
+    const int id = ok ? overrideMachine(*ok, t) : machineIdOf(t);
+    const bool voice = !isMidMachine(id) && !isCtrMachine(id);
+    auto& locks = m_lockVal[size_t(t)];
+    for (int q = 0; q < 24; ++q) {
+        m_glide[size_t(t)][size_t(q)].active = false;
+        const int v = s ? s->locks[size_t(q)] : -1;
+        if (v >= 0) {
+            locks[size_t(q)] = int16_t(v);
+            if (voice) m_engine->jumpParam(t, q, uint8_t(v));
+        } else if (locks[size_t(q)] >= 0) {
+            locks[size_t(q)] = -1;
+            if (voice) m_engine->jumpParam(t, q, uint8_t(kitParam(t, q)));
+        }
+    }
+    if (s && s->slideMask)
+        for (int q = 0; q < 24; ++q)
+            if ((s->slideMask >> q) & 1) {
+                const int to = s->slideTo[size_t(q)] >= 0 ? s->slideTo[size_t(q)] : kitParam(t, q);
+                m_glide[size_t(t)][size_t(q)].start(s->locks[size_t(q)], to, s->slideClocks[size_t(q)], s->clock);
+            }
+}
+
+void MdProcessor::seqStop()
+{
+    for (auto& tr : m_lockVal) tr.fill(-1);   // the knobs slew back to the kit
+    for (auto& tr : m_glide) for (auto& g : tr) g.active = false;
+    m_seqRunning = false;
+    m_seqStepUi.store(-1);
+}
+
+// The pattern of `slot` plays from now on (the caller sets the origin). A different kit comes in at the pattern
+// change's time: atEnginePos >= 0 = a switch event in the pending list, else at once.
+void MdProcessor::seqSwitch(int slot, const SeqBank* bank, const std::shared_ptr<const SeqBank>& hold, double atEnginePos)
+{
+    m_playerSlot = slot;
+    m_seqPatternUi.store(slot);
+    m_playerValid = bank && slot >= 0 && slot < 128 && bank->hasPattern[size_t(slot)];
+    if (!m_playerValid) return;
+    const auto& pat = bank->patterns[size_t(slot)];
+    m_player.set(pat);
+    m_seqLenUi.store(m_player.length());
+    const int k = pat.kit;
+    if (k < 0 || k >= 64 || !bank->hasKit[size_t(k)] || k == m_seqKitSlot.load()) return;
+    m_seqKitSlot.store(k);
+    m_overrideBank = hold;
+    m_kitSwitch = &bank->kits[size_t(k)];
+    if (atEnginePos >= 0) m_pending.push_back({-2, atEnginePos, 0});
+    else applyKitSwitch();
+}
+
+void MdProcessor::applyKitSwitch()
+{
+    const auto* k = m_kitSwitch;
+    if (!k) return;
+    m_kitSwitch = nullptr;
+    m_kitOverride.store(k);
+    for (int t = 0; t < kTracks; ++t) m_engine->setLfoState(t, k->lfos[t]);
+    for (auto& tr : m_lockVal) tr.fill(-1);
+    for (auto& tr : m_glide) for (auto& g : tr) g.active = false;
+    m_snap = true;   // a kit load: every knob at its value
+    m_seqKitRequest.store(m_seqKitSlot.load());
+    triggerAsyncUpdate();
+}
+
+void MdProcessor::seqGenerate(double from, double to, double ratio)
+{
+    if (!m_playerValid || to <= from) return;
+    const size_t first = m_seqTrigs.size();
+    m_player.trigs(from - m_seqOrigin, to - m_seqOrigin, m_seqTrigs);
+    const int accentOn = 0x80 + 2 * int(m_player.pattern().accentAmount);
+    for (size_t i = first; i < m_seqTrigs.size(); ++i) {
+        auto& s = m_seqTrigs[i];
+        s.clock += m_seqOrigin;
+        if (m_tracks[size_t(s.track)].mute->load() >= 0.5f) continue;   // a muted track's trigs don't play
+        const double host = (s.clock - m_seqClock0) / m_seqCps;
+        m_pending.push_back({s.track, juce::jmax(0.0, host * ratio), s.accent ? accentOn : -128, int(i)});
+    }
+}
+
+// Once per host block, before the MIDI: the pattern's trigs in this block, timed from the host's position (clock =
+// quarter notes x 24). Playback follows the transport; a jump in the position (a loop, a locate) re-places the
+// pattern as if it had played from the start of the song. A new pattern starts when the playing one ends.
+void MdProcessor::scheduleSequencer(int n, double ratio)
+{
+    std::shared_ptr<const SeqBank> bank;
+    {
+        const juce::SpinLock::ScopedLockType l(m_bankLock);
+        bank = m_bank;
+    }
+    m_seqTrigs.clear();
+    const int want = juce::jlimit(0, 127, int(std::lround(m_patternParam->load())));
+    if (m_bankFresh.exchange(false)) { m_patternSeen = -1; m_playerSlot = -1; }
+    if (want != m_patternSeen) { m_patternSeen = want; m_seqQueued = want == m_playerSlot ? -1 : want; }
+    const bool on = m_seqOn->load() >= 0.5f && bank != nullptr;
+    if (!on || !m_hostPlaying) {   // stopped: a new pattern is there at once
+        if (m_seqRunning) seqStop();
+        if (bank && m_seqQueued >= 0) { seqSwitch(m_seqQueued, bank.get(), bank, -1.0); m_seqQueued = -1; }
+        return;
+    }
+    const double c0 = m_hostPpq * 24.0;
+    const double cps = juce::jmax(1.0, m_hostBpm.load()) * 24.0 / 60.0 / m_hostRate;
+    if (!m_seqRunning || std::abs(c0 - m_seqExpect) > 0.25) {   // start, or the host jumped
+        if (m_seqRunning) seqStop();
+        m_seqRunning = true;
+        m_seqOrigin = 0;
+        if (m_seqQueued >= 0 || m_playerSlot < 0) { seqSwitch(m_seqQueued >= 0 ? m_seqQueued : want, bank.get(), bank, -1.0); m_seqQueued = -1; }
+    }
+    m_seqClock0 = c0;
+    m_seqCps = cps;
+    const double c1 = c0 + n * cps;
+    m_seqExpect = c1;
+    if (m_seqQueued >= 0 && m_playerValid) {
+        const double len = m_player.lengthClocks();
+        const double boundary = m_seqOrigin + (std::floor((c0 - m_seqOrigin) / len) + 1.0) * len;
+        if (boundary < c1) {
+            seqGenerate(c0, boundary, ratio);
+            const double at = juce::jmax(0.0, (boundary - c0) / cps * ratio);
+            seqSwitch(m_seqQueued, bank.get(), bank, at);
+            m_seqQueued = -1;
+            m_seqOrigin = boundary;
+            seqGenerate(boundary, c1, ratio);
+        } else {
+            seqGenerate(c0, c1, ratio);
+        }
+    } else {
+        if (m_seqQueued >= 0) {   // nothing playing: the new one at once, in place
+            seqSwitch(m_seqQueued, bank.get(), bank, 0.0);
+            m_seqQueued = -1;
+        }
+        seqGenerate(c0, c1, ratio);
+    }
+    if (m_playerValid && c1 >= m_seqOrigin) {
+        const auto k = int64_t(std::floor((c1 - m_seqOrigin) / m_player.clocksPerStep()));
+        m_seqStepUi.store(int(k % m_player.length()));
+    } else {
+        m_seqStepUi.store(-1);
+    }
+}
+
 // ---------------------------------------------------------------------------------------------- CTR and MID machines
 
 int MdProcessor::trackParam(int t, int p) const
@@ -289,6 +495,8 @@ void MdProcessor::queueSet(int target, int p, int value, bool mirror)
     if (scope.blockSize1 > 0) m_ctlBuf[size_t(scope.startIndex1)] = {int8_t(target), int8_t(p), int8_t(value)};
     else if (scope.blockSize2 > 0) m_ctlBuf[size_t(scope.startIndex2)] = {int8_t(target), int8_t(p), int8_t(value)};
     else return;
+    m_ctlWrite[size_t(target)][size_t(p)] = int16_t(value);   // in effect from the next pass (the parameter follows)
+    m_ctlWriteUntil[size_t(target)] = m_clock + int64_t(m_hostRate);
     if (mirror) {   // the echo is not a turn (a CTR-8P write to a CTR or MID track is: it acts on arrival)
         m_ctlPending[size_t(target)][size_t(p)] = int16_t(value);
         m_ctlPendingUntil[size_t(target)] = m_clock + int64_t(m_hostRate);   // a write that never arrives stops blocking after 1 s
@@ -377,7 +585,7 @@ void MdProcessor::controlMachines(int n)
     for (int t = 0; t < kTracks; ++t) ids[size_t(t)] = machineIdOf(t);
     auto rebase = [&](int target) {
         for (int p = 0; p < 24; ++p) {
-            m_ctlSeen[size_t(target)][size_t(p)] = int16_t(target < kTracks ? trackParam(target, p)
+            m_ctlSeen[size_t(target)][size_t(p)] = int16_t(target < kTracks ? seqParam(target, p)
                                                            : p < 8 ? juce::jlimit(0, 127, int(std::lround(m_masterFx[size_t(target - kTracks)][size_t(p)]->load()))) : 0);
             m_ctlPending[size_t(target)][size_t(p)] = -1;
         }
@@ -405,7 +613,7 @@ void MdProcessor::controlMachines(int n)
         }
         if (!isMidMachine(id) && !isCtrMachine(id)) continue;
         for (int p = 0; p < 24; ++p) {
-            const int now = trackParam(t, p);
+            const int now = seqParam(t, p);   // a pattern lock acts as a turn of the knob
             if (!moved(t, p, now)) continue;
             const int before = m_ctlSeen[size_t(t)][size_t(p)];
             m_ctlSeen[size_t(t)][size_t(p)] = int16_t(now);
@@ -422,7 +630,7 @@ void MdProcessor::controlMachines(int n)
                     const int uid = ids[size_t(u)];
                     if (u == t || isMidMachine(uid) || isCtrMachine(uid)) continue;
                     if (p < 8 && (uid == 160 || uid == 161 || uid == 165 || uid == 166)) continue;   // RAM-R1..R4
-                    const int cur = m_ctlPending[size_t(u)][size_t(p)] >= 0 ? m_ctlPending[size_t(u)][size_t(p)] : trackParam(u, p);
+                    const int cur = m_ctlPending[size_t(u)][size_t(p)] >= 0 ? m_ctlPending[size_t(u)][size_t(p)] : kitParam(u, p);
                     queueSet(u, p, juce::jlimit(0, 127, cur + d));
                 }
             } else if (id == kCtr8p && p < 8) {
@@ -497,9 +705,13 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
         }
     }
     buffer.clear();
+    m_hostPlaying = false;
     if (auto* ph = getPlayHead())
-        if (const auto pos = ph->getPosition())
+        if (const auto pos = ph->getPosition()) {
             if (const auto b = pos->getBpm(); b && *b > 0.0) m_hostBpm.store(*b);
+            m_hostPlaying = pos->getIsPlaying();
+            if (const auto q = pos->getPpqPosition()) m_hostPpq = *q; else m_hostPlaying = false;
+        }
     const juce::ScopedTryLock sl(m_engineLock);
     if (!sl.isLocked() || !m_engineReady) { midi.clear(); mixPreview(buffer); return; }
     const double ratio = kEngineRate / m_hostRate;   // engine frames per host frame
@@ -511,26 +723,19 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
         m_directMask.store(mask);
     }
 
-    // A trig of track t, and of the track in its TRIG GROUP with the same velocity (MainOS 0x20CE20 / 0x20ADF0: once,
-    // the group's own group doesn't follow). The mute group side is the engine's (Engine::groupTrig).
-    auto fire = [&](int t, int pos, int velocity) {
-        const auto one = [&](int u) {
-            const int id = machineIdOf(u);
-            if (isMidMachine(id)) { midTrig(u, pos); m_engine->groupTrig(u); }
-            else if (isCtrMachine(id)) m_engine->groupTrig(u);
-            else m_pending.push_back({u, pos * ratio, velocity});
-            m_activity[size_t(u)].store(1.0f);
-        };
-        one(t);
-        const int g = m_baseKit.trigGroups[t];
-        if (g < kTracks && g != t && m_tracks[size_t(g)].mute->load() < 0.5f) one(g);
-    };
+    scheduleSequencer(n, ratio);   // the pattern's trigs of this block
     for (const auto meta : midi) {
         const auto m = meta.getMessage();
-        if (m.isNoteOn()) {
+        if (m.isProgramChange()) {   // as on the unit: the next pattern
+            const int pc = m.getProgramChangeNumber();
+            m_seqQueued = pc == m_playerSlot ? -1 : pc;
+            m_patternSeen = pc;
+            m_programChange.store(pc);
+            triggerAsyncUpdate();
+        } else if (m.isNoteOn()) {
             for (int t = 0; t < kTracks; ++t)
                 if (kTrackNotes[t] == m.getNoteNumber() && m_tracks[size_t(t)].mute->load() < 0.5f)
-                    fire(t, meta.samplePosition, int(m.getVelocity()));
+                    m_pending.push_back({t, meta.samplePosition * ratio, int(m.getVelocity())});
         } else if (m.isAllNotesOff() || m.isAllSoundOff()) {   // the host stopping: the MID machines' notes end
             for (auto& notes : m_midNotes) {
                 for (const auto& nt : notes) midSend(meta.samplePosition, uint8_t(nt.status & 0xEF), nt.note, 0);
@@ -542,7 +747,7 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
     }
     midi.clear();
     for (int t = 0; t < kTracks; ++t)
-        if (m_audition[size_t(t)].exchange(false)) fire(t, 0, 100);
+        if (m_audition[size_t(t)].exchange(false)) m_pending.push_back({t, 0.0, 100});
     controlMachines(n);
     for (auto& p : m_peak) p.store(p.load() * 0.8f);   // the meters' fall-off
 
@@ -550,20 +755,58 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
     const int needed = int(std::ceil(n * ratio)) + 4;
     if (int(m_fifo[0].size()) < needed + kBlock)
         for (auto& f : m_fifo) f.resize(size_t(needed + kBlock));
+    // A trig as the OS's trig routine does it (MainOS 0x20CC48 / the sequencer): the track's locks (a pattern trig's) or
+    // their release, the voice (MID: its notes; CTR: nothing), then the track in its TRIG GROUP with the same accent
+    // (MainOS 0x20CE20 / 0x20ADF0: once, the group's own group does not follow; it releases its locks). The mute
+    // group side is the engine's (Engine::groupTrig).
+    bool ctrTrig = false;
+    auto fireOne = [&](int t, double enginePos, int accent, const mnm::md::SeqTrig* s) {
+        const auto* ok = m_kitOverride.load();
+        const int id = ok ? overrideMachine(*ok, t) : machineIdOf(t);
+        trigLocks(t, s);
+        const int pos = juce::jlimit(0, juce::jmax(0, n - 1), int(std::lround(enginePos / ratio)));
+        if (isMidMachine(id)) { midTrig(t, pos); m_engine->groupTrig(t); }
+        else if (isCtrMachine(id)) { m_engine->groupTrig(t); ctrTrig = true; }
+        else m_engine->trig(t, id, accent);
+        m_activity[size_t(t)].store(1.0f);
+        if (m_trigLogOn && m_trigLog.size() < m_trigLog.capacity()) m_trigLog.push_back({t, m_logClock + pos, s ? s->step : -1});
+    };
+    auto fire = [&](const PendingTrig& pt) {
+        if (pt.track == -2) {   // a pattern change brings its kit in here
+            applyKitSwitch();
+            return;
+        }
+        const mnm::md::SeqTrig* s = pt.seq >= 0 ? &m_seqTrigs[size_t(pt.seq)] : nullptr;
+        // the accent factor (MainOS 0x20CD76 / 0x20B26C): a pattern trig: 0x80 + 2 x the pattern's ACCENT when accented;
+        // a note: VOLUME mode = velocity, ACCENT mode = 0x80 + 2 x ACCENT at velocity >= 112
+        const int accent = s ? pt.velocity
+                         : int(std::lround(m_velMode->load())) == 0 ? pt.velocity
+                         : pt.velocity >= 112 ? 0x80 + 2 * int(std::lround(m_accent->load())) : -128;
+        fireOne(pt.track, pt.enginePos, accent, s);
+        const auto* ok = m_kitOverride.load();
+        const int g = (ok ? *ok : m_baseKit).trigGroups[pt.track];
+        if (g < kTracks && g != pt.track && m_tracks[size_t(g)].mute->load() < 0.5f) fireOne(g, pt.enginePos, accent, nullptr);
+    };
     while (m_fifoLen < needed) {
         const double passEnd = double(m_fifoLen + kBlock);
-        for (auto it = m_pending.begin(); it != m_pending.end();) {
-            if (it->enginePos < passEnd) {
-                // the trig's accent factor (MainOS 0x20CD76): VOLUME mode = velocity; ACCENT mode = 0x80, accented at >= 112
-                const int accent = int(std::lround(m_velMode->load())) == 0 ? it->velocity
-                                 : it->velocity >= 112 ? 0x80 + 2 * int(std::lround(m_accent->load())) : -128;
-                m_engine->trig(it->track, machineIdOf(it->track), accent);
-                m_activity[size_t(it->track)].store(1.0f);
-                it = m_pending.erase(it);
-            } else ++it;
+        ctrTrig = false;
+        // in time order (a pattern change before the trigs after it)
+        std::stable_sort(m_pending.begin(), m_pending.end(), [](const PendingTrig& a, const PendingTrig& b) { return a.enginePos < b.enginePos; });
+        size_t done = 0;
+        while (done < m_pending.size() && m_pending[done].enginePos < passEnd) fire(m_pending[done++]);
+        m_pending.erase(m_pending.begin(), m_pending.begin() + std::ptrdiff_t(done));
+        if (ctrTrig) controlMachines(n);   // a CTR track's locks act in this pass
+        if (m_seqRunning) {   // the slides step once per clock
+            const double clk = m_seqClock0 + double(m_fifoLen) / ratio * m_seqCps;
+            for (int t = 0; t < kTracks; ++t)
+                for (int q = 0; q < 24; ++q) {
+                    auto& gl = m_glide[size_t(t)][size_t(q)];
+                    if (gl.active && gl.advance(clk)) m_lockVal[size_t(t)][size_t(q)] = int16_t(gl.target());
+                }
         }
         runPass();
     }
+    m_logClock += n;
 
     int used = 0;
     for (int bus = 0; bus < std::min(getBusCount(false), kHardwareBuses + kTracks); ++bus) {
@@ -917,6 +1160,16 @@ void MdProcessor::parameterChanged(const juce::String& id, float)
 // an assignment does on the hardware). Kits and sounds bring their own values (their loads clear the change flag).
 void MdProcessor::handleAsyncUpdate()
 {
+    if (const int pc = m_programChange.exchange(-1); pc >= 0)
+        if (auto* p = apvts.getParameter(patternId())) p->setValueNotifyingHost(p->convertTo0to1(float(pc)));
+    if (const int k = m_seqKitRequest.exchange(-1); k >= 0) {   // a pattern change brought this kit: the knobs take it
+        const auto* kit = m_kitOverride.load();
+        if (kit) {
+            const auto copy = *kit;
+            loadMdKit(juce::String(mnm::mdcatalog::Catalog::kitHash(copy)), copy, juce::String(copy.name));
+            m_kitOverride.compare_exchange_strong(kit, nullptr);   // unless a later change has its own by now
+        }
+    }
     {   // the CTR machines' parameter writes
         const auto scope = m_ctlFifo.read(m_ctlFifo.getNumReady());
         auto apply = [&](int start, int count) {
@@ -1049,6 +1302,22 @@ void MdProcessor::getStateInformation(juce::MemoryBlock& destData)
     state.setProperty("soundKeys", soundKeys.joinIntoString("|"), nullptr);
     state.setProperty("soundNames", soundNames.joinIntoString("|"), nullptr);
     state.setProperty("soundHashes", soundHashes.joinIntoString("|"), nullptr);
+    {   // the pattern bank: its patterns and kits as sysex
+        std::shared_ptr<const SeqBank> bank;
+        { const juce::SpinLock::ScopedLockType l(m_bankLock); bank = m_bank; }
+        state.removeChild(state.getChildWithName("BANK"), nullptr);
+        if (bank) {
+            juce::MemoryBlock syx;
+            for (int s = 0; s < 64; ++s) if (bank->hasKit[size_t(s)]) { const auto m = mnm::mddump::encodeKit(bank->kits[size_t(s)]); syx.append(m.data(), m.size()); }
+            for (int s = 0; s < 128; ++s) if (bank->hasPattern[size_t(s)]) { const auto m = mnm::mddump::encodePattern(bank->patterns[size_t(s)]); syx.append(m.data(), m.size()); }
+            juce::ValueTree b("BANK");
+            b.setProperty("project", m_bankProjectId, nullptr);
+            b.setProperty("name", m_bankName, nullptr);
+            b.setProperty("kitSlot", m_seqKitSlot.load(), nullptr);
+            b.setProperty("syx", syx.toBase64Encoding(), nullptr);
+            state.appendChild(b, nullptr);
+        }
+    }
     state.removeChild(state.getChildWithName("SAMPLES"), nullptr);
     state.appendChild(samplesToTree(), nullptr);
     state.removeChild(state.getChildWithName("SHADOWS"), nullptr);
@@ -1080,6 +1349,13 @@ void MdProcessor::setStateInformation(const void* data, int sizeInBytes)
     for (int t = 0; t < kTracks; ++t) m_sounds[size_t(t)] = {soundKeys[t], soundNames[t], soundHashes[t].toStdString()};
     samplesFromTree(apvts.state.getChildWithName("SAMPLES"));
     shadowsFromTree(apvts.state.getChildWithName("SHADOWS"));
+    if (const auto b = apvts.state.getChildWithName("BANK"); b.isValid()) {
+        juce::MemoryBlock syx;
+        if (syx.fromBase64Encoding(b.getProperty("syx").toString())) {
+            const auto d = mnm::mddump::parseDump(static_cast<const uint8_t*>(syx.getData()), syx.getSize(), "bank");
+            setPatternBank(b.getProperty("project").toString(), b.getProperty("name").toString(), d, int(b.getProperty("kitSlot", -1)));
+        }
+    }
     for (auto& f : m_machineChanged) f.store(false);   // restored knobs stay as saved
     m_snap = true;
     // the session's OS file, when it is there and differs (a session restore does not change the shared setting)

@@ -33,6 +33,106 @@ int main(int argc, char** argv)
     const int block = 480;
     proc.setPlayConfigDetails(0, 2, rate, block);
     proc.prepareToPlay(rate, block);
+    if (std::getenv("MD_SEQ_TEST")) {
+        // Pattern playback against a simulated host transport (120 BPM, 48 kHz, 480-sample blocks), on a bank made here:
+        //   A01 (16 steps, 1x): T1 GND-SN on steps 0 4 8 12; PTCH locked to 100 on step 4, none on 8 (back to the kit's
+        //       64), locked to 20 on step 12 with a slide (to the next trig: step 0 of the next pass, no lock = the kit's)
+        //       T2 on the odd steps, swung (66%: a 6-clock step's delay is 6 x 5243 / 16384 clocks)
+        //   A02 (8 steps, 3/4x = 8 clocks a step), kit 1 (T1 PTCH 30): T3 on step 0
+        int fails = 0;
+        auto check = [&](bool ok, const juce::String& what) { std::printf("  %s %s\n", ok ? "ok  " : "FAIL", what.toRawUTF8()); fails += ok ? 0 : 1; };
+        struct Head : juce::AudioPlayHead {
+            double ppq = 0, bpm = 120; bool playing = true;
+            juce::Optional<PositionInfo> getPosition() const override {
+                PositionInfo p; p.setPpqPosition(ppq); p.setBpm(bpm); p.setIsPlaying(playing); return p;
+            }
+        } head;
+        mnm::mddump::Dump d;
+        for (int k = 0; k < 2; ++k) {
+            mnm::mddump::Kit kit;
+            kit.position = k;
+            for (int tr = 0; tr < 16; ++tr) { kit.trigGroups[tr] = 127; kit.muteGroups[tr] = 127; kit.lfos[tr][0] = uint8_t(tr); kit.levels[tr] = 100; kit.params[tr][17] = 100; }
+            for (int tr = 0; tr < 3; ++tr) { kit.models[tr] = 1; kit.params[tr][0] = uint8_t(k == 0 ? 64 : 30); kit.params[tr][1] = 60; }
+            const uint8_t rev[8] = {0, 0, 64, 64, 0, 127, 127, 127}, del[8] = {24, 0, 0, 32, 0, 127, 0, 127}, dyn[8] = {0, 64, 127, 0, 0, 0, 64, 0};
+            std::memcpy(kit.reverb, rev, 8); std::memcpy(kit.delay, del, 8); std::memset(kit.eq, 64, 8); std::memcpy(kit.dynamics, dyn, 8);
+            d.kits.push_back(kit);
+        }
+        mnm::mddump::Pattern a;
+        a.position = 0; a.length = 16; a.kit = 0; a.accentEditAll = a.slideEditAll = a.swingEditAll = 1;
+        a.trigs[0] = (1u << 0) | (1u << 4) | (1u << 8) | (1u << 12);
+        for (int s = 1; s < 16; s += 2) a.trigs[1] |= 1ull << s;
+        a.swing = a.trigs[1];
+        a.swingAmount = 16 * 16384 / 50;   // 66%
+        a.slide = 1u << 12;
+        a.lockMasks[0] = 1;                // T1 PTCH: lock row 0
+        for (int s = 0; s < 64; ++s) a.locks[0][s] = 0xFF;
+        a.locks[0][4] = 100; a.locks[0][12] = 20;
+        a.numLockedRows = 1;
+        mnm::mddump::Pattern b;
+        b.position = 1; b.length = 8; b.kit = 1; b.doubleTempo = 2; b.accentEditAll = b.slideEditAll = b.swingEditAll = 1;
+        b.trigs[2] = 1;
+        d.patterns.push_back(a); d.patterns.push_back(b);
+
+        MdProcessor p;
+        p.setFirmwarePath(juce::String(argv[1]), false);
+        p.setPlayHead(&head);
+        p.prepareToPlay(rate, block);
+        p.loadMdKit("seqtest", d.kits[0], "SEQ TEST");
+        p.setPatternBank("test", "SEQ TEST", d, 0);
+        auto setParam = [&](const juce::String& id, float v) { if (auto* q = p.apvts.getParameter(id)) q->setValueNotifyingHost(q->convertTo0to1(v)); };
+        setParam(seqId(), 1.0f);
+        setParam(patternId(), 0.0f);
+        p.setTrigLogging(true);
+        juce::AudioBuffer<float> buf(2, block);
+        const double spc = rate * 60.0 / 120.0 / 24.0;   // samples per clock: 1000
+        std::vector<int> base;   // T1 PTCH's base word (>> 7, rounded) at each block's end
+        auto run = [&](int blocks) {
+            for (int i = 0; i < blocks; ++i) {
+                juce::MidiBuffer midi;
+                buf.clear();
+                p.processBlock(buf, midi);
+                head.ppq += block / spc / 24.0;
+                p.syncMachineSideEffects();   // the message thread's part (a pattern's kit)
+                base.push_back((p.engineForTests()->cpu().baseParam(0, 0) + 64) >> 7);
+            }
+        };
+        run(int(96 * spc / block) + 1);   // one pass of A01 (16 x 6 clocks)
+        // trig times: T1 at 0, 24, 48, 72 clocks; T2 at 6k + 6 x 5243 / 16384 for odd k
+        const double swing = 6.0 * 5243.0 / 16384.0;
+        int t1 = 0, t2 = 0, badTime = 0;
+        for (const auto& e : p.trigLog()) {
+            if (e.step < 0 || e.sample >= int64_t(96 * spc) - 1) continue;   // the first pass
+            const double want = (e.track == 0 ? 6.0 * e.step : 6.0 * e.step + swing) * spc;
+            if (std::abs(double(e.sample) - want) > 1.0) { ++badTime; std::printf("    T%d step %d at %lld, want %.1f\n", e.track + 1, e.step, (long long)e.sample, want); }
+            (e.track == 0 ? t1 : t2)++;
+        }
+        check(t1 == 4 && t2 == 8, "one pass: T1 4 trigs, T2 8 (" + juce::String(t1) + ", " + juce::String(t2) + ")");
+        check(badTime == 0, "every trig on its clock, the swung ones " + juce::String(swing, 3) + " clocks late");
+        auto baseAt = [&](double clock) { return base[size_t(std::min(base.size() - 1, size_t(clock * spc / block)))]; };
+        check(baseAt(25) == 100, "step 4's lock: PTCH jumps to 100 (" + juce::String(baseAt(25)) + ")");
+        check(baseAt(49) == 64, "step 8, no lock: back to the kit's 64 (" + juce::String(baseAt(49)) + ")");
+        const int s1 = baseAt(73), s2 = baseAt(84), s3 = baseAt(95);
+        check(s1 >= 20 && s1 < 24 && s2 > s1 && s3 > s2 && s3 < 64, "step 12's slide: 20 toward 64 over 24 clocks (" + juce::String(s1) + " " + juce::String(s2) + " " + juce::String(s3) + ")");
+        // A02 queued: it starts where A01 ends (clock 192 = 2 passes), with kit 1
+        setParam(patternId(), 1.0f);
+        p.setTrigLogging(true);
+        const int64_t from = int64_t(head.ppq * 24.0 * spc);
+        run(int((192 + 64) * spc / block) - int(base.size()) + 1);
+        std::vector<int64_t> t3;
+        int t1After = 0;
+        for (const auto& e : p.trigLog()) {
+            if (e.step < 0) continue;
+            if (e.track == 2) t3.push_back(from + e.sample);
+            if (e.track == 0 && from + e.sample >= int64_t(192 * spc)) ++t1After;
+        }
+        check(!t3.empty() && std::abs(double(t3[0]) - 192 * spc) <= 1.0, "A02 starts at the end of A01's pass (clock 192): " + juce::String(t3.empty() ? -1 : t3[0]));
+        check(t3.size() >= 2 && std::abs(double(t3[1] - t3[0]) - 64 * spc) <= 1.0, "A02 at 3/4x: 8 steps x 8 clocks a pass");
+        check(t1After == 0, "A01's trigs stop at the change");
+        check(p.seqPattern() == 1 && p.kitName() == "", "kit 1 loaded by the pattern change (kit name '" + p.kitName() + "')");
+        check(base.back() == 30, "kit 1's T1 PTCH in place (" + juce::String(base.back()) + ")");
+        std::printf(fails ? "SEQ TEST FAILED (%d)\n" : "SEQ TEST OK\n", fails);
+        return fails ? 1 : 0;
+    }
     if (std::getenv("MD_GROUP_TEST")) {
         // Trig and mute groups. T1-T3 are GND-SN sines with a long decay, each on its own output (PER TRACK).
         // Mute group: T2 rings, T1 is trigged at 0.25 s with MUTE GROUP T2: T2 must go silent (vs the same run without it).

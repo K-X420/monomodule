@@ -54,7 +54,9 @@ const spec::Param kRoutingParams[8] = {numeric("DIST", 0), numeric("VOL", 100), 
                                        numeric("REV", 0), readout("OUT", kRouteNames, kNumRoutes, kNumRoutes - 1), blank(), blank()};
 const spec::Param kLfoParams[8] = {readout("TRK", kTrackNames, kTracks), readout("PARAM", kLfoParamNames, 24), readout("SHP1", kShapeNames, 8),
                                    readout("SHP2", kShapeNames, 8), readout("TYPE", kLfoTypes, 3), numeric("SPD", 64), numeric("DEP", 0), numeric("MIX", 0)};
-const spec::Param kOutParams[8] = {numeric("VOL", 80), readout("VEL", kVelNames, 2), numeric("ACNT", 64), blank(), blank(), blank(), blank(), blank()};
+constexpr const char* kSeqNames[2] = {"OFF", "ON"};
+const spec::Param kOutParams[8] = {numeric("VOL", 80), readout("VEL", kVelNames, 2), numeric("ACNT", 64), blank(),
+                                   readout("SEQ", kSeqNames, 2), readout("PTN", kPatternNames, 128), blank(), blank()};
 constexpr const char* kMasterTabs[4] = {"REV", "DEL", "EQ", "DYN"};
 
 // The pages of the MID and CTR machines (their parameters 8..23 are not track effects / routing)
@@ -595,7 +597,7 @@ MdEditor::MdEditor(MdProcessor& p)
 
     for (auto* pg : {&m_syn, &m_fx, &m_routing, &m_lfo, &m_master, &m_out}) addAndMakeVisible(pg);
     m_master.setTabs({kMasterTabs[0], kMasterTabs[1], kMasterTabs[2], kMasterTabs[3]}, 0, [this](int tab) { bindMasterFx(tab); });
-    m_out.bind(kOutParams, [](int k) { return k == 0 ? masterId() : k == 1 ? velModeId() : k == 2 ? accentId() : juce::String(); });
+    m_out.bind(kOutParams, [](int k) { return k == 0 ? masterId() : k == 1 ? velModeId() : k == 2 ? accentId() : k == 4 ? seqId() : k == 5 ? patternId() : juce::String(); });
     bindMasterFx(0);
 
     m_sample.onClick = [this] { sampleMenu(); };
@@ -935,6 +937,9 @@ void MdEditor::loadKit(const KitEntry& e)
         return;
     }
     const int emptied = m_proc.loadMdKit(e.key, kit, e.name);
+    // a project's kit: its patterns become the pattern bank (SEQ / PTN)
+    if (e.sourceId.isNotEmpty() && e.sourceId != "saved")
+        if (const auto* dump = m_lib->model().mdState(e.sourceId)) m_proc.setPatternBank(e.sourceId, e.source, *dump, e.position);
     if (emptied > 0)
         juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon, "Load Kit",
             juce::String(emptied) + " track(s) use machines Monomodule MD does not have; they were left empty.");

@@ -25,6 +25,7 @@
 #include "MdFirmware.h"
 #include "MdKit.h"
 #include "MdMixEngine.h"
+#include "MdSequencer.h"
 #include "MdVoiceEngine.h"
 
 namespace mnm::plugin::md {
@@ -120,6 +121,21 @@ public:
     float trackPeak(int t) const { return m_peak[size_t(t)].load(); }
     mnm::md::Engine* engineForTests() { return m_engine.get(); }   // dev: md-plugintest probes
 
+    // Pattern playback (message thread): the pattern bank is a project's patterns and kits (kept in the plugin state).
+    // The editor sets it from the project of a kit loaded from the library.
+    // kitSlot: the bank kit that is loaded now (-1: none of them), so a pattern on it does not load it again
+    void setPatternBank(const juce::String& projectId, const juce::String& name, const mnm::mddump::Dump& dump, int kitSlot);
+    juce::String bankName() const { return m_bankName; }
+    juce::String bankProjectId() const { return m_bankProjectId; }
+    bool bankHasPattern(int slot) const;
+    int seqStep() const { return m_seqStepUi.load(); }        // the playing step, -1 when not playing
+    int seqLength() const { return m_seqLenUi.load(); }
+    int seqPattern() const { return m_seqPatternUi.load(); }  // the playing pattern slot, -1 = none
+    // dev: the trigs the last blocks fired (track, host sample from the start of logging), when logging is on
+    struct TrigLog { int track; int64_t sample; int step; };
+    void setTrigLogging(bool on) { m_trigLogOn = on; m_trigLog.clear(); m_trigLog.reserve(on ? 8192 : 0); m_logClock = 0; }
+    const std::vector<TrigLog>& trigLog() const { return m_trigLog; }
+
     juce::AudioProcessorValueTreeState apvts;
 
 private:
@@ -147,7 +163,7 @@ private:
     // 0x20C930) does when a knob of such a track moves, and the MID trig (0x209914). Writes to other parameters go
     // through m_ctlFifo to the message thread (setValueNotifyingHost); MIDI goes into the block's MIDI output.
     int trackParam(int t, int p) const;   // 0..127 by the MD's numbering (see trackParamId)
-    int midValue(int t, int p) const { return juce::jlimit(0, 127, trackParam(t, p) + m_lfoOffset[size_t(t)][size_t(p)]); }
+    int midValue(int t, int p) const { return juce::jlimit(0, 127, seqParam(t, p) + m_lfoOffset[size_t(t)][size_t(p)]); }
     void midStream(int pos);              // after each pass: MID values that moved (knob or LFO) -> MIDI
     std::array<std::array<int16_t, 24>, kTracks> m_lfoOffset{};   // per MID parameter: the LFOs' part (0..127 scale)
     std::array<std::array<int16_t, 24>, kTracks> m_midSent{};     // the value last sent (-1 = not yet: no send)
@@ -238,8 +254,55 @@ private:
     int m_inLen = 0;
     std::array<juce::LagrangeInterpolator, 2> m_inInterp;
     std::array<int32_t, 64> m_inBlock{};
-    struct PendingTrig { int track; double enginePos; int velocity; };   // engine frames from the current FIFO read point
+    // seq: index into m_seqTrigs (a sequencer trig with its locks / slides / accent), -1 = a MIDI note or the UI
+    struct PendingTrig { int track; double enginePos; int velocity; int seq = -1; };   // engine frames from the current FIFO read point
     std::vector<PendingTrig> m_pending;
+
+    // ---- pattern playback (audio thread unless noted)
+    struct SeqBank {
+        std::vector<mnm::mddump::Pattern> patterns;   // by slot (128)
+        std::vector<mnm::mddump::Kit> kits;           // by slot (64)
+        std::array<bool, 128> hasPattern{};
+        std::array<bool, 64> hasKit{};
+    };
+    std::shared_ptr<const SeqBank> m_bank, m_bankOld;   // message thread swaps (under m_bankLock); the old one stays alive
+    juce::SpinLock m_bankLock;
+    juce::String m_bankName, m_bankProjectId;
+    std::atomic<float>* m_seqOn = nullptr;
+    std::atomic<float>* m_patternParam = nullptr;
+    mnm::md::PatternPlayer m_player;
+    bool m_playerValid = false;
+    int m_playerSlot = -1, m_patternSeen = -1, m_seqQueued = -1;
+    std::atomic<int> m_programChange{-1};                // a MIDI program change for the message thread (PATTERN follows)
+    bool m_seqRunning = false;
+    double m_seqOrigin = 0, m_seqExpect = 0, m_seqClock0 = 0, m_seqCps = 0;   // clocks: step 0 of the pass, the block's start, per host sample
+    std::vector<mnm::md::SeqTrig> m_seqTrigs;
+    std::array<std::array<int16_t, 24>, kTracks> m_lockVal{};      // a parameter held by a lock or a slide (-1 = the kit's)
+    std::array<std::array<mnm::md::Glide, 24>, kTracks> m_glide{};
+    std::atomic<const mnm::mddump::Kit*> m_kitOverride{nullptr};   // a pattern's kit until the message thread has loaded it
+    std::shared_ptr<const SeqBank> m_overrideBank;
+    std::atomic<int> m_seqKitSlot{-1};                             // the bank's kit that is loaded (-1 = another)
+    std::atomic<int> m_seqKitRequest{-1};
+    std::atomic<int> m_seqStepUi{-1}, m_seqLenUi{16}, m_seqPatternUi{-1};
+    bool m_hostPlaying = false;
+    double m_hostPpq = 0;
+    const mnm::mddump::Kit* m_kitSwitch = nullptr;   // the kit a pending switch event (PendingTrig track -2) brings in
+    std::atomic<bool> m_bankFresh{false};
+    bool m_trigLogOn = false;
+    std::vector<TrigLog> m_trigLog;
+    int64_t m_logClock = 0;
+    // CTR writes (queueSet) take effect at once: the value until the parameter has it (-1 = none)
+    std::array<std::array<int16_t, 24>, kTracks + 4> m_ctlWrite{};
+    std::array<int64_t, kTracks + 4> m_ctlWriteUntil{};
+    void scheduleSequencer(int n, double ratio);
+    void seqGenerate(double from, double to, double ratio);
+    void seqSwitch(int slot, const SeqBank* bank, const std::shared_ptr<const SeqBank>& hold, double atEnginePos);
+    void seqStop();
+    void applyKitSwitch();   // at a pattern change's time: its kit plays (m_kitSwitch) until the message thread has loaded it
+    static int overrideMachine(const mnm::mddump::Kit& kit, int t);   // the kit's machine, GND--- for one the plugin has not
+    void trigLocks(int t, const mnm::md::SeqTrig* s);   // a trig's locks and slides (none: a MIDI / UI trig releases them)
+    int kitParam(int t, int p) const;   // the knob's own value (a pattern's kit until loaded, a CTR write, else the parameter)
+    int seqParam(int t, int p) const { const int v = m_lockVal[size_t(t)][size_t(p)]; return v >= 0 ? v : kitParam(t, p); }
 };
 
 } // namespace mnm::plugin::md

@@ -47,6 +47,8 @@ public:
     // themselves). As MainOS 0x20B3B0 / 0x20B210: a trig of a track sets its mute group track's flag, and while the flag
     // is set that track's routing words (volume, pan, sends) go to the mixer as 0; the track's own next trig clears it.
     void groupTrig(int t);
+    // A sequencer lock (or its release) at a trig: the knob jumps there (set the track's target to it as well)
+    void jumpParam(int t, int k, uint8_t value) { m_cpu->jumpParam(t, k, value); }
     bool groupMuted(int t) const { return m_tracks[size_t(t)].groupMuted; }
     void setInput(const int32_t* lr64) { m_voices->setInput(lr64); }   // 32 stereo frames for the INP machines
     void render();

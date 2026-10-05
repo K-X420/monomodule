@@ -50,6 +50,9 @@ public:
     using TrackParams = std::array<std::array<uint8_t, 24>, 16>;
     void setTargets(const TrackParams& params, const std::array<uint8_t, 16>& levels, const std::array<std::array<uint8_t, 8>, 4>& masterFx);
     void snapToTargets();   // jump every live word to its target (load, state restore)
+    // One knob straight to a value: target, live and base word, no slew (a sequencer lock or its release, as the OS
+    // writes them at the trig: MainOS 0x20B0D8)
+    void jumpParam(int track, int k, uint8_t value);
     void setLfo(int track, const uint8_t* lfo36);       // the whole struct (kit load)
     void setLfoConfig(int track, const uint8_t* first5); // dest track, dest param, shape 1, shape 2, type (state kept)
     void lfoTrig(int track);                             // what a trig does to the track's LFO

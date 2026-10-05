@@ -7,43 +7,27 @@ namespace mnm::mdpreview {
 
 using namespace mnm::mddump;
 
-namespace {
-uint64_t maskOf(uint32_t editAll, uint64_t global, uint64_t perTrack) { return editAll ? global : perTrack; }
-
-double stepFrames(const Pattern& p, double bpm)
-{
-    const double f = 60.0 / std::max(20.0, bpm) / 4.0 * kSampleRate;   // a 16th
-    return p.doubleTempo ? f / 2.0 : f;
-}
-} // namespace
-
 Spec patternPreview(const Kit& kit, const Pattern& p, const Options& opt)
 {
     Spec s;
     s.kit = kit;
-    const int len = std::clamp(int(p.length), 1, 64);
-    const double step = stepFrames(p, opt.bpm);
-    const double pass = len * step;
+    const md::PatternPlayer player(p);
+    s.framesPerClock = 60.0 / std::max(20.0, opt.bpm) / 24.0 * kSampleRate;
+    const double pass = player.lengthClocks() * s.framesPerClock;
     s.loops = std::clamp(int(std::ceil(opt.minSeconds * kSampleRate / pass)), 1, std::max(1, opt.maxLoops));
     s.loopFrames = uint32_t(pass);
-    const double swingDelay = (p.swingPercent() - 50) / 50.0 * step;   // the swung step's offset into its pair
-    for (int loop = 0; loop < s.loops; ++loop)
-        for (int st = 0; st < len; ++st)
-            for (int t = 0; t < kTracks; ++t) {
-                if (!((p.trigs[t] >> st) & 1)) continue;
-                Event e;
-                e.track = t;
-                double at = (loop * len + st) * step;
-                if ((maskOf(p.swingEditAll, p.swing, p.swingPerTrack[t]) >> st) & 1) at += swingDelay;
-                e.frame = uint32_t(at);
-                if ((maskOf(p.accentEditAll, p.accent, p.accentPerTrack[t]) >> st) & 1) e.accent = 0x80 + 2 * int(p.accentAmount);
-                for (int q = 0; q < 24; ++q) {   // parameter locks of this step
-                    const int row = p.lockRow(t, q);
-                    if (row >= 0 && p.locks[row][st] <= 127) e.locks.push_back({q, p.locks[row][st]});
-                }
-                s.events.push_back(std::move(e));
-            }
-    std::stable_sort(s.events.begin(), s.events.end(), [](const Event& a, const Event& b) { return a.frame < b.frame; });
+    std::vector<md::SeqTrig> trigs;
+    player.trigs(0.0, s.loops * player.lengthClocks(), trigs);
+    for (const auto& tr : trigs) {
+        Event e;
+        e.track = tr.track;
+        e.frame = uint32_t(std::lround(tr.clock * s.framesPerClock));
+        e.clock = tr.clock;
+        if (tr.accent) e.accent = 0x80 + 2 * int(p.accentAmount);
+        for (int q = 0; q < 24; ++q) if (tr.locks[size_t(q)] >= 0) e.locks.push_back({q, tr.locks[size_t(q)]});
+        e.slideMask = tr.slideMask; e.slideTo = tr.slideTo; e.slideClocks = tr.slideClocks;
+        s.events.push_back(std::move(e));
+    }
     s.frames = uint32_t(s.loops * pass + opt.tailSeconds * kSampleRate);
     return s;
 }
@@ -187,12 +171,38 @@ bool Renderer::render(const Spec& spec, double bpm, const std::function<void(uin
     constexpr int N = Block::kFrames;
     constexpr float kOut = 0.8f / 8388608.0f;   // the plugin's VOLUME 80
     size_t next = 0;
-    std::array<bool, kTracks> locked{};
     Kit kit = spec.kit;   // what CTR locks change as the pattern plays
+    // the locks and slides held per track parameter (-1 = the kit's), as the plugin's pattern playback
+    std::array<std::array<int16_t, 24>, kTracks> held{};
+    for (auto& h : held) h.fill(-1);
+    std::array<std::array<md::Glide, 24>, kTracks> glide{};
+    auto withLocks = [&](int t) {
+        auto tr = trackFor(kit, t);
+        for (int q = 0; q < 24; ++q) if (held[size_t(t)][size_t(q)] >= 0) tr.params[size_t(q)] = uint8_t(held[size_t(t)][size_t(q)]);
+        return tr;
+    };
+    // a trig's locks: the step's jump in, the last trig's ones not repeated jump back to the kit (e = null: none)
+    auto trigLocks = [&](int t, const Event* e) {
+        std::array<int, 24> lock;
+        lock.fill(-1);
+        if (e) for (const auto& [q, v] : e->locks) lock[size_t(q)] = v;
+        bool changed = false;
+        for (int q = 0; q < 24; ++q) {
+            glide[size_t(t)][size_t(q)].active = false;
+            auto& h = held[size_t(t)][size_t(q)];
+            if (lock[size_t(q)] >= 0) { h = int16_t(lock[size_t(q)]); m_engine->jumpParam(t, q, uint8_t(h)); changed = true; }
+            else if (h >= 0) { h = -1; m_engine->jumpParam(t, q, kit.params[t][q]); changed = true; }
+        }
+        if (e && e->slideMask)
+            for (int q = 0; q < 24; ++q)
+                if ((e->slideMask >> q) & 1)
+                    glide[size_t(t)][size_t(q)].start(lock[size_t(q)], e->slideTo[size_t(q)] >= 0 ? e->slideTo[size_t(q)] : kit.params[t][q],
+                                                      e->slideClocks[size_t(q)], e->clock);
+        if (changed) m_engine->setTrack(t, withLocks(t));
+    };
     Block b;
     for (uint32_t f0 = 0; f0 < spec.frames; f0 += N) {
         if (cancel && cancel->load()) { m_error = "cancelled"; return false; }
-        bool snap = false;
         for (; next < spec.events.size() && spec.events[next].frame < f0 + N; ++next) {
             const auto& e = spec.events[next];
             const int t = e.track;
@@ -202,7 +212,7 @@ bool Renderer::render(const Spec& spec, double bpm, const std::function<void(uin
                 if (g < 0) return;
                 const int gid = kit.model(g);
                 if (md::isCtrMachine(gid) || md::isMidMachine(gid)) { m_engine->groupTrig(g); return; }
-                if (locked[size_t(g)]) { m_engine->setTrack(g, trackFor(kit, g)); locked[size_t(g)] = false; snap = true; }
+                trigLocks(g, nullptr);
                 m_engine->trig(g, gid, e.accent);
             };
             if (md::isCtrMachine(id) || md::isMidMachine(id)) {   // no voice: a CTR track's locks act on the kit
@@ -211,20 +221,24 @@ bool Renderer::render(const Spec& spec, double bpm, const std::function<void(uin
                 std::array<bool, kTracks> changed{};
                 for (const auto& [q, v] : e.locks) control(kit, t, q, v, changed);
                 for (int u = 0; u < kTracks; ++u)
-                    if (changed[size_t(u)] && !locked[size_t(u)]) m_engine->setTrack(u, trackFor(kit, u));
+                    if (changed[size_t(u)]) m_engine->setTrack(u, withLocks(u));
                 continue;
             }
-            if (!e.locks.empty() || locked[size_t(t)]) {   // this trig's locks, or the kit's values back after a locked trig
-                auto tr = trackFor(kit, t);
-                for (const auto& [q, v] : e.locks) tr.params[size_t(q)] = uint8_t(v);
-                m_engine->setTrack(t, tr);
-                locked[size_t(t)] = !e.locks.empty();
-                snap = true;
-            }
+            trigLocks(t, &e);
             m_engine->trig(t, id, e.accent);
             groupTrig();
         }
-        if (snap) m_engine->snap();   // a lock is the step's value at once, not a slew
+        if (spec.framesPerClock > 0) {   // the slides step once per clock
+            const double clk = double(f0) / spec.framesPerClock;
+            for (int t = 0; t < kTracks; ++t) {
+                bool changed = false;
+                for (int q = 0; q < 24; ++q) {
+                    auto& gl = glide[size_t(t)][size_t(q)];
+                    if (gl.active && gl.advance(clk)) { held[size_t(t)][size_t(q)] = int16_t(gl.target()); changed = true; }
+                }
+                if (changed) m_engine->setTrack(t, withLocks(t));
+            }
+        }
         try { m_engine->render(); }
         catch (const std::exception& ex) { m_error = ex.what(); return false; }
         const auto& o = m_engine->output();

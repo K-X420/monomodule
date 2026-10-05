@@ -205,6 +205,15 @@ bool ControlCpu::tick(bool lfoUpdate)
     return ok;
 }
 
+void ControlCpu::jumpParam(int track, int k, uint8_t value)
+{
+    if (track < 0 || track >= 16 || k < 0 || k >= 24) return;
+    const uint32_t i = uint32_t(24 * track + k);
+    const uint16_t raw = uint16_t((value & 0x7F) << 7);
+    sram(kTargets)[i] = uint8_t(value & 0x7F);
+    for (uint32_t base : {kBase, kLive}) { uint8_t* p = sram(base + 2 * i); p[0] = uint8_t(raw >> 8); p[1] = uint8_t(raw); }
+}
+
 uint16_t ControlCpu::liveParam(int track, int k) const
 {
     const uint8_t* p = sram(kLive + 2 * uint32_t(24 * track + k));
