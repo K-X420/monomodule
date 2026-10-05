@@ -36,12 +36,13 @@ private:
     std::array<juce::Rectangle<int>, 9> m_rects{};   // LCD px
 };
 
-// The sequencer bar under the kit strip: PLAY (the plugin's own transport while the host's is stopped), the track the
+// The sequencer bar under the kit strip: PLAY (the plugin's own transport while the host's is stopped), GRID (the track
+// keys become the selected track's steps, as the hardware's grid recording; again: tracks), the track the
 // GRID edits (< T1 BD >), the pattern (< A01 >), its pages (a dot each: ring = there, solid = playing, underlined = the
 // page GRID shows; a click shows that page) and the playing step (SONG: the row as well).
 class MdSeqBar : public juce::Component, public juce::SettableTooltipClient {
 public:
-    enum Part { None = -1, Play, TrkPrev, Trk, TrkNext, PtnPrev, Ptn, PtnNext, Pages, Step, kParts };
+    enum Part { None = -1, Play, Grid, TrkPrev, Trk, TrkNext, PtnPrev, Ptn, PtnNext, Pages, Step, kParts };
     static constexpr int kS = 2, kLcdH = 15;
     struct State {
         bool playing = false, hostPlaying = false, grid = false, empty = true;

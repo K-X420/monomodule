@@ -84,6 +84,8 @@ void MdSeqBar::resized()
     auto take = [&](Part p, int pw) { m_rects[size_t(p)] = {x, 0, pw, kLcdH}; x += pw - 1; };
     take(Play, 33);
     x += 1 + gap;
+    take(Grid, 30);
+    x += 1 + gap;
     take(TrkPrev, arrowW); take(Trk, 64); take(TrkNext, arrowW);
     x += 1 + gap;
     take(PtnPrev, arrowW); take(Ptn, 46); take(PtnNext, arrowW);
@@ -111,6 +113,10 @@ void MdSeqBar::paint(juce::Graphics& g)
         else for (int i = 0; i < 5; ++i) for (int y = -4 + i; y <= 4 - i; ++y) cv.set(cx + i, cy + y, ink);
         cv.text(spec::kFontTiny3x5, m_s.playing ? "STOP" : "PLAY", r.getX() + 14, r.getY() + 5, ink);
         (void) ink;
+    }
+    {   // GRID: solid while the keys are steps
+        const auto r = box(Grid, m_s.grid);
+        cv.text(spec::kFontBold8, "GRID", r.getX() + 4, r.getY() + 4, !m_s.grid);
     }
     auto arrows = [&](Part prev, Part next) {
         auto r = box(prev, false); arrowH(cv, r.getCentreX(), r.getCentreY(), true, true);
@@ -172,6 +178,8 @@ void MdSeqBar::mouseMove(const juce::MouseEvent& e)
     if (p != m_hover) { m_hover = p; repaint(); }
     switch (p) {
         case Play: setTooltip(m_s.hostPlaying ? "The host's transport is running: the pattern follows it" : "Play / stop the pattern on the plugin's own clock (while the host is stopped)"); break;
+        case Grid: setTooltip(m_s.grid ? "GRID: the keys are the selected track's steps (click a step to place a trig). Click to get the tracks back"
+                                       : "GRID: click to place steps with the keys (the selected track's steps; TRK < > picks the track)"); break;
         case TrkPrev: case TrkNext: case Trk: setTooltip("The track whose steps GRID shows and edits"); break;
         case PtnPrev: case PtnNext: case Ptn: setTooltip("The pattern (PTN): played by SEQ, edited by GRID (\"-\" = an empty slot)"); break;
         case Pages: setTooltip("Pages of 16 steps: solid = playing, underlined = shown by GRID. Click one to show it"); break;

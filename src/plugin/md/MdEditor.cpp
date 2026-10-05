@@ -681,6 +681,11 @@ MdEditor::MdEditor(MdProcessor& p)
                 m_proc.setInternalPlay(on);
                 break;
             }
+            case MdSeqBar::Grid:
+                m_gridOn = !m_gridOn;
+                if (!m_gridOn) holdStep(-1);
+                if (m_outTab == 1) m_out.pull();
+                break;
             case MdSeqBar::TrkPrev: selectTrack((m_track + kTracks - 1) % kTracks); break;
             case MdSeqBar::TrkNext: selectTrack((m_track + 1) % kTracks); break;
             case MdSeqBar::PtnPrev: case MdSeqBar::PtnNext:
