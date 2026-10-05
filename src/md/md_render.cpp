@@ -257,6 +257,202 @@ int main(int argc, char** argv)
             std::printf("\n");
             return 0;
         }
+        if (std::strcmp(argv[2], "kitfx") == 0 && argc > 3) {   // md-render <os.syx> kitfx <dump.syx>: each kit's master effects
+            std::FILE* f = std::fopen(argv[3], "rb");
+            std::vector<uint8_t> bytes;
+            for (int c; f && (c = std::fgetc(f)) != EOF;) bytes.push_back(uint8_t(c));
+            if (f) std::fclose(f);
+            const auto d = mnm::mddump::parseDump(bytes.data(), bytes.size(), "dump");
+            for (int k = 0; k < 64; ++k)
+                if (const auto* kit = d.kitAt(k)) {
+                    int revSends = 0;
+                    for (int tr = 0; tr < 16; ++tr) revSends += kit->params[tr][20] > 0 ? 1 : 0;
+                    std::printf("kit %2d %-16s REV", k, kit->name.c_str());
+                    for (int i = 0; i < 8; ++i) std::printf(" %3d", kit->reverb[i]);
+                    std::printf("   tracks sending to reverb: %d\n", revSends);
+                }
+            return 0;
+        }
+        if (std::strcmp(argv[2], "fxcheck") == 0) {
+            // md-render <os.syx> fxcheck: every effect off vs on through the whole engine, measured on the main output.
+            // Master: reverb and delay (via the track's REV / DEL sends), EQ, dynamix. Track: AMD/AMF, EQF/EQG, the
+            // filter, SRR, DIST. Each line: what was measured, off -> on, and whether it moved the way it should.
+            struct Setup {
+                int machine = 1;                               // GND-SN
+                std::array<uint8_t, 24> p{};
+                std::array<std::array<uint8_t, 8>, 4> fx{{{0, 0, 64, 64, 0, 127, 127, 127}, {24, 0, 0, 32, 0, 127, 0, 127}, {64, 64, 64, 64, 64, 64, 64, 64}, {0, 64, 127, 0, 0, 0, 64, 0}}};
+                double seconds = 2.0;
+                bool retrig = false;                           // a trig every 0.5 s (sustained material)
+            };
+            auto base = [](int machine) {
+                Setup s; s.machine = machine;
+                for (int k = 0; k < 8; ++k) s.p[size_t(k)] = 64;
+                if (machine == 1) { s.p[0] = 64; s.p[1] = 127; s.p[2] = 0; s.p[3] = 0; }   // a long, steady sine (no pitch ramp)
+                if (machine == 2) { s.p[0] = 127; }                    // long noise
+                s.p[10] = 64; s.p[11] = 64; s.p[13] = 127;             // EQF 64, EQG 0, filter open
+                s.p[17] = 100; s.p[18] = 64;
+                return s;
+            };
+            auto render = [&](const Setup& sIn) {
+                Setup s = sIn;
+                if (const char* o = std::getenv("REVFX"))   // e.g. REVFX=6:127,0:64  (reverb knob:value)
+                    for (const char* c = o; *c;) {
+                        int k = 0, v = 0, n = 0;
+                        if (std::sscanf(c, "%d:%d%n", &k, &v, &n) != 2) break;
+                        if (k >= 0 && k < 8) s.fx[0][size_t(k)] = uint8_t(v);
+                        c += n; if (*c == ',') ++c;
+                    }
+                Engine e(fw);
+                for (int tr = 0; tr < 16; ++tr) {
+                    Engine::Track x;
+                    x.level = tr == 0 ? 120 : 0;
+                    x.machine = tr == 0 ? s.machine : 0;
+                    if (tr == 0) x.params = s.p;
+                    x.lfoConfig = {uint8_t(tr), 0, 0, 0, 0};
+                    e.setTrack(tr, x);
+                }
+                e.setMasterFx(s.fx);
+                e.setTempo(120.0);
+                e.snap(); e.render();
+                std::vector<double> out;
+                const int passes = int(s.seconds * 44100 / 32);
+                for (int pass = 0; pass < passes; ++pass) {
+                    if (pass == 0 || (s.retrig && pass % int(0.5 * 44100 / 32) == 0)) e.trig(0, s.machine, 127);
+                    e.render();
+                    for (int i = 0; i < 32; ++i) out.push_back(0.5 * (e.output()[size_t(i)][2] + e.output()[size_t(i)][5]) / 8388608.0);
+                }
+                return out;
+            };
+            auto rms = [](const std::vector<double>& x, double a, double b) {
+                const size_t i0 = size_t(a * 44100), i1 = std::min(x.size(), size_t(b * 44100));
+                double s = 0; for (size_t i = i0; i < i1; ++i) s += x[i] * x[i];
+                return i1 > i0 ? std::sqrt(s / double(i1 - i0)) : 0.0;
+            };
+            auto band = [](const std::vector<double>& x, bool high) {   // energy share below ~200 Hz / above ~4 kHz
+                double lp = 0, prev = 0, eb = 0, et = 0;
+                const double a = std::exp(-2 * 3.14159265 * (high ? 4000.0 : 200.0) / 44100);
+                for (double v : x) {
+                    lp = a * lp + (1 - a) * v;
+                    const double b = high ? v - lp : lp;
+                    eb += b * b; et += v * v; prev = v;
+                }
+                (void)prev;
+                return et > 0 ? eb / et : 0.0;
+            };
+            auto wobble = [](const std::vector<double>& x, double a, double b) {   // 10 ms RMS windows: max / min
+                double lo = 1e9, hi = 0;
+                for (double t0 = a; t0 + 0.01 <= b; t0 += 0.01) {
+                    const size_t i0 = size_t(t0 * 44100);
+                    double s = 0; for (size_t i = i0; i < i0 + 441; ++i) s += x[i] * x[i];
+                    const double r = std::sqrt(s / 441); lo = std::min(lo, r); hi = std::max(hi, r);
+                }
+                return hi / std::max(lo, 1e-9);
+            };
+            int fails = 0;
+            auto report = [&](const char* what, double off, double on, bool ok, const char* unit = "") {
+                std::printf("  %-5s %-58s %10.4g -> %-10.4g %s\n", ok ? "ok" : "FAIL", what, off, on, unit);
+                fails += ok ? 0 : 1;
+            };
+            const auto db = [](double r) { return 20 * std::log10(std::max(r, 1e-12)); };
+
+            std::printf("MASTER EFFECTS\n");
+            {   // reverb: a short click (TRX-RS, short decay), REV send 0 vs 127; tail after the dry sound
+                auto s = base(20); s.p[1] = 20; s.seconds = 2.5;
+                const auto dry = render(s);
+                s.p[20] = 127; const auto wet = render(s);
+                report("REVERB: tail 0.4-1.5 s, REV send 0 -> 127 (dB)", db(rms(dry, 0.4, 1.5)), db(rms(wet, 0.4, 1.5)), rms(wet, 0.4, 1.5) > 10 * rms(dry, 0.4, 1.5) + 1e-6, "dB");
+                auto l = s; l.fx[0][7] = 0; const auto lev0 = render(l);
+                report("REVERB: LEV 127 -> 0 with the send up (tail dB)", db(rms(wet, 0.4, 1.5)), db(rms(lev0, 0.4, 1.5)), rms(lev0, 0.4, 1.5) < 0.1 * rms(wet, 0.4, 1.5), "dB");
+                auto d1 = s; d1.fx[0][2] = 20; auto d2 = s; d2.fx[0][2] = 120;
+                const auto shortT = render(d1), longT = render(d2);
+                report("REVERB: DEC 20 -> 120, tail 1.0-2.0 s (dB)", db(rms(shortT, 1.0, 2.0)), db(rms(longT, 1.0, 2.0)), rms(longT, 1.0, 2.0) > 2 * rms(shortT, 1.0, 2.0), "dB");
+                // a gated reverb: held noise for 1 s, then nothing; wet minus dry while it plays and after, by GATE
+                for (int gate : {0, 64, 127}) {
+                    auto h = base(2); h.seconds = 2.0; h.retrig = false; h.p[1] = 127; h.fx[0][6] = uint8_t(gate);
+                    const auto hd = render(h);
+                    h.p[20] = 127; const auto hw = render(h);
+                    std::vector<double> diff(hd.size());
+                    for (size_t i = 0; i < hd.size(); ++i) diff[i] = hw[i] - hd[i];
+                    std::printf("        GATE %3d, held noise: reverb while playing %6.1f dB, after it stops (1.05-1.6 s) %6.1f dB\n", gate,
+                                db(rms(diff, 0.2, 0.9)), db(rms(diff, 1.05, 1.6)));
+                }
+                auto g0 = s; g0.fx[0][6] = 0; const auto gated = render(g0);
+                report("REVERB: GATE 127 -> 0 (a gated reverb: the tail cut once the input stops)", db(rms(wet, 0.4, 1.5)), db(rms(gated, 0.4, 1.5)), rms(gated, 0.4, 1.5) < 0.1 * rms(wet, 0.4, 1.5), "dB");
+            }
+            {   // delay: the click, DEL send 0 -> 127, FB 0; echo energy after the click
+                auto s = base(20); s.p[1] = 20; s.seconds = 2.0; s.fx[1][3] = 0;
+                const auto dry = render(s);
+                s.p[19] = 127; const auto wet = render(s);
+                report("DELAY: echoes 0.1-1.0 s, DEL send 0 -> 127 (dB)", db(rms(dry, 0.1, 1.0)), db(rms(wet, 0.1, 1.0)), rms(wet, 0.1, 1.0) > 10 * rms(dry, 0.1, 1.0) + 1e-6, "dB");
+                // where the first echo lands (TIME 24 at 120 BPM)
+                double best = 0; size_t at = 0;
+                for (size_t i = size_t(0.05 * 44100); i < size_t(1.5 * 44100); ++i) if (std::abs(wet[i]) > best) { best = std::abs(wet[i]); at = i; }
+                std::printf("        first echo peak at %.3f s (TIME 24)\n", double(at) / 44100);
+                auto f = s; f.fx[1][3] = 100; const auto fb = render(f);
+                report("DELAY: FB 0 -> 100, echoes 1.0-2.0 s (dB)", db(rms(wet, 1.0, 2.0)), db(rms(fb, 1.0, 2.0)), rms(fb, 1.0, 2.0) > 3 * rms(wet, 1.0, 2.0) + 1e-6, "dB");
+                auto l = s; l.fx[1][7] = 0; const auto lev0 = render(l);
+                report("DELAY: LEV 127 -> 0 with the send up (dB)", db(rms(wet, 0.1, 1.0)), db(rms(lev0, 0.1, 1.0)), rms(lev0, 0.1, 1.0) < 0.1 * rms(wet, 0.1, 1.0), "dB");
+            }
+            {   // DVOL: the delay's output into the reverb? A click to the delay only (REV send 0), GATE 127
+                auto s = base(20); s.p[1] = 20; s.seconds = 3.0; s.p[19] = 127; s.fx[1][3] = 0; s.fx[0][6] = 127;
+                s.fx[0][0] = 0; const auto d0 = render(s);
+                s.fx[0][0] = 127; const auto d1 = render(s);
+                std::vector<double> diff(d0.size());
+                for (size_t i = 0; i < d0.size(); ++i) diff[i] = d1[i] - d0[i];
+                report("REVERB: DVOL 0 -> 127 with only the delay sent: reverb of the echoes (dB of the difference)", -138.5, db(rms(diff, 0.5, 2.5)), rms(diff, 0.5, 2.5) > 1e-4, "dB");
+            }
+            {   // EQ on noise: LG / HG / GAIN
+                auto s = base(2); s.seconds = 1.0; s.retrig = true;
+                const auto flat = render(s);
+                auto lo = s; lo.fx[2][1] = 127; const auto lowUp = render(lo);
+                report("EQ: LG 64 -> 127, low-band share", band(flat, false), band(lowUp, false), band(lowUp, false) > 1.3 * band(flat, false));
+                auto hi = s; hi.fx[2][3] = 0; const auto highDown = render(hi);
+                report("EQ: HG 64 -> 0, high-band share", band(flat, true), band(highDown, true), band(highDown, true) < 0.9 * band(flat, true));
+                auto g = s; g.fx[2][7] = 100; const auto gainUp = render(g);
+                report("EQ: GAIN 64 -> 100, level (dB)", db(rms(flat, 0.05, 0.95)), db(rms(gainUp, 0.05, 0.95)), rms(gainUp, 0.05, 0.95) > 1.3 * rms(flat, 0.05, 0.95), "dB");
+            }
+            {   // dynamix on loud noise: MIX 0 -> 127 with a low threshold and a high ratio
+                auto s = base(2); s.seconds = 1.0; s.retrig = true; s.p[17] = 127;
+                const auto off = render(s);
+                auto c = s; c.fx[3] = {0, 64, 10, 127, 0, 0, 64, 127}; const auto comp = render(c);
+                report("DYNAMIX: MIX 0 -> 127, TRHD 10, RTIO 127: level (dB)", db(rms(off, 0.1, 0.95)), db(rms(comp, 0.1, 0.95)), std::abs(db(rms(comp, 0.1, 0.95)) - db(rms(off, 0.1, 0.95))) > 1.0, "dB");
+                auto o = c; o.fx[3][6] = 127; const auto outg = render(o);
+                report("DYNAMIX: OUTG 64 -> 127 (dB)", db(rms(comp, 0.1, 0.95)), db(rms(outg, 0.1, 0.95)), rms(outg, 0.1, 0.95) > 1.05 * rms(comp, 0.1, 0.95), "dB");
+            }
+            std::printf("TRACK EFFECTS\n");
+            {
+                auto s = base(1); s.seconds = 1.0; s.p[0] = 16;   // a sustained low sine
+                const auto sine = render(s);
+                {
+                    int zc = 0; for (size_t i = size_t(0.2 * 44100); i < size_t(0.8 * 44100); ++i) zc += (sine[i - 1] < 0) != (sine[i] < 0);
+                    std::printf("        the test sine (GND-SN PTCH %d): about %.0f Hz, RMS %.1f dB\n", s.p[0], zc / 2.0 / 0.6, db(rms(sine, 0.2, 0.8)));
+                }
+                auto am = s; am.p[8] = 127; am.p[9] = 8; const auto amd = render(am);   // AMF low: a tremolo
+                {
+                    double dd = 0, ss = 0; for (size_t i = 0; i < sine.size(); ++i) { dd += (amd[i] - sine[i]) * (amd[i] - sine[i]); ss += sine[i] * sine[i]; }
+                    report("AMD 0 -> 127 (AMF 8): how much the signal changed", 0.0, std::sqrt(dd / ss), std::sqrt(dd / ss) > 0.1);
+                }
+                auto am2 = s; am2.p[8] = 127; am2.p[9] = 100; const auto amd2 = render(am2);   // AMF high: ring-mod sidebands
+                {
+                    double dd = 0, ss = 0; for (size_t i = 0; i < sine.size(); ++i) { dd += (amd2[i] - sine[i]) * (amd2[i] - sine[i]); ss += sine[i] * sine[i]; }
+                    report("AMD 0 -> 127 (AMF 100): how much the signal changed", 0.0, std::sqrt(dd / ss), std::sqrt(dd / ss) > 0.3);
+                }
+                auto dist = s; dist.p[16] = 127; const auto d = render(dist);
+                report("DIST 0 -> 127: high-band share", band(sine, true), band(d, true), band(d, true) > 2 * band(sine, true) + 1e-6);
+                auto srr = s; srr.p[15] = 127; const auto sr = render(srr);
+                report("SRR 0 -> 127: high-band share", band(sine, true), band(sr, true), band(sr, true) > 2 * band(sine, true) + 1e-6);
+                auto n = base(2); n.seconds = 1.0; n.retrig = true;
+                const auto noise = render(n);
+                auto lp = n; lp.p[12] = 0; lp.p[13] = 20; const auto filt = render(lp);   // FLTF 0, FLTW 20: a low pass
+                report("FILTER FLTW 127 -> 20 (FLTF 0): high-band share", band(noise, true), band(filt, true), band(filt, true) < 0.5 * band(noise, true));
+                auto hp = n; hp.p[12] = 100; hp.p[13] = 27; const auto filt2 = render(hp);   // FLTF 100: a high pass
+                report("FILTER FLTF 0 -> 100 (FLTW 27): low-band share", band(noise, false), band(filt2, false), band(filt2, false) < 0.5 * band(noise, false));
+                auto eq = n; eq.p[10] = 10; eq.p[11] = 127; const auto teq = render(eq);   // EQF low, EQG +63
+                report("EQ EQF 10, EQG 0 -> +63: low-band share", band(noise, false), band(teq, false), band(teq, false) > 1.3 * band(noise, false));
+            }
+            std::printf(fails ? "FX CHECK: %d FAILED\n" : "FX CHECK: all effects respond\n", fails);
+            return fails ? 1 : 0;
+        }
         if (std::strcmp(argv[2], "directcheck") == 0 && argc > 4) {
             // md-render <os.syx> directcheck <dump.syx> <kit>: each track of the kit alone, once in the mix and once on its
             // own output (Engine::setDirect); its own output against the main, sample by sample (neutral master section)

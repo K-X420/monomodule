@@ -95,7 +95,7 @@ constexpr const char* kMasterFxLabels[4][8] = {
     {"ATCK", "REL", "TRHD", "RTIO", "KNEE", "HP", "OUTG", "MIX"},
 };
 constexpr int kMasterFxDefaults[4][8] = {
-    {127, 0, 64, 64, 0, 127, 0, 127},
+    {0, 0, 64, 64, 0, 127, 127, 127},   // reverb: DVOL (the delay into the reverb) 0, GATE 127 = gate open (a full tail)
     {24, 0, 0, 32, 0, 127, 0, 127},
     {64, 64, 64, 64, 64, 64, 64, 64},
     {0, 64, 127, 0, 0, 0, 64, 0},
