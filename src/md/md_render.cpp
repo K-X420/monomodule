@@ -286,6 +286,13 @@ int main(int argc, char** argv)
                     std::printf("kit %2d %-16s REV", k, kit->name.c_str());
                     for (int i = 0; i < 8; ++i) std::printf(" %3d", kit->reverb[i]);
                     std::printf("   tracks sending to reverb: %d\n", revSends);
+                    if (std::getenv("ALLFX")) {
+                        const uint8_t* fx[3] = {kit->delay, kit->eq, kit->dynamics};
+                        const char* nm[3] = {"DEL", "EQ ", "DYN"};
+                        for (int f = 0; f < 3; ++f) { std::printf("                            %s", nm[f]); for (int i = 0; i < 8; ++i) std::printf(" %3d", fx[f][i]); std::printf("\n"); }
+                        std::printf("                            LEVELS"); for (int tr = 0; tr < 16; ++tr) std::printf(" %d", kit->levels[tr]); std::printf("\n");
+                        std::printf("                            T1 params"); for (int q = 0; q < 24; ++q) std::printf(" %d", kit->params[0][q]); std::printf("\n");
+                    }
                 }
             return 0;
         }
