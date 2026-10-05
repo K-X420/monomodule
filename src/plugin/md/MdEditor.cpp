@@ -815,7 +815,7 @@ void MdEditor::importFiles(const juce::Array<juce::File>& files)
 
 bool MdEditor::isInterestedInFileDrag(const juce::StringArray& files)
 {
-    for (const auto& f : files) if (f.endsWithIgnoreCase(".syx") || mnm::library::isMdTransferFile(f)) return true;
+    for (const auto& f : files) if (f.endsWithIgnoreCase(".syx") || mnm::library::isMdTransferFile(f) || MdProcessor::isAudioFile(f)) return true;
     return false;
 }
 
@@ -823,8 +823,8 @@ juce::Rectangle<int> MdEditor::dropFrame(const juce::StringArray& files, int x, 
 {
     const auto pages = juce::Rectangle<int>(m_syn.getX(), m_syn.getY() + m_syn.overhangPx(), m_routing.getRight() - m_syn.getX(), m_out.getBottom() - m_syn.getY() - m_syn.overhangPx());
     bool sound = false;
-    for (const auto& f : files) sound = sound || f.endsWithIgnoreCase(".mdsound");
-    if (sound) {   // the track key it lands on (the one under the pointer, else the selected track's)
+    for (const auto& f : files) sound = sound || f.endsWithIgnoreCase(".mdsound") || MdProcessor::isAudioFile(f);
+    if (sound) {   // a sound or a sample: the track key it lands on (the one under the pointer, else the selected track's)
         const int over = m_keys.trackAt(m_keys.getLocalPoint(this, juce::Point<int>(x, y)));
         const auto key = m_keys.keyBounds(over >= 0 ? over : m_track);
         return (key * kScale + m_keys.getPosition()).expanded(kScale);
@@ -862,11 +862,12 @@ void MdEditor::filesDropped(const juce::StringArray& files, int x, int y)
 {
     m_dragOver = false;
     repaint();
-    juce::Array<juce::File> syx;
+    juce::Array<juce::File> syx, audio;
     juce::StringArray errors;
     for (const auto& path : files) {
         const juce::File f(path);
         if (path.endsWithIgnoreCase(".syx")) { syx.add(f); continue; }
+        if (MdProcessor::isAudioFile(path)) { audio.add(f); continue; }
         mnm::library::MdTransferPayload p;
         if (!mnm::library::readMdTransferFile(f, p)) { errors.add(f.getFileName() + " is not a Machinedrum sound or kit file."); continue; }
         if (p.isKit) {
@@ -882,6 +883,29 @@ void MdEditor::filesDropped(const juce::StringArray& files, int x, int y)
         }
     }
     if (!syx.isEmpty()) importFiles(syx);
+    // samples: the first onto the track it was dropped on (its ROM slot, or the first empty ROM slot with the track
+    // switched to that ROM machine); any more into the next empty ROM slots
+    for (int n = 0; n < audio.size(); ++n) {
+        const auto& f = audio.getReference(n);
+        int slot = -1;
+        if (n == 0) {
+            const int over = m_keys.trackAt(m_keys.getLocalPoint(this, juce::Point<int>(x, y)));
+            const int t = over >= 0 ? over : m_track;
+            const int id = m_proc.machineIdOf(t);
+            slot = isRomMachine(id) ? romSlotOf(id) : m_proc.firstEmptyRomSlot();
+            if (slot < 0) { errors.add("Every ROM slot holds a sample: clear one (or drop onto a ROM track to replace its sample)."); break; }
+            const auto err = m_proc.loadSample(slot, f);
+            if (err.isNotEmpty()) { errors.add(f.getFileName() + ": " + err); continue; }
+            if (!isRomMachine(id))
+                if (auto* p = m_proc.apvts.getParameter(machineId(t))) p->setValueNotifyingHost(p->convertTo0to1(float(machineIndexOf(slot + 128))));
+            if (t != m_track) selectTrack(t);
+        } else {
+            slot = m_proc.firstEmptyRomSlot();
+            if (slot < 0) { errors.add("No empty ROM slot left for " + f.getFileName() + " and the rest."); break; }
+            const auto err = m_proc.loadSample(slot, f);
+            if (err.isNotEmpty()) errors.add(f.getFileName() + ": " + err);
+        }
+    }
     if (!errors.isEmpty()) juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Monomodule MD", errors.joinIntoString("\n"));
     timerCallback();
 }

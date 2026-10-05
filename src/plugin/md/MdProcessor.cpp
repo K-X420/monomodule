@@ -624,6 +624,27 @@ bool MdProcessor::previewPoll()
 
 // ---- UW samples ----------------------------------------------------------------------------------------------
 
+bool MdProcessor::isAudioFile(const juce::String& path)
+{
+    static const juce::StringArray exts = [] {
+        juce::AudioFormatManager formats;
+        formats.registerBasicFormats();
+        juce::StringArray e;
+        for (auto w : juce::StringArray::fromTokens(formats.getWildcardForAllFormats(), ";", ""))
+            if (w.startsWith("*.")) e.add(w.substring(1).toLowerCase());
+        return e;
+    }();
+    for (const auto& e : exts) if (path.endsWithIgnoreCase(e)) return true;
+    return false;
+}
+
+int MdProcessor::firstEmptyRomSlot() const
+{
+    for (int i = 0; i < kNumMachines; ++i)
+        if (isRomMachine(kMachines[i].id) && m_samples[size_t(romSlotOf(kMachines[i].id))].data.empty()) return romSlotOf(kMachines[i].id);
+    return -1;
+}
+
 juce::String MdProcessor::loadSample(int slot, const juce::File& file)
 {
     if (slot < 0 || slot >= mnm::md::VoiceEngine::kSlots) return "No such slot";

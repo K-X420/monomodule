@@ -107,6 +107,8 @@ public:
     // UW samples (message thread): any audio file into a ROM slot (mixed to mono, kept at its own rate; the DSP
     // resamples). Kept in the plugin state. Returns an error text, empty on success.
     juce::String loadSample(int slot, const juce::File& file);
+    static bool isAudioFile(const juce::String& path);   // a format loadSample reads (wav, aiff, flac, ogg, ...)
+    int firstEmptyRomSlot() const;                        // in ROM-01..48 order; -1 when every ROM slot holds a sample
     void clearSample(int slot);
     juce::String sampleName(int slot) const { return m_samples[size_t(slot)].name; }
     double sampleSeconds(int slot) const { const auto& s = m_samples[size_t(slot)]; return s.rate > 0 ? double(s.data.size()) / s.rate : 0.0; }

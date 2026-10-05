@@ -456,6 +456,48 @@ int main(int argc, char** argv)
         }
     }
     if (argc > 3) {
+        if (std::getenv("MD_DROP_TEST")) {   // samples dropped on the editor: onto a non-ROM track, then two at once
+            int fails = 0;
+            auto check = [&](bool ok, const juce::String& what) { std::printf("  %s %s\n", ok ? "ok  " : "FAIL", what.toRawUTF8()); fails += ok ? 0 : 1; };
+            auto writeWav = [](const juce::File& f, double hz) {
+                f.deleteFile();
+                juce::WavAudioFormat fmt;
+                std::unique_ptr<juce::FileOutputStream> s(f.createOutputStream());
+                std::unique_ptr<juce::AudioFormatWriter> w(fmt.createWriterFor(s.get(), 44100.0, 1, 16, {}, 0));
+                if (!w) return;
+                s.release();
+                juce::AudioBuffer<float> b(1, 22050);
+                for (int i = 0; i < b.getNumSamples(); ++i) b.setSample(0, i, 0.5f * std::sin(2.0f * juce::MathConstants<float>::pi * float(hz) * float(i) / 44100.0f));
+                w->writeFromAudioSampleBuffer(b, 0, b.getNumSamples());
+            };
+            const auto dir = juce::File::getSpecialLocation(juce::File::tempDirectory);
+            const auto a = dir.getChildFile("md_drop_a.wav"), b = dir.getChildFile("md_drop_b.wav"), c = dir.getChildFile("md_drop_c.wav");
+            writeWav(a, 220.0); writeWav(b, 330.0); writeWav(c, 440.0);
+            std::unique_ptr<juce::AudioProcessorEditor> ed(proc.createEditor());
+            auto* med = dynamic_cast<MdEditor*>(ed.get());
+            check(med->isInterestedInFileDrag({a.getFullPathName()}), "a .wav is accepted for dropping");
+            check(!med->isInterestedInFileDrag({dir.getChildFile("notes.txt").getFullPathName()}), "a .txt is not");
+            med->filesDropped({a.getFullPathName()}, 0, 0);   // onto the selected track (T1, TRX-BD)
+            proc.syncMachineSideEffects();
+            check(proc.machineIdOf(0) == 128 && proc.sampleName(0) == "md_drop_a", "T1 became ROM-01 holding md_drop_a (machine " + juce::String(proc.machineIdOf(0)) + ", slot 1 '" + proc.sampleName(0) + "')");
+            med->filesDropped({b.getFullPathName(), c.getFullPathName()}, 0, 0);   // onto the ROM track: replace, then the next empty slot
+            proc.syncMachineSideEffects();
+            check(proc.sampleName(0) == "md_drop_b" && proc.sampleName(1) == "md_drop_c", "two files: ROM-01 replaced ('" + proc.sampleName(0) + "'), the second into ROM-02 ('" + proc.sampleName(1) + "')");
+            // it plays: a trig of T1
+            juce::AudioBuffer<float> buf(2, 4800);
+            double e = 0;
+            for (int blk = 0; blk < 10; ++blk) {
+                juce::MidiBuffer midi;
+                if (blk == 0) midi.addEvent(juce::MidiMessage::noteOn(1, 36, uint8_t(110)), 0);
+                buf.clear();
+                proc.processBlock(buf, midi);
+                for (int i = 0; i < buf.getNumSamples(); ++i) e += double(buf.getSample(0, i)) * buf.getSample(0, i);
+            }
+            check(e > 1.0, "T1 plays the dropped sample (energy " + juce::String(e, 2) + ")");
+            a.deleteFile(); b.deleteFile(); c.deleteFile();
+            std::printf(fails ? "DROP TEST FAILED (%d)\n" : "DROP TEST OK\n", fails);
+            return fails ? 1 : 0;
+        }
         if (const char* m = std::getenv("MD_UI_MACHINE"))   // track 1's machine for the snapshot (an MD machine ID)
             if (auto* pp = proc.apvts.getParameter(machineId(0))) { pp->setValueNotifyingHost(pp->convertTo0to1(float(machineIndexOf(std::atoi(m))))); proc.syncMachineSideEffects(); }
         std::unique_ptr<juce::AudioProcessorEditor> ed(proc.createEditor());
