@@ -45,7 +45,8 @@ inline const char* const kIconLibrary[] = {   // four slots
 
 inline void arrowH(LcdCanvas& cv, int cx, int cy, bool left, bool on)
 {
-    for (int c = 0; c < 4; ++c) { const int x = left ? cx + 1 - c : cx - 2 + c; const int h = left ? 2 * c + 1 : 7 - 2 * c; cv.fillRect(x, cy - h / 2, 1, h, on); }
+    // left: the point at the left (column cx - 2), widening to the right; right: the mirror
+    for (int c = 0; c < 4; ++c) { const int x = cx - 2 + c; const int h = left ? 2 * c + 1 : 7 - 2 * c; cv.fillRect(x, cy - h / 2, 1, h, on); }
 }
 
 inline void caret(LcdCanvas& cv, int x, int y, bool up, bool on)

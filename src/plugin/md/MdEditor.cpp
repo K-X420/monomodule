@@ -135,10 +135,18 @@ int logoWidthLcd(const juce::String& fam)
 }
 }
 
+// One size for every machine (the widest logo, the longest name), so the header stays put while sounds are stepped
+// through: the logo centred in a box as wide as the widest, the name always at the same place.
+int maxLogoWidthLcd()
+{
+    static const int w = [] { int m = 0; for (int i = 0; i < kNumMachines; ++i) m = juce::jmax(m, logoWidthLcd(familyOf(i))); return m; }();
+    return w;
+}
+
 int MdMachineBlock::preferredWidth() const
 {
-    const int w = kLogoX + logoWidthLcd(familyOf(m_index)) + kLogoGap
-                + LcdCanvas::textWidth(spec::kFontBold8, shortOf(m_index).toRawUTF8()) + 4 + 5 + 4;
+    static const int nameW = [] { int m = 0; for (int i = 0; i < kNumMachines; ++i) m = juce::jmax(m, LcdCanvas::textWidth(spec::kFontBold8, shortOf(i).toRawUTF8())); return m; }();
+    const int w = kLogoX + maxLogoWidthLcd() + kLogoGap + nameW + 4 + 5 + 4;
     return juce::jmax(64, w) * kScale;
 }
 
@@ -150,8 +158,9 @@ void MdMachineBlock::paint(juce::Graphics& g)
     const auto fam = familyOf(m_index), name = shortOf(m_index);
     const auto* art = text::logoArt(fam.toRawUTF8());
     const int ty = (h - spec::kFontBold8.h) / 2;
-    if (!art) cv.text(spec::kFontBold8, fam.toRawUTF8(), kLogoX, ty, false);
-    const int nameX = kLogoX + logoWidthLcd(fam) + kLogoGap;
+    const int logoX = kLogoX + (maxLogoWidthLcd() - logoWidthLcd(fam)) / 2;   // centred in the logo box
+    if (!art) cv.text(spec::kFontBold8, fam.toRawUTF8(), logoX, ty, false);
+    const int nameX = kLogoX + maxLogoWidthLcd() + kLogoGap;
     cv.text(spec::kFontBold8, name.toRawUTF8(), nameX, ty, false);
     const int ax = nameX + LcdCanvas::textWidth(spec::kFontBold8, name.toRawUTF8()) + 4, ay = h / 2 - 1;
     for (int r = 0; r < 3; ++r) {   // the picker arrow: down when closed, up while open
@@ -161,7 +170,7 @@ void MdMachineBlock::paint(juce::Graphics& g)
     cv.draw(g, 0, 0);
     if (art) {
         g.setColour(lcd::paper);
-        const int x0 = kLogoX * kScale, y0 = (getHeight() - art->h * kLogoPx) / 2;
+        const int x0 = logoX * kScale, y0 = (getHeight() - art->h * kLogoPx) / 2;
         for (int y = 0; y < art->h; ++y)
             for (int x = 0; x < art->w; ++x)
                 if (text::logoLit(*art, x, y)) g.fillRect(x0 + x * kLogoPx, y0 + y * kLogoPx, kLogoPx, kLogoPx);
@@ -205,10 +214,16 @@ void MdTrackKeys::paintGrid(LcdCanvas& cv)
         flag("A", (gr.accent >> s) & 1);
         flag("S", (gr.slide >> s) & 1);
         flag("W", (gr.swing >> s) & 1);
-        flag("L", (gr.locks >> s) & 1);
-        if (s == gr.held) {   // held for locks: an inner frame
-            cv.invertRect(r.getX() + 2, r.getY() + 2, r.getWidth() - 4, 1); cv.invertRect(r.getX() + 2, r.getBottom() - 3, r.getWidth() - 4, 1);
-            cv.invertRect(r.getX() + 2, r.getY() + 3, 1, r.getHeight() - 6); cv.invertRect(r.getRight() - 3, r.getY() + 3, 1, r.getHeight() - 6);
+        if (((gr.locks >> s) & 1) && s != gr.held) {   // locked: a crit burst in the corner
+            static const char* const burst[7] = {"#..#..#", ".#.#.#.", "..###..", "#######", "..###..", ".#.#.#.", "#..#..#"};
+            for (int y = 0; y < 7; ++y) for (int x = 0; x < 7; ++x) if (burst[y][x] == '#') cv.set(r.getRight() - 9 + x, r.getY() + 2 + y, ink);
+        }
+        if (s == gr.held) {   // held for locks: paper, a heavy frame, LOCK
+            cv.fillRect(r.getX(), r.getY(), r.getWidth(), r.getHeight(), false);
+            cv.fillRect(r.getX(), r.getY(), r.getWidth(), 2, true); cv.fillRect(r.getX(), r.getBottom() - 2, r.getWidth(), 2, true);
+            cv.fillRect(r.getX(), r.getY(), 2, r.getHeight(), true); cv.fillRect(r.getRight() - 2, r.getY(), 2, r.getHeight(), true);
+            cv.text(spec::kFontBold8, juce::String(s + 1).toRawUTF8(), r.getX() + 4, r.getY() + 4, true);
+            cv.textCentred(spec::kFontTiny3x5, "LOCK", r.getX(), r.getWidth(), r.getBottom() - 10, true);
         }
         if (s == gr.play) cv.invertRect(r.getX(), r.getY(), r.getWidth(), r.getHeight());   // the running light
     }
@@ -433,7 +448,9 @@ void MdMachinePicker::drawFamily(juce::Graphics& g, const Family& f) const
     // header: the family's logo alone, paper on ink, as large as the column allows (GND: its name)
     g.fillRect(f.header);
     if (const auto* art = text::logoArt(f.name.toRawUTF8())) {
-        const int px = juce::jlimit(1, 3, juce::jmin((f.header.getWidth() - 12) / art->w, (f.header.getHeight() - 12) / art->h));
+        int px = 3;   // one scale for every family (the logos share one size): what the narrowest header takes
+        for (const auto& o : m_families) px = juce::jmin(px, (o.header.getWidth() - 12) / art->w, (o.header.getHeight() - 12) / art->h);
+        px = juce::jmax(1, px);
         const int lx = f.header.getCentreX() - art->w * px / 2, ly = f.header.getCentreY() - art->h * px / 2;
         g.setColour(lcd::paper);
         for (int y = 0; y < art->h; ++y)

@@ -106,7 +106,7 @@ int main(int argc, char** argv)
         }
         if (argc > 3) {
             std::unique_ptr<juce::AudioProcessorEditor> ed(p.createEditor());
-            if (auto* med = dynamic_cast<MdEditor*>(ed.get())) { med->showGrid(4); med->refresh(); }
+            if (auto* med = dynamic_cast<MdEditor*>(ed.get())) { med->showGrid(12); med->refresh(); }
             auto img = ed->createComponentSnapshot(ed->getLocalBounds(), true, 1.0f);
             juce::File png{juce::String(argv[3])};
             png.deleteFile();
