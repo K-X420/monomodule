@@ -127,7 +127,7 @@ void MdMachineBlock::setMachine(int index)
 // The machine block, as Monomodule's: the family's logo (its name for GND), the machine, the picker arrow. The logo is
 // drawn in screen pixels, kLogoPx per logo pixel, after the LCD canvas.
 namespace {
-constexpr int kLogoPx = 4, kLogoX = 4, kLogoGap = 6;   // screen px per logo pixel; LCD px
+constexpr int kLogoPx = 2, kLogoX = 4, kLogoGap = 6;   // screen px per logo pixel (fine detail, as the Monomachine's logos); LCD px
 int logoWidthLcd(const juce::String& fam)
 {
     if (const auto* art = text::logoArt(fam.toRawUTF8())) return (art->w * kLogoPx + kScale - 1) / kScale;
@@ -448,9 +448,7 @@ void MdMachinePicker::drawFamily(juce::Graphics& g, const Family& f) const
     // header: the family's logo alone, paper on ink, as large as the column allows (GND: its name)
     g.fillRect(f.header);
     if (const auto* art = text::logoArt(f.name.toRawUTF8())) {
-        int px = 3;   // one scale for every family (the logos share one size): what the narrowest header takes
-        for (const auto& o : m_families) px = juce::jmin(px, (o.header.getWidth() - 12) / art->w, (o.header.getHeight() - 12) / art->h);
-        px = juce::jmax(1, px);
+        const int px = kLogoPx;   // as in the machine block, in every header (the logos share one size)
         const int lx = f.header.getCentreX() - art->w * px / 2, ly = f.header.getCentreY() - art->h * px / 2;
         g.setColour(lcd::paper);
         for (int y = 0; y < art->h; ++y)

@@ -62,8 +62,8 @@ inline const char* machineText(int id)
     return nullptr;
 }
 
-// A family's logo: a wordmark (MdLogos.h, made by a generator script: bold 8x10 letters styled per family, as the
-// Monomachine's splash logos are each in their own style). GND has none, as on the Monomachine: its name is printed.
+// A family's logo (MdLogos.h, made by make_logos.py): 1-bit art at the LCD's resolution, each family in a type of its
+// own as the Monomachine's are, all in one box. GND has none, as on the Monomachine: its name is printed.
 inline const LogoArt* logoArt(const char* family)
 {
     for (const auto& l : kLogoArt) if (std::strcmp(l.family, family) == 0) return &l;
