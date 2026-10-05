@@ -28,7 +28,7 @@ set(STAGE "${OUT_DIR}/${NAME}")
 file(REMOVE_RECURSE "${STAGE}")
 file(MAKE_DIRECTORY "${STAGE}/VST3")
 
-set(PLUGINS "One:MnmOne" "Six:MnmSix" "FX:MnmFx")
+set(PLUGINS "One:MnmOne" "Six:MnmSix" "FX:MnmFx" "MD:MnmMd")
 foreach(p ${PLUGINS})
   string(REPLACE ":" ";" p "${p}")
   list(GET p 0 short)
@@ -48,6 +48,10 @@ set(app "${BUILD_DIR}/src/app/MnmLibraryApp_artefacts/Release")
 file(GLOB app_files "${app}/Monomodule Library*")
 file(COPY ${app_files} DESTINATION "${STAGE}/Library")
 
+if(PLATFORM STREQUAL "macos")   # double-click installer: copies into ~/Library, clears quarantine, ad-hoc signs
+  file(COPY "${SRC_DIR}/packaging/macos/Install Monomodule.command" DESTINATION "${STAGE}"
+       FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+endif()
 file(COPY "${SRC_DIR}/LICENSE" "${SRC_DIR}/THIRD_PARTY_NOTICES.md" "${SRC_DIR}/README.md" DESTINATION "${STAGE}")
 
 execute_process(COMMAND ${CMAKE_COMMAND} -E tar cf "${NAME}.zip" --format=zip "${NAME}"

@@ -14,7 +14,8 @@ Monomachine's own sound engine inside an emulated Motorola DSP56300, so it match
 | | Type | What it does |
 |---|---|---|
 | **Monomodule One** | Instrument (AU, VST3, standalone) | One Monomachine track. Plays all 22 machines: GND, SWAVE, SID, DPRO, FM+, VO-6 and the FX machines. The editor recreates the hardware's LCD pages, with the SYN, AMP, FILT and EFX pages plus three LFOs. FX machines process the side-chain input. |
-| **Monomodule Six** | Instrument (AU, VST3, standalone) | All six tracks in one instance. MIDI channels 1-6 play tracks 1-6. It has six stereo outputs, and each track has its own routing: OUT BUS AB/CD/EF, and for FX machines an input of NEIBOR, INP A/B/AB or BUS AB/CD/EF. |
+| **Monomodule Six** | Instrument (AU, VST3, standalone) | All six tracks in one instance. MIDI channels 1-6 play tracks 1-6. It has six stereo outputs, and each track has its own routing: OUT BUS AB/CD/EF, and for FX machines an input of NEIBOR, INP A/B/AB or BUS AB/CD/EF. **POLY** mode plays chords on one MIDI channel by spreading notes over the tracks, and a menu item copies one track's sound to all six. |
+| **Monomodule MD** | Instrument (AU, VST3, standalone) | The Elektron Machinedrum (SPS-1 UW), run on its own OS and DSP code. All 16 tracks with every machine family (TRX, EFM, E12, P-I, GND, INP, RAM and ROM, plus the MID and CTR control machines), the master effects (delay, Gate Box reverb, EQ, dynamix), optional separate outputs per track (16 stereo outputs), drag-and-drop samples onto ROM slots, and the Library panel for Machinedrum kits, patterns and songs. Machinedrum version by KX. |
 | **Monomodule FX** | Effect (AU, VST3) | The FX machines as an audio effect: THRU, REVERB, CHORUS, DYNAMIX, RINGMOD, PHASER and FLANGER. |
 | **Monomodule Library** | Standalone app | A library for Monomachine sysex dumps. It imports `.syx` files without losing any data, keeps a version history for each Monomachine you own, and lets you browse presets, kits and patterns with audio previews. You can drag items into the plugins or your DAW. |
 
@@ -32,6 +33,25 @@ Monomodule needs **Monomachine OS 1.32B**, which Elektron provides as a free dow
 
 You only have to do this once. All Monomodule plugins and the Library app share the setting. The file stays where
 you put it: Monomodule reads it each time it starts and never copies it or redistributes it.
+
+### Machinedrum OS (Monomodule MD)
+
+Monomodule MD needs the **Machinedrum UW OS 1.63** (`Elektron_SPS1-1UW_OS1.63.syx`), also a free download from
+Elektron's Machinedrum support page. The first time you open Monomodule MD it asks for it the same way.
+
+## Installing on macOS (pre-release builds)
+
+The macOS zip (`Monomodule-<version>-macos-universal.zip`) runs on Apple Silicon and Intel Macs, macOS 12 or later.
+
+1. Unzip it.
+2. Double-click **Install Monomodule.command**. If macOS says it can't be opened because it is from an
+   unidentified developer, open **System Settings > Privacy & Security**, scroll down and click **Open Anyway**
+   (or right-click the file and choose **Open**). Or run it from Terminal: `bash ~/Downloads/Monomodule-*/Install\ Monomodule.command`.
+3. It copies the VST3 and AU plugins to `~/Library/Audio/Plug-Ins/`, and the standalone apps and the Library app
+   to `~/Applications`. These builds aren't notarised by Apple, so the script also clears the download quarantine
+   flag and signs each bundle locally. Without that, hosts refuse to load them.
+4. Restart your DAW and rescan plugins. In Ableton Live, turn on **Use Audio Units v2** and/or **Use VST3 Plug-in
+   System Folders** under **Settings > Plug-ins**, then click **Rescan**.
 
 ## Installing a release
 
@@ -177,6 +197,8 @@ dsp56300.
 
 Monomodule is made by **Shnolk**. Contact: [@shnolk](https://www.instagram.com/shnolk) on Instagram, or
 [shnolk@halftone.world](mailto:shnolk@halftone.world).
+
+Monomodule MD (the Machinedrum version) and the Six's POLY mode are by **KX**.
 
 Monomodule stands on the work of:
 

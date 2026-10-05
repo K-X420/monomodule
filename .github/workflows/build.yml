@@ -5,7 +5,7 @@ name: build
 
 on:
   push:
-    branches: [master, main]
+    branches: [master, main, machinedrum]
     tags: ['v*']
   pull_request:
   workflow_dispatch:
@@ -72,5 +72,6 @@ jobs:
         with:
           draft: true
           files: |
+            dist/*-macos-*.zip
             dist/*-linux-*.zip
             dist/*-windows-*.zip
