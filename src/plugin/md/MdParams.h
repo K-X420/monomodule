@@ -198,7 +198,7 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
         g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{panId(t), 3}, "PAN", 0, 127, 64, hwDisplay(true)));   // raw, shown -64..63
         g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{delId(t), 1}, "DEL", 0, 127, 0));
         g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{revId(t), 1}, "REV", 0, 127, 0));
-        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{levelId(t), 2}, "LEVEL", 0, 127, 127));
+        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{levelId(t), 2}, "LEVEL", 0, 127, 100));   // 100 as Monomodule: headroom above
         juce::StringArray routes;
         for (auto* r : kRouteNames) routes.add(r);
         g->addChild(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{routeId(t), 1}, "OUT", routes, kNumRoutes - 1));

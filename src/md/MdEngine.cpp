@@ -113,6 +113,12 @@ void Engine::render()
     refresh();
     m_voices->renderPass(m_block);
     m_mixer->renderBlock(m_block, m_out);
+    for (int t = 0; t < kTracks; ++t) {   // the meters
+        float L[kFrames], R[kFrames], pk = 0.0f;
+        m_mixer->trackOutput(t, L, R);
+        for (int i = 0; i < kFrames; ++i) pk = std::max({pk, std::abs(L[i]), std::abs(R[i])});
+        m_trackPeak[size_t(t)] = pk * kMasterGain;
+    }
     for (int t = 0; t < kTracks; ++t) {
         if (!((m_direct >> t) & 1)) continue;
         auto& o = m_trackOut[size_t(t)];

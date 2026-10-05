@@ -49,6 +49,7 @@ int main(int argc, char** argv)
         proc.prepareToPlay(rate, block);
     }
     std::vector<double> busEnergy(size_t(proc.getBusCount(false)), 0.0);
+    std::array<float, kTracks> meterMax{};   // MD_METER: the LEV meter's highest reading per track over the render
     if (std::getenv("MD_ROM_TEST")) {   // a 220 Hz WAV into ROM-01 on track 1, then the state round trip into a 2nd instance
         juce::File wav = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("md-rom-test.wav");
         wav.deleteFile();
@@ -274,7 +275,7 @@ int main(int argc, char** argv)
         proc.initKit();
         proc.syncMachineSideEffects();
         check(proc.machineIdOf(0) == kDefaultKit[0].id && proc.machineIdOf(5) == kDefaultKit[5].id, "INIT KIT: the default machines");
-        check(int(std::lround(proc.apvts.getRawParameterValue(levelId(3))->load())) == 127 && knob(0, 0) == kDefaultKit[0].knobs[0], "INIT KIT: levels and knobs back to the defaults");
+        check(int(std::lround(proc.apvts.getRawParameterValue(levelId(3))->load())) == 100 && knob(0, 0) == kDefaultKit[0].knobs[0], "INIT KIT: levels (100) and knobs back to the defaults");
         check(proc.kitName().isEmpty() && proc.loadedKitKey().isEmpty() && !proc.kitModified(), "INIT KIT: no loaded kit");
         if (std::getenv("MD_LIB_IMPORT_FILE")) {   // save a loaded kit into its project slot
             juce::SharedResourcePointer<MdLibrary> lib;
@@ -386,6 +387,7 @@ int main(int argc, char** argv)
             if (s % 8 == 7) note(53);                 // claves
         }
         proc.processBlock(buf, midi);
+        if (std::getenv("MD_METER")) for (int t = 0; t < kTracks; ++t) meterMax[size_t(t)] = std::max(meterMax[size_t(t)], proc.trackPeak(t));
         for (int c = 0; c < 2; ++c) out.copyFrom(c, pos, buf, c, 0, n);
         for (int b = 0; outsTest && b < proc.getBusCount(false); ++b) {
             if (!proc.getBus(false, b)->isEnabled()) continue;
@@ -398,6 +400,11 @@ int main(int argc, char** argv)
     for (int c = 0; c < 2; ++c) for (int i = 0; i < total; ++i) { const float v = out.getSample(c, i); peak = std::max(peak, std::abs(v)); sum += double(v) * v; }
     std::printf("rendered %.2f s in %.0f ms (%.1fx realtime); peak %.3f RMS %.4f\n", total / rate, ms, total / rate * 1000.0 / ms, peak, std::sqrt(sum / (2.0 * total)));
 
+    if (std::getenv("MD_METER")) {
+        std::printf("meter peaks:");
+        for (int t = 0; t < kTracks; ++t) std::printf(" T%d %.3f", t + 1, meterMax[size_t(t)]);
+        std::printf("\n");
+    }
     if (outsTest) {
         std::printf("bus levels (RMS):");
         for (int b = 0; b < proc.getBusCount(false); ++b)

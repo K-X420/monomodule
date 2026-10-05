@@ -218,6 +218,8 @@ void MdProcessor::runPass()
         float pk = m_activity[size_t(t)].load() * 0.97f;
         for (auto v : m_engine->voiceBlock()[size_t(t)]) pk = std::max(pk, std::abs(float(v)) * (1.0f / 8388608.0f));
         m_activity[size_t(t)].store(pk);
+        const float level = m_engine->trackPeak(t) * float(m_master->load()) / 100.0f;
+        if (level > m_peak[size_t(t)].load()) m_peak[size_t(t)].store(level);
     }
     const auto& out = m_engine->output();
     const float gain = float(m_master->load()) / 100.0f * (1.0f / 8388608.0f);
@@ -496,6 +498,7 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
             else if (!isCtrMachine(id)) m_pending.push_back({t, 0.0, 100});
         }
     controlMachines(n);
+    for (auto& p : m_peak) p.store(p.load() * 0.8f);   // the meters' fall-off
 
     // render passes until the resampler has what it needs; each trig goes into the pass that covers its time
     const int needed = int(std::ceil(n * ratio)) + 4;

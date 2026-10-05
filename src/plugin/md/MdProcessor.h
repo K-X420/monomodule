@@ -108,6 +108,9 @@ public:
     double sampleMemoryUsed() const;   // 0..1 of the UW sample memory
     void auditionTrack(int t) { m_audition[size_t(t)].store(true); }   // UI: trig as from MIDI
     float trackActivity(int t) const { return m_activity[size_t(t)].load(); }   // decays between UI polls
+    // The track's output level for the LEV fader's meter, as Monomodule's: linear peak at the plugin's output scale,
+    // falling off x0.8 per host block so it stays readable between UI polls
+    float trackPeak(int t) const { return m_peak[size_t(t)].load(); }
     mnm::md::Engine* engineForTests() { return m_engine.get(); }   // dev: md-plugintest probes
 
     juce::AudioProcessorValueTreeState apvts;
@@ -195,6 +198,7 @@ private:
     juce::String m_previewKey;
     void mixPreview(juce::AudioBuffer<float>& buffer);
     std::array<std::atomic<float>, kTracks> m_activity{};
+    std::array<std::atomic<float>, kTracks> m_peak{};
     std::array<std::atomic<bool>, kTracks> m_machineChanged{};   // message thread: load that machine's defaults
     // per-machine knob memory (state, not parameters): the eight values of every machine a track has visited, as
     // Monomodule keeps its SYN values; a machine change brings back that machine's values (else its defaults)

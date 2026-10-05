@@ -622,7 +622,7 @@ void MdEditor::bindTrackPages()
     const int t = m_track;
     m_levelAttach.reset();
     m_levelAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(m_proc.apvts, levelId(t), m_level);
-    m_level.setDoubleClickReturnValue(true, 127.0);
+    m_level.setDoubleClickReturnValue(true, 100.0);
     m_shownMachineId = -2; m_pagesMachineId = -2;
     rebuildSynPage();
 }
@@ -1019,7 +1019,7 @@ void MdEditor::timerCallback()
         if (t == m_track && idx != m_machineIndex) { m_machineIndex = idx; m_machineBlock.setMachine(idx); }
     }
     rebuildSynPage();
-    m_level.setMeter(juce::jlimit(0.0f, 1.0f, m_proc.trackActivity(m_track) * 4.0f));
+    m_level.setMeter(m_proc.trackPeak(m_track));
     // ROM machines: their sample slot in the SYNTHESIS title bar
     const int id = m_proc.machineIdOf(m_track);
     const bool rom = isRomMachine(id);

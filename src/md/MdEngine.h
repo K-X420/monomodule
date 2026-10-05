@@ -55,6 +55,9 @@ public:
     void setDirect(uint32_t mask);
     uint32_t direct() const { return m_direct; }
     const float* trackOut(int t, int ch) const { return m_trackOut[size_t(t)][size_t(ch)].data(); }
+    // The track's level in the main mix this pass: the peak of its block after its effects, volume and pan, at the
+    // main's scale (x kMasterGain; 1.0 = full scale), whether it plays on the main or its own output (a meter)
+    float trackPeak(int t) const { return m_trackPeak[size_t(t)]; }
 
 private:
     void refresh();
@@ -79,6 +82,7 @@ private:
     MixEngine::Output m_out{};
     std::array<int32_t, 64> m_masterReturn{};
     uint32_t m_direct = 0;
+    std::array<float, kTracks> m_trackPeak{};
     // per track and channel: kMasterLatency frames of history, then the block (trackOut reads from the history start)
     std::array<std::array<std::array<float, kFrames + kMasterLatency>, 2>, kTracks> m_trackOut{};
 };
