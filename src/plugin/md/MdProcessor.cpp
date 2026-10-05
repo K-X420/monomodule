@@ -62,6 +62,8 @@ MdProcessor::MdProcessor()
     m_master = apvts.getRawParameterValue(masterId());
     m_velMode = apvts.getRawParameterValue(velModeId());
     m_outputMode = apvts.getRawParameterValue(outputModeId());
+    m_bpmSync = apvts.getRawParameterValue(bpmSyncId());
+    m_bpm = apvts.getRawParameterValue(bpmId());
     m_accent = apvts.getRawParameterValue(accentId());
     m_firmwarePath = loadOsPath();
     loadEngine();
@@ -82,8 +84,8 @@ int MdProcessor::machineIdOf(int t) const
 void MdProcessor::setFirmwarePath(const juce::String& path, bool persist)
 {
     m_firmwarePath = path;
-    if (persist) saveSharedSetting("mdOsPath", path);
     loadEngine();
+    if (persist && m_engineReady) saveSharedSetting("mdOsPath", path);   // a failed load must not reach the other instances
 }
 
 void MdProcessor::loadEngine()
@@ -188,7 +190,40 @@ void MdProcessor::refreshParameters()
         for (int k = 0; k < 8; ++k) master[size_t(fx)][size_t(k)] = val(m_masterFx[size_t(fx)][size_t(k)]);
     m_engine->setMasterFx(master);
     if (m_snap.exchange(false)) { m_engine->snap(); m_ctlQuietUntil = m_clock + int64_t(0.2 * m_hostRate); }
-    m_engine->setTempo(m_hostBpm.load());
+    {   // switching sync off hands the current host tempo over to BPM, so nothing jumps
+        const bool synced = m_bpmSync->load() >= 0.5f;
+        if (m_wasSynced && !synced) {
+            const float host = float(m_hostBpm.load());
+            juce::MessageManager::callAsync([this, host] { if (auto* p = apvts.getParameter(bpmId())) p->setValueNotifyingHost(p->convertTo0to1(host)); });
+        }
+        m_wasSynced = synced;
+    }
+    m_engine->setTempo(tempo());
+}
+
+double MdProcessor::tempo() const
+{
+    const double t = m_bpmSync->load() >= 0.5f ? m_hostBpm.load() : double(m_bpm->load());
+    return t >= 20.0 && t <= 400.0 ? t : 120.0;
+}
+
+juce::String MdProcessor::statusText() const
+{
+    const juce::ScopedLock sl(m_engineLock);
+    juce::String s = m_status;
+    if (m_engine) {
+        if (m_engine->voices().faulted()) s += " | DSP2 (voices) FAULT: " + juce::String(m_engine->voices().faultReason());
+        else if (m_engine->mixer().faulted()) s += " | DSP1 (mixer) FAULT: " + juce::String(m_engine->mixer().faultReason());
+        else s += " | " + juce::String(int64_t(m_engine->voices().lastPassInstructions())) + " + " + juce::String(int64_t(m_engine->mixer().lastBlockInstructions())) + " instr/pass";
+    }
+    if (std::abs(m_hostRate - kEngineRate) > 0.5) s += " | host rate " + juce::String(m_hostRate, 0) + " Hz: resampling from 44100 (not 1:1)";
+    return s;
+}
+
+void MdProcessor::refreshSharedOsPath()
+{
+    const auto p = loadOsPath();
+    if (p.isNotEmpty() && p != m_firmwarePath && juce::File(p).existsAsFile()) setFirmwarePath(p, false);
 }
 
 void MdProcessor::runPass()
@@ -280,8 +315,7 @@ void MdProcessor::midTrig(int t, int pos)
     if (pc > 0 && pc - 1 != m_midLastPc[size_t(ch)]) { midSend(pos, uint8_t(0xC0 | ch), uint8_t(pc - 1)); m_midLastPc[size_t(ch)] = pc - 1; }
     const int note = midValue(t, 0), len = midValue(t, 3);   // the LFOs count (added after the knob, as the OS does)
     const int vel = juce::jmax(1, midValue(t, 4));
-    double bpm = m_hostBpm.load();
-    if (bpm < 20.0 || bpm > 400.0) bpm = 120.0;
+    const double bpm = tempo();
     const int ticks = len > 0 ? 3 + 3 * len : 4;
     const int64_t offAt = m_clock + pos + int64_t(std::lround(ticks * 60.0 / (bpm * 96.0) * m_hostRate));
     auto play = [&](int nn) {
@@ -486,6 +520,11 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
                     else if (isCtrMachine(id)) m_activity[size_t(t)].store(1.0f);
                     else m_pending.push_back({t, meta.samplePosition * ratio, int(m.getVelocity())});
                 }
+        } else if (m.isAllNotesOff() || m.isAllSoundOff()) {   // the host stopping: the MID machines' notes end
+            for (auto& notes : m_midNotes) {
+                for (const auto& nt : notes) midSend(meta.samplePosition, uint8_t(nt.status & 0xEF), nt.note, 0);
+                notes.clear();
+            }
         } else if (m.isController()) {
             handleCc(m.getChannel(), m.getControllerNumber(), m.getControllerValue());
         }
@@ -560,7 +599,7 @@ void MdProcessor::previewPlay(const juce::String& key, const std::function<mnm::
     if (!m_previewRenderer) m_previewRenderer = std::make_unique<mnm::library::PreviewRenderer>();
     m_previewRenderer->setMdFirmwarePath(m_firmwarePath);
     m_previewRenderer->clearStatus();
-    double bpm = m_hostBpm.load();
+    double bpm = tempo();
     if (bpm < 30.0 || bpm > 300.0) bpm = 120.0;
     auto audio = m_previewRenderer->requestMd(key, bpm, build);
     if (!audio) { previewStop(); return; }
@@ -960,13 +999,15 @@ void MdProcessor::initKit()
 
 void MdProcessor::clearFirmware()
 {
-    setFirmwarePath({}, true);
+    setFirmwarePath({}, false);
+    saveSharedSetting("mdOsPath", {});   // cleared for the other instances too
 }
 
 void MdProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
     auto state = apvts.copyState();
     state.setProperty("schema", 2, nullptr);
+    state.setProperty("firmwarePath", m_firmwarePath, nullptr);
     state.setProperty("kitName", m_kitName, nullptr);
     state.setProperty("kitKey", m_kitKey, nullptr);
     juce::String locked;
@@ -1013,6 +1054,9 @@ void MdProcessor::setStateInformation(const void* data, int sizeInBytes)
     shadowsFromTree(apvts.state.getChildWithName("SHADOWS"));
     for (auto& f : m_machineChanged) f.store(false);   // restored knobs stay as saved
     m_snap = true;
+    // the session's OS file, when it is there and differs (a session restore does not change the shared setting)
+    const auto path = apvts.state.getProperty("firmwarePath", "").toString();
+    if (path.isNotEmpty() && path != m_firmwarePath && juce::File(path).existsAsFile()) setFirmwarePath(path, false);
 }
 
 juce::AudioProcessorEditor* MdProcessor::createEditor() { return new MdEditor(*this); }

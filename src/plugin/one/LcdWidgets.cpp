@@ -340,4 +340,84 @@ void LcdToggle::paintButton(juce::Graphics& g, bool highlighted, bool)
     if (highlighted) { g.setColour(lcd::ink.withAlpha(0.15f)); g.fillRect(getLocalBounds()); }
 }
 
+// ---------------------------------------------------------------------------
+// BpmReadout (Monomodule and Monomodule MD headers)
+
+BpmReadout::BpmReadout()
+{
+    setSliderStyle(juce::Slider::LinearHorizontal);
+    setTextBoxStyle(juce::Slider::NoTextBox, true, 0, 0);
+    setSliderSnapsToMousePosition(false);
+    setMouseDragSensitivity(300);
+    setOpaque(true);
+    m_editor.setJustification(juce::Justification::centredRight);
+    m_editor.setInputRestrictions(5, "0123456789.");
+    m_editor.setSelectAllWhenFocused(true);
+    m_editor.setFont(juce::Font(juce::FontOptions(float(6 * kScale))));
+    m_editor.setIndents(2, 1);
+    m_editor.onReturnKey = [this] { endEdit(true); };
+    m_editor.onEscapeKey = [this] { endEdit(false); };
+    m_editor.onFocusLost = [this] { endEdit(true); };
+    addChildComponent(m_editor);
+    setSynced(true);
+}
+
+void BpmReadout::setSynced(bool synced)
+{
+    m_synced = synced;
+    if (synced) endEdit(false);
+    setMouseCursor(synced ? juce::MouseCursor::NormalCursor : juce::MouseCursor::LeftRightResizeCursor);
+    repaint();
+}
+
+void BpmReadout::setHostBpm(float bpm)
+{
+    if (std::abs(bpm - m_hostBpm) < 0.05f) return;
+    m_hostBpm = bpm;
+    if (m_synced) repaint();
+}
+
+void BpmReadout::paint(juce::Graphics& g)
+{
+    const int w = getWidth() / kScale, h = getHeight() / kScale;
+    LcdCanvas cv(w, h);
+    const juce::String s(double(m_synced ? m_hostBpm : float(getValue())), 1);
+    const int tw = LcdCanvas::tallDigitsWidth(s.toRawUTF8());
+    cv.tallDigits(s.toRawUTF8(), w - tw, (h - 10) / 2);
+    cv.draw(g, 0, 0);
+}
+
+void BpmReadout::resized() { m_editor.setBounds(getLocalBounds()); }
+
+void BpmReadout::mouseDown(const juce::MouseEvent& e) { if (!m_synced && !m_editing) Slider::mouseDown(e); }
+void BpmReadout::mouseDrag(const juce::MouseEvent& e) { if (!m_synced && !m_editing) Slider::mouseDrag(e); }
+
+void BpmReadout::mouseUp(const juce::MouseEvent& e)
+{
+    if (m_synced || m_editing) return;
+    Slider::mouseUp(e);
+    // a click that did not drag the value types a new one
+    if (!e.mouseWasDraggedSinceMouseDown() && e.getNumberOfClicks() == 1) beginEdit();
+}
+
+void BpmReadout::beginEdit()
+{
+    m_editing = true;
+    m_editor.setText(juce::String(getValue(), 1), false);
+    m_editor.setVisible(true);
+    m_editor.grabKeyboardFocus();
+    m_editor.selectAll();
+}
+
+void BpmReadout::endEdit(bool commit)
+{
+    if (!m_editing) return;
+    m_editing = false;
+    m_editor.setVisible(false);
+    const juce::String txt = m_editor.getText().trim();
+    if (commit && txt.containsAnyOf("0123456789"))
+        setValue(juce::jlimit(getMinimum(), getMaximum(), txt.getDoubleValue()), juce::sendNotificationSync);   // clamped to 30..300
+    repaint();
+}
+
 } // namespace mnm::plugin::one

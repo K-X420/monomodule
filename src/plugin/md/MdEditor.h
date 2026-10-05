@@ -56,6 +56,7 @@ public:
     void paint(juce::Graphics&) override;
     void mouseDown(const juce::MouseEvent&) override;
     int trackAt(juce::Point<int> local) const { for (int t = 0; t < kTracks; ++t) if (keyRect(t).contains(local / one::kScale)) return t; return -1; }
+    juce::Rectangle<int> keyBounds(int t) const { return keyRect(t); }   // LCD px
     void setDropTarget(int t) { if (m_dropTarget != t) { m_dropTarget = t; repaint(); } }   // a sound dragged over a key
 private:
     juce::Rectangle<int> keyRect(int t) const;   // LCD px
@@ -134,6 +135,12 @@ public:
     // Library app loads; a .mdsound lands on the track key it is dropped on, else on the selected track
     bool isInterestedInFileDrag(const juce::StringArray& files) override;
     void filesDropped(const juce::StringArray& files, int x, int y) override;
+    // while files are dragged over: a dotted frame round where they will land (a track key for a sound, else the pages)
+    void fileDragEnter(const juce::StringArray& files, int x, int y) override;
+    void fileDragMove(const juce::StringArray& files, int x, int y) override;
+    void fileDragExit(const juce::StringArray& files) override;
+    void paintOverChildren(juce::Graphics& g) override;
+    void mouseDown(const juce::MouseEvent& e) override;   // a press elsewhere closes the machine picker and the list
 
 private:
     void timerCallback() override;
@@ -147,11 +154,14 @@ private:
     void openKitList();
     void loadKit(const KitEntry& e);
     void stepKit(int dir);
-    juce::String saveKit(const juce::String& name, bool intoProject = false);
+    juce::String saveKit(const juce::String& name, bool intoProject = false, bool asVersion = true);
+    juce::Rectangle<int> dropFrame(const juce::StringArray& files, int x, int y) const;
+    bool m_dragOver = false;
+    juce::Rectangle<int> m_dropRect;
     void openSoundList();
     void loadSound(const SoundEntry& e);
     void stepSound(int dir);
-    juce::String saveSound(const juce::String& name, bool intoProject = false);
+    juce::String saveSound(const juce::String& name, bool intoProject = false, bool asVersion = true);
     static juce::String slotText(const mnm::library::LibraryModel::Slot& s);
     void skinChanged();
     juce::String soundDisplayName(int t);
@@ -167,6 +177,13 @@ private:
     juce::Rectangle<int> m_logoBounds;
     MdMachineBlock m_machineBlock;
     one::LcdButton m_menuButton{"MENU"};
+    // tempo, as Monomodule's header: BPM (the host's while synced; drag or type it when free) and SYNC
+    one::LcdText m_bpmLabel;
+    one::BpmReadout m_bpm;
+    one::LcdToggle m_bpmSync{"SYNC"};
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> m_bpmAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> m_bpmSyncAttach;
+    int m_osPoll = 0;
     one::LcdText m_footerVersion, m_footerBy, m_status;
     juce::SharedResourcePointer<MdLibrary> m_lib;
     MdKitStrip m_strip;

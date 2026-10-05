@@ -87,6 +87,7 @@ constexpr const char* kRouteNames[kNumRoutes] = {"A", "B", "C", "D", "E", "F", "
 
 // Master effects, in the ColdFire's section order (md::ControlCpu::MasterFx)
 constexpr const char* kMasterFxNames[4] = {"REVERB", "DELAY", "EQ", "DYNAMIX"};
+constexpr const char* kMasterFxShort[4] = {"REV", "DEL", "EQ", "DYN"};   // parameter name prefixes ("REV LEV", "DEL LEV")
 constexpr const char* kMasterFxLabels[4][8] = {
     {"DVOL", "PRED", "DEC", "DAMP", "HP", "LP", "GATE", "LEV"},
     {"TIME", "MOD", "MFRQ", "FB", "FLTF", "FLTW", "MONO", "LEV"},
@@ -114,8 +115,9 @@ struct MachineKnobInfo {
 // machine changes (AudioProcessor::updateHostDisplay).
 class MdSynParam : public juce::AudioParameterInt {
 public:
-    MdSynParam(const juce::String& id, int k, int def)
-        : juce::AudioParameterInt(juce::ParameterID{id, 1}, "SYN " + juce::String(k + 1), 0, 127, def), m_k(k), m_default(def) {}
+    MdSynParam(const juce::String& id, int track, int k, int def)
+        : juce::AudioParameterInt(juce::ParameterID{id, 1}, "T" + juce::String(track + 1) + " SYN " + juce::String(k + 1), 0, 127, def),
+          m_track(track), m_k(k), m_default(def) {}
     void setSources(std::atomic<float>* machineIndex, const MachineKnobInfo* info, const int* idOfIndex)
     {
         m_machine = machineIndex; m_info = info; m_idOf = idOfIndex;
@@ -124,7 +126,19 @@ public:
     {
         const int id = machineIdNow();
         const juce::String label = id >= 0 && m_info->known[size_t(id)] ? m_info->labels[size_t(id)][size_t(m_k)] : juce::String();
-        return (label.isNotEmpty() ? label : "SYN " + juce::String(m_k + 1)).substring(0, maximumStringLength);
+        return ("T" + juce::String(m_track + 1) + " " + (label.isNotEmpty() ? label : "SYN " + juce::String(m_k + 1))).substring(0, maximumStringLength);
+    }
+    // The value as the editor shows it: a MID machine's NOTE as a note, its N2 / N3 / PB centred; otherwise the number
+    juce::String getText(float normalised, int maximumStringLength) const override
+    {
+        const int v = int(std::lround(convertFrom0to1(normalised))), id = machineIdNow();
+        juce::String s(v);
+        if (id >= 96 && id <= 111) {
+            static const char* const notes[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+            if (m_k == 0) s = juce::String(notes[v % 12]) + juce::String(v / 12 - 2);
+            else if (m_k == 1 || m_k == 2 || m_k == 5) s = juce::String(v - 64);
+        }
+        return s.substring(0, maximumStringLength);
     }
     float getDefaultValue() const override
     {
@@ -137,7 +151,7 @@ private:
         if (!m_machine || !m_info || !m_idOf) return -1;
         return m_idOf[std::max(0, int(std::lround(m_machine->load())))];
     }
-    int m_k, m_default;
+    int m_track, m_k, m_default;
     std::atomic<float>* m_machine = nullptr;
     const MachineKnobInfo* m_info = nullptr;
     const int* m_idOf = nullptr;
@@ -180,6 +194,10 @@ inline juce::String accentId() { return "accent"; }
 // delay sends with it, as a track on an individual output does on the hardware; the rest stay on the hardware outputs.
 enum class OutputMode : int { Hardware = 0, Tracks = 1 };
 inline juce::String outputModeId() { return "outputs"; }
+// Tempo (as Monomodule's): the host's transport tempo by default; BPM is the free value used when sync is off. It drives
+// the LFOs, the master delay's note lengths, the MID machines' note lengths and the library previews.
+inline juce::String bpmSyncId() { return "bpmsync"; }
+inline juce::String bpmId() { return "bpm"; }
 
 inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
 {
@@ -188,45 +206,48 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     for (const auto& m : kMachines) names.add(m.name);
     for (int t = 0; t < kTracks; ++t) {
         auto g = std::make_unique<juce::AudioProcessorParameterGroup>(tp(t), "T" + juce::String(t + 1), " ");
-        g->addChild(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{machineId(t), 1}, "MACHINE", names, machineIndexOf(kDefaultKit[t].id)));
+        const juce::String pre = "T" + juce::String(t + 1) + " ";   // hosts list parameters by name: "T1 LEVEL", not 16 "LEVEL"s
+        g->addChild(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{machineId(t), 1}, pre + "MACHINE", names, machineIndexOf(kDefaultKit[t].id)));
         for (int k = 0; k < 8; ++k)
-            g->addChild(std::make_unique<MdSynParam>(knobId(t, k), k, kDefaultKit[t].knobs[size_t(k)]));
+            g->addChild(std::make_unique<MdSynParam>(knobId(t, k), t, k, kDefaultKit[t].knobs[size_t(k)]));
         for (int k = 0; k < 8; ++k)
-            g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{fxId(t, k), 1}, kFxLabels[k], 0, 127, kFxDefaults[k]));
-        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{distId(t), 1}, "DIST", 0, 127, 0));
-        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{volId(t), 1}, "VOL", 0, 127, 100));
-        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{panId(t), 3}, "PAN", 0, 127, 64, hwDisplay(true)));   // raw, shown -64..63
-        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{delId(t), 1}, "DEL", 0, 127, 0));
-        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{revId(t), 1}, "REV", 0, 127, 0));
-        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{levelId(t), 2}, "LEVEL", 0, 127, 100));   // 100 as Monomodule: headroom above
+            g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{fxId(t, k), 1}, pre + kFxLabels[k], 0, 127, kFxDefaults[k]));
+        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{distId(t), 1}, pre + "DIST", 0, 127, 0));
+        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{volId(t), 1}, pre + "VOL", 0, 127, 100));
+        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{panId(t), 3}, pre + "PAN", 0, 127, 64, hwDisplay(true)));   // raw, shown -64..63
+        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{delId(t), 1}, pre + "DEL", 0, 127, 0));
+        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{revId(t), 1}, pre + "REV", 0, 127, 0));
+        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{levelId(t), 2}, pre + "LEVEL", 0, 127, 100));   // 100 as Monomodule: headroom above
         juce::StringArray routes;
         for (auto* r : kRouteNames) routes.add(r);
-        g->addChild(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{routeId(t), 1}, "OUT", routes, kNumRoutes - 1));
+        g->addChild(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{routeId(t), 1}, pre + "OUT", routes, kNumRoutes - 1));
         juce::StringArray tracks, lfoParams, types;
         for (int i = 0; i < kTracks; ++i) tracks.add("T" + juce::String(i + 1));
         for (auto* n : kLfoParamNames) lfoParams.add(n);
         for (auto* n : kLfoTypes) types.add(n);
-        g->addChild(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{lfoId(t, 0), 1}, "LFO TRK", tracks, t));
-        g->addChild(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{lfoId(t, 1), 1}, "LFO PARAM", lfoParams, 0));
-        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{lfoId(t, 2), 1}, "LFO SHP1", 0, 7, 0));
-        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{lfoId(t, 3), 1}, "LFO SHP2", 0, 7, 0));
-        g->addChild(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{lfoId(t, 4), 1}, "LFO TYPE", types, 0));
-        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{lfoId(t, 5), 1}, "LFO SPD", 0, 127, 64));
-        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{lfoId(t, 6), 1}, "LFO DEP", 0, 127, 0));
-        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{lfoId(t, 7), 1}, "LFO MIX", 0, 127, 0));
-        g->addChild(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{muteId(t), 1}, "MUTE", false));
+        g->addChild(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{lfoId(t, 0), 1}, pre + "LFO TRK", tracks, t));
+        g->addChild(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{lfoId(t, 1), 1}, pre + "LFO PARAM", lfoParams, 0));
+        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{lfoId(t, 2), 1}, pre + "LFO SHP1", 0, 7, 0));
+        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{lfoId(t, 3), 1}, pre + "LFO SHP2", 0, 7, 0));
+        g->addChild(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{lfoId(t, 4), 1}, pre + "LFO TYPE", types, 0));
+        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{lfoId(t, 5), 1}, pre + "LFO SPD", 0, 127, 64));
+        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{lfoId(t, 6), 1}, pre + "LFO DEP", 0, 127, 0));
+        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{lfoId(t, 7), 1}, pre + "LFO MIX", 0, 127, 0));
+        g->addChild(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{muteId(t), 1}, pre + "MUTE", false));
         layout.add(std::move(g));
     }
     for (int fx = 0; fx < 4; ++fx) {
         auto g = std::make_unique<juce::AudioProcessorParameterGroup>(juce::String(kMasterFxNames[fx]).toLowerCase(), kMasterFxNames[fx], " ");
         for (int k = 0; k < 8; ++k)
-            g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{masterFxId(fx, k), 1}, kMasterFxLabels[fx][k], 0, 127, kMasterFxDefaults[fx][k]));
+            g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{masterFxId(fx, k), 1}, juce::String(kMasterFxShort[fx]) + " " + kMasterFxLabels[fx][k], 0, 127, kMasterFxDefaults[fx][k]));
         layout.add(std::move(g));
     }
     layout.add(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{masterId(), 1}, "VOLUME", 0, 127, 80));
     layout.add(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{velModeId(), 1}, "VEL", juce::StringArray{"VOLUME", "ACCENT"}, 0));
     layout.add(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{accentId(), 1}, "ACCENT", 0, 127, 64));
     layout.add(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{outputModeId(), 1}, "OUTPUTS", juce::StringArray{"Hardware", "Per Track"}, 0));
+    layout.add(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{bpmSyncId(), 1}, "BPM sync to host", true));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{bpmId(), 1}, "BPM", 30.0f, 300.0f, 120.0f));
     return layout;
 }
 

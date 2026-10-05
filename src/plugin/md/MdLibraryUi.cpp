@@ -194,8 +194,11 @@ void MdLibraryDrop::paint(juce::Graphics& g)
         else if (i == m_hover) dottedFrame(cv, {1, y, w - 2, kRowH});
         const auto right = fit(spec::kFontTiny3x5, row.right, 60);
         const int rw = LcdCanvas::textWidth(spec::kFontTiny3x5, right.toRawUTF8());
-        playGlyph(cv, {2, y, 11, kRowH}, isPlaying && isPlaying(row.key), !on);   // audition
-        textMarked(cv, spec::kFontBold8, fit(spec::kFontBold8, row.name, w - 31 - rw), 15, y + 2, !on, row.fav);
+        const bool playing = isPlaying && isPlaying(row.key);
+        playGlyph(cv, {2, y, 11, kRowH}, playing, !on);   // audition
+        int nx = 15;
+        if (playing && looping) { drawLoopGlyph(cv, 16, y + (kRowH - kLoopGlyphH) / 2, looping(), !on); nx += 13; }   // the loop toggle beside the stop
+        textMarked(cv, spec::kFontBold8, fit(spec::kFontBold8, row.name, w - 16 - nx - rw), nx, y + 2, !on, row.fav);
         cv.text(spec::kFontTiny3x5, right.toRawUTF8(), w - 6 - rw, y + 4, !on);
     }
     if (m_rows.empty())
@@ -206,15 +209,20 @@ void MdLibraryDrop::paint(juce::Graphics& g)
     }
     const int fy = h - kFootH;
     cv.fillRect(0, fy, w, 1, true);
+    // the footer: the LIBRARY link (the panel on this list's tab), kits also IMPORT .SYX, then a hint in what is left
+    const int lw = LcdCanvas::textWidth(spec::kFontSmall4x5, "LIBRARY") + 8;
+    cv.fillRect(w - lw - 2, fy + 2, lw, kFootH - 4, true);
+    cv.text(spec::kFontSmall4x5, "LIBRARY", w - lw + 2, fy + 5, false);
+    int hintW = w - lw - 10;
     if (m_kits) {
-        cv.text(spec::kFontTiny3x5, "CLICK = LOAD   GLYPH = AUDITION", 4, fy + 5, true);
         const int iw = LcdCanvas::textWidth(spec::kFontSmall4x5, "IMPORT .SYX") + 8;
-        cv.fillRect(w - iw - 2, fy + 2, iw, kFootH - 4, true);
-        cv.text(spec::kFontSmall4x5, "IMPORT .SYX", w - iw + 2, fy + 5, false);
-    } else {
-        const juce::String hint = "CLICK = LOAD ON T" + juce::String(m_track + 1) + (m_alt ? "  (ANOTHER MACHINE CHANGES THE MACHINE)" : "   GLYPH = AUDITION");
-        cv.text(spec::kFontTiny3x5, fit(spec::kFontTiny3x5, hint, w - 8).toRawUTF8(), 4, fy + 5, true);
+        cv.fillRect(w - lw - iw - 4, fy + 2, iw, kFootH - 4, true);
+        cv.text(spec::kFontSmall4x5, "IMPORT .SYX", w - lw - iw, fy + 5, false);
+        hintW -= iw + 2;
     }
+    const juce::String hint = m_kits ? juce::String("CLICK = LOAD")
+                                     : "LOAD ON T" + juce::String(m_track + 1) + (m_alt ? juce::String(" (CHANGES THE MACHINE)") : juce::String());
+    cv.text(spec::kFontTiny3x5, fit(spec::kFontTiny3x5, hint, hintW).toRawUTF8(), 4, fy + 5, true);
     cv.draw(g, 0, 0, kS);
 }
 
@@ -224,8 +232,10 @@ void MdLibraryDrop::mouseDown(const juce::MouseEvent& e)
     const int w = getWidth() / kS, h = getHeight() / kS;
     if (lcd.y < kHeadH) { m_alt = lcd.x >= w / 2; m_scroll = 0; rebuild(); repaint(); return; }
     if (lcd.y >= h - kFootH) {
-        const int iw = LcdCanvas::textWidth(spec::kFontSmall4x5, "IMPORT .SYX") + 8;
-        if (m_kits && lcd.x >= w - iw - 2 && onImport) { close(); onImport(); }
+        const int lw = LcdCanvas::textWidth(spec::kFontSmall4x5, "LIBRARY") + 8, iw = LcdCanvas::textWidth(spec::kFontSmall4x5, "IMPORT .SYX") + 8;
+        const bool kits = m_kits;
+        if (lcd.x >= w - lw - 2) { close(); if (onLibrary) onLibrary(kits); }
+        else if (kits && lcd.x >= w - lw - iw - 4 && onImport) { close(); onImport(); }
         return;
     }
     const int i = rowAt(lcd);
@@ -233,6 +243,7 @@ void MdLibraryDrop::mouseDown(const juce::MouseEvent& e)
     const auto row = m_rows[size_t(i)];
     if (e.mods.isPopupMenu()) { m_lib.setFavourite(row.key, !row.fav); rebuild(); repaint(); return; }
     if (lcd.x < 14) { if (onAudition) onAudition(row.key, m_kits); repaint(); return; }   // the glyph: hear it first
+    if (lcd.x < 27 && isPlaying && isPlaying(row.key)) { if (toggleLoop) toggleLoop(); repaint(); return; }   // the loop toggle
     close();
     if (m_kits) { if (onLoadKit) onLoadKit(row.kit); }
     else if (onLoadSound) onLoadSound(row.sound);
@@ -259,9 +270,11 @@ bool MdLibraryDrop::keyPressed(const juce::KeyPress& k)
 
 // ---------------------------------------------------------------------------------------------- save dialog
 
-void MdSaveDialog::open(const juce::String& title, const juce::String& name, const juce::String& projectOption)
+void MdSaveDialog::open(const juce::String& title, const juce::String& name, const juce::String& projectOption, const juce::String& versionOf)
 {
     m_project = projectOption.toUpperCase();
+    m_versionOf = versionOf.toUpperCase();
+    m_asVersion = m_versionOf.isNotEmpty();
     m_intoProject = false;
     m_title = title.toUpperCase();
     m_name = name.toUpperCase().substring(0, 16);
@@ -284,8 +297,16 @@ void MdSaveDialog::paint(juce::Graphics& g)
     cv.text(spec::kFontTiny3x5, "NAME", 6, 20, true);
     dottedFrame(cv, {28, 15, kLcdW - 34, 15});
     textMarked(cv, spec::kFontBold8, m_name, 32, 19, true, false, true);
-    const juce::String note = m_error.isNotEmpty() ? m_error.toUpperCase() : juce::String("A NEW ITEM IN THE LIBRARY; NOTHING IS OVERWRITTEN");
-    cv.text(spec::kFontTiny3x5, fit(spec::kFontTiny3x5, note, kLcdW - 12).toRawUTF8(), 6, 37, true);
+    m_version = {};
+    if (m_versionOf.isNotEmpty()) {   // a new version of the loaded item (its history keeps the old ones), or a new item
+        m_version = {6, 33, kLcdW - 12, 12};
+        frame(cv, {6, 34, 9, 9});
+        if (m_asVersion) cv.fillRect(8, 36, 5, 5, true);
+        cv.text(spec::kFontSmall4x5, fit(spec::kFontSmall4x5, "NEW VERSION OF " + m_versionOf, kLcdW - 30).toRawUTF8(), 19, 36, true);
+    } else {
+        cv.text(spec::kFontTiny3x5, "A NEW ITEM IN THE LIBRARY; NOTHING IS OVERWRITTEN", 6, 37, true);
+    }
+    if (m_error.isNotEmpty()) cv.text(spec::kFontTiny3x5, fit(spec::kFontTiny3x5, m_error.toUpperCase(), kLcdW - 128).toRawUTF8(), 6, kLcdH - 14, true);
     m_option = {};
     if (m_project.isNotEmpty()) {   // also into the project slot it came from, as a new version of the project
         m_option = {6, 46, kLcdW - 12, 13};
@@ -306,7 +327,7 @@ void MdSaveDialog::paint(juce::Graphics& g)
 void MdSaveDialog::save()
 {
     if (m_name.trim().isEmpty()) { m_error = "TYPE A NAME"; repaint(); return; }
-    const auto err = onSave ? onSave(m_name.trim(), m_intoProject) : juce::String();
+    const auto err = onSave ? onSave(m_name.trim(), m_intoProject, m_asVersion && m_versionOf.isNotEmpty()) : juce::String();
     if (err.isNotEmpty()) { m_error = err; repaint(); return; }
     setVisible(false);
 }
@@ -317,6 +338,7 @@ void MdSaveDialog::mouseDown(const juce::MouseEvent& e)
     if (!b.contains(e.getPosition())) { setVisible(false); return; }
     const auto lcd = (e.getPosition() - b.getPosition()) / kS;
     if (m_option.contains(lcd)) { m_intoProject = !m_intoProject; repaint(); return; }
+    if (m_version.contains(lcd)) { m_asVersion = !m_asVersion; repaint(); return; }
     if (m_cancel.contains(lcd)) setVisible(false);
     else if (m_save.contains(lcd)) save();
 }

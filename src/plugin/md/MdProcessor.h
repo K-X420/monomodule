@@ -60,7 +60,12 @@ public:
     juce::String firmwarePath() const { return m_firmwarePath; }
     void setFirmwarePath(const juce::String& path, bool persist = true);
     bool engineReady() const { return m_engineReady.load(); }
-    juce::String statusText() const { return m_status; }
+    // The status line: the OS load, then a DSP fault, the DSPs' load per pass and a resampling warning (as Monomodule's)
+    juce::String statusText() const;
+    double hostBpm() const { return m_hostBpm.load(); }
+    double tempo() const;   // what the engine runs at: the host's tempo when synced, else the BPM parameter
+    // Another instance (or plugin) picked an OS file: take it when it differs and exists (the editor polls this)
+    void refreshSharedOsPath();
     const mnm::md::Machine* machineInfo(int id) const { return m_fw ? m_fw->byId(id) : nullptr; }
 
     int machineIdOf(int t) const;
@@ -176,7 +181,7 @@ private:
     std::array<LoadedSound, kTracks> m_sounds;
     std::unique_ptr<mnm::md::Firmware> m_fw;
     std::unique_ptr<mnm::md::Engine> m_engine;   // the OS's control CPU and the two DSPs (src/md/MdEngine)
-    juce::CriticalSection m_engineLock;
+    mutable juce::CriticalSection m_engineLock;
     std::atomic<bool> m_engineReady{false};
 
     std::array<Track, kTracks> m_tracks;
@@ -190,6 +195,9 @@ private:
     std::atomic<uint32_t> m_directMask{0};   // PER TRACK: the tracks on their own buses (set each block)
     std::atomic<float>* m_accent = nullptr;
     std::atomic<double> m_hostBpm{120.0};
+    std::atomic<float>* m_bpmSync = nullptr;
+    std::atomic<float>* m_bpm = nullptr;
+    bool m_wasSynced = true;
     std::array<std::atomic<bool>, kTracks> m_audition{};
     std::array<std::atomic<bool>, kTracks> m_locked{};
     std::unique_ptr<mnm::library::PreviewRenderer> m_previewRenderer;

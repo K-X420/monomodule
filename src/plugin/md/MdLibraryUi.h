@@ -49,6 +49,9 @@ public:
     std::function<void(const SoundEntry&)> onLoadSound;
     std::function<void(const juce::String& key, bool kit)> onAudition;   // the row's glyph: play / stop
     std::function<bool(const juce::String& key)> isPlaying;
+    std::function<bool()> looping;                      // the audition loops (the toggle beside a playing row's stop glyph)
+    std::function<void()> toggleLoop;
+    std::function<void(bool kits)> onLibrary;           // the footer's LIBRARY: the panel on the kits / sounds tab
     void rebuild();
     void paint(juce::Graphics&) override;
     void mouseDown(const juce::MouseEvent&) override;
@@ -74,17 +77,18 @@ public:
     static constexpr int kS = 2, kLcdW = 240, kLcdH = 88;
     MdSaveDialog() { setWantsKeyboardFocus(true); }
     // projectOption: "" = none, else what ticking it does ("PROJECT X, KIT 03 T2"): the item also goes into that slot
-    void open(const juce::String& title, const juce::String& name, const juce::String& projectOption = {});
-    std::function<juce::String(const juce::String& name, bool intoProject)> onSave;   // returns an error, empty on success
+    // versionOf: the loaded item's name: ticked (the default), the save is a new version of it; else a new item
+    void open(const juce::String& title, const juce::String& name, const juce::String& projectOption = {}, const juce::String& versionOf = {});
+    std::function<juce::String(const juce::String& name, bool intoProject, bool asVersion)> onSave;   // returns an error, empty on success
     void paint(juce::Graphics&) override;
     void mouseDown(const juce::MouseEvent&) override;
     bool keyPressed(const juce::KeyPress&) override;
 private:
     void save();
     juce::Rectangle<int> box() const { return juce::Rectangle<int>(0, 0, kLcdW * kS, kLcdH * kS).withCentre(getLocalBounds().getCentre()); }
-    juce::String m_title, m_name, m_error, m_project;
-    bool m_intoProject = false;
-    juce::Rectangle<int> m_cancel, m_save, m_option;   // LCD px inside the box
+    juce::String m_title, m_name, m_error, m_project, m_versionOf;
+    bool m_intoProject = false, m_asVersion = true;
+    juce::Rectangle<int> m_cancel, m_save, m_option, m_version;   // LCD px inside the box
 };
 
 } // namespace mnm::plugin::md

@@ -237,6 +237,39 @@ int main(int argc, char** argv)
         const double still = wobble(0), moving = wobble(127);
         check(still < 1.2 && moving > 4.0, "CTR-EQ LFO on GAIN: main level range x" + juce::String(still, 2) + " at depth 0, x" + juce::String(moving, 1) + " at depth 127");
         check(get(masterFxId(2, 7)) == get(knobId(2, 7)) && get(masterFxId(2, 7)) == 64, "the master EQ GAIN parameter stays at the knob (" + juce::String(get(masterFxId(2, 7))) + "): the LFO is not written into it");
+        // free BPM: SYNC off, BPM 90 -> LEN 7 is a 16th at 90 BPM (8000 samples at 48 kHz)
+        machine(0, 96); run(10);
+        set(knobId(0, 0), 60); set(knobId(0, 1), 64); set(knobId(0, 2), 64); set(knobId(0, 3), 7); set(knobId(0, 4), 90);
+        set(bpmSyncId(), 0.0f); set(bpmId(), 90.0f); run(3);
+        out.clear(); clock = 0;
+        run(30, {36});
+        {
+            const int on = find([](const juce::MidiMessage& m) { return m.isNoteOn() && m.getNoteNumber() == 60; });
+            const int off = find([](const juce::MidiMessage& m) { return m.isNoteOff() && m.getNoteNumber() == 60; });
+            check(on == 0 && std::abs(off - 8000) <= 1, "SYNC off, BPM 90: LEN 7 note off at " + juce::String(off) + " (a 16th = 8000)");
+        }
+        // all notes off: a held MID note ends at once
+        set(knobId(0, 3), 127); run(2);   // LEN 127: a bar
+        out.clear(); clock = 0;
+        run(2, {36});
+        {
+            juce::AudioBuffer<float> buf(std::max(2, proc.getTotalNumOutputChannels()), block);
+            juce::MidiBuffer midi;
+            midi.addEvent(juce::MidiMessage::allNotesOff(1), 100);
+            proc.processBlock(buf, midi);
+            bool ended = false;
+            for (const auto m : midi) { const auto msg = m.getMessage(); if (msg.isNoteOff() && msg.getNoteNumber() == 60 && m.samplePosition == 100) ended = true; }
+            check(ended, "all notes off ends the MID machine's held note");
+        }
+        set(bpmSyncId(), 1.0f);
+        // automation names: the track (or master effect) first
+        const auto pname = [&](const juce::String& id) { return proc.apvts.getParameter(id)->getName(32); };
+        check(pname(levelId(0)) == "T1 LEVEL" && pname(fxId(3, 0)) == "T4 AMD" && pname(masterFxId(0, 7)) == "REV LEV" && pname(masterFxId(1, 7)) == "DEL LEV",
+              "parameter names: " + pname(levelId(0)) + ", " + pname(fxId(3, 0)) + ", " + pname(masterFxId(0, 7)) + ", " + pname(masterFxId(1, 7)));
+        machine(5, 16); proc.syncMachineSideEffects();
+        check(pname(knobId(5, 0)) == "T6 PTCH", "a SYN knob: " + pname(knobId(5, 0)));
+        std::printf("  status: %s\n", proc.statusText().toRawUTF8());
+        check(proc.statusText().contains("instr/pass"), "the status shows the DSPs' load");
         std::printf(fails ? "CTR TEST FAILED (%d)\n" : "CTR TEST OK\n", fails);
         return fails ? 1 : 0;
     }
@@ -248,7 +281,7 @@ int main(int argc, char** argv)
         auto name = [&](int tr, int k) { return proc.apvts.getParameter(knobId(tr, k))->getName(32); };
         proc.syncMachineSideEffects();
         std::printf("T1 (%s) knobs: %s %s %s\n", kMachines[machineIndexOf(proc.machineIdOf(0))].name, name(0, 0).toRawUTF8(), name(0, 1).toRawUTF8(), name(0, 2).toRawUTF8());
-        check(name(0, 0) == "PTCH", "a knob is named after the machine's (TRX-BD: PTCH)");
+        check(name(0, 0) == "T1 PTCH", "a knob is named after its track and the machine's label (TRX-BD: T1 PTCH)");
         set(knobId(0, 0), 99.0f);                        // TRX-BD PTCH 99
         set(machineId(0), float(machineIndexOf(32)));    // -> EFM-BD
         proc.syncMachineSideEffects();

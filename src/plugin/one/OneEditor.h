@@ -68,26 +68,6 @@ private:
     std::array<bool, kMaxTracks> m_mute{}, m_active{};
 };
 
-// BPM: the tempo in the tall digit face. Synced to the host it is a readout of the transport tempo;
-// free, a horizontal drag adjusts it and a clean click types a value (as the numeric knobs do).
-class BpmReadout : public juce::Slider {
-public:
-    BpmReadout();
-    void setSynced(bool synced);
-    void setHostBpm(float bpm);
-    void paint(juce::Graphics&) override;
-    void resized() override;
-    void mouseDown(const juce::MouseEvent&) override;
-    void mouseDrag(const juce::MouseEvent&) override;
-    void mouseUp(const juce::MouseEvent&) override;
-private:
-    void beginEdit();
-    void endEdit(bool commit);
-    juce::TextEditor m_editor;
-    bool m_synced = true, m_editing = false;
-    float m_hostBpm = 120.0f;
-};
-
 class OneEditor : public juce::AudioProcessorEditor, public juce::FileDragAndDropTarget, private juce::Timer,
                   private juce::AudioProcessorValueTreeState::Listener {
 public:
