@@ -1,6 +1,6 @@
-// Monomodule MD: the machine picker's words and logos. Each family column has a logo (original pixel art in the
-// LCD's style: the Machinedrum's OS has no family artwork to read, unlike the Monomachine's boot-splash logos) and a
-// blurb; a hovered machine shows its own description there. ASCII caps (the LCD faces have no lowercase), words of at
+// Monomodule MD: the machine picker's words and logos. Each family has a logo (an original wordmark in the LCD's style:
+// the Machinedrum's OS has no family artwork to read, unlike the Monomachine's boot-splash logos), shown in the machine
+// block and the picker's column header, and a blurb; a hovered machine shows its own description there. ASCII caps (the LCD faces have no lowercase), words of at
 // most 8 characters (a column line holds about 8 at the picker's text size). Names follow the Machinedrum manual's
 // machine reference (rev J, OS 1.53: E12-BC "BONGO CONGO", P-I-ML "METALLICA", INP-EA/EB play the input as a drum with
 // envelopes, INP-FA/FB are filter followers); family words from its intros (EFM = Elektron's "Enhanced Feedback
@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include "MdLogos.h"
 
 namespace mnm::plugin::md::text {
 
@@ -61,80 +62,13 @@ inline const char* machineText(int id)
     return nullptr;
 }
 
-// A family logo: 24 x 12 LCD pixels, bit (23 - x) of row y lit. Drawn from a few primitives so the art stays legible.
-struct Logo {
-    static constexpr int kW = 24, kH = 12;
-    std::array<uint32_t, kH> rows{};
-    void set(int x, int y) { if (x >= 0 && x < kW && y >= 0 && y < kH) rows[size_t(y)] |= 1u << (kW - 1 - x); }
-    bool lit(int x, int y) const { return (rows[size_t(y)] >> (kW - 1 - x)) & 1u; }
-    void rect(int x, int y, int w, int h) { for (int j = y; j < y + h; ++j) for (int i = x; i < x + w; ++i) set(i, j); }
-    void line(int x0, int y0, int x1, int y1)
-    {
-        const int dx = std::abs(x1 - x0), dy = -std::abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
-        int e = dx + dy;
-        for (;;) {
-            set(x0, y0);
-            if (x0 == x1 && y0 == y1) break;
-            const int e2 = 2 * e;
-            if (e2 >= dy) { e += dy; x0 += sx; }
-            if (e2 <= dx) { e += dx; y0 += sy; }
-        }
-    }
-    void ring(double cx, double cy, double r, bool fill = false)
-    {
-        for (int y = 0; y < kH; ++y)
-            for (int x = 0; x < kW; ++x) {
-                const double d = std::hypot(x + 0.5 - cx, y + 0.5 - cy);
-                if (fill ? d <= r : std::abs(d - r) <= 0.6) set(x, y);
-            }
-    }
-    template <class F> void wave(F yOf)   // a curve y(x) across the width, joined up
-    {
-        int py = int(std::lround(yOf(0.0)));
-        for (int x = 0; x < kW; ++x) { const int y = int(std::lround(yOf(double(x)))); line(x > 0 ? x - 1 : 0, py, x, y); py = y; }
-    }
-};
-
-inline Logo familyLogo(const char* family)
+// A family's logo: a wordmark (MdLogos.h, made by a generator script: bold 8x10 letters styled per family, as the
+// Monomachine's splash logos are each in their own style). GND has none, as on the Monomachine: its name is printed.
+inline const LogoArt* logoArt(const char* family)
 {
-    Logo l;
-    const double pi = 3.14159265358979;
-    auto is = [&](const char* f) { return std::strcmp(family, f) == 0; };
-    if (is("GND")) {          // the ground symbol
-        l.rect(11, 0, 2, 4); l.rect(2, 4, 20, 2); l.rect(6, 7, 12, 2); l.rect(10, 10, 4, 2);
-    } else if (is("TRX")) {   // a struck drum: a damped oscillation
-        l.wave([&](double x) { return 5.5 - 5.0 * std::exp(-x / 9.0) * std::sin(2 * pi * x / 7.0); });
-    } else if (is("EFM")) {   // frequency modulation: a sine whose phase is swung by another
-        l.wave([&](double x) { return 5.5 - 4.5 * std::sin(2 * pi * x / 12.0 + 1.8 * std::sin(2 * pi * x / 4.0)); });
-    } else if (is("E12")) {   // a sampled wave: held steps
-        int py = -1;
-        for (int x = 0; x < Logo::kW; ++x) {
-            const int y = int(std::lround(5.5 - 5.0 * std::sin(2 * pi * double(x / 3 * 3) / 24.0)));
-            if (py >= 0 && y != py) l.line(x, py, x, y);
-            l.set(x, y); py = y;
-        }
-    } else if (is("P-I")) {   // a mallet striking a bar
-        l.rect(1, 9, 22, 2); l.ring(14.5, 4.0, 2.6, true); l.line(13, 4, 3, 0); l.line(14, 4, 4, 0);
-        l.set(19, 7); l.set(20, 6); l.set(9, 7); l.set(8, 6);
-    } else if (is("INP")) {   // a signal into a jack
-        l.ring(17.0, 6.0, 4.6); l.ring(17.0, 6.0, 1.6, true); l.rect(0, 5, 10, 2); l.line(7, 2, 10, 5); l.line(7, 9, 10, 6);
-    } else if (is("ROM")) {   // a memory chip
-        l.rect(4, 3, 16, 6);
-        for (int x = 5; x < 20; x += 3) { l.rect(x, 0, 1, 3); l.rect(x, 9, 1, 3); }
-    } else if (is("RAM")) {   // record
-        l.ring(12.0, 6.0, 5.4); l.ring(12.0, 6.0, 2.8, true);
-    } else if (is("MID")) {   // a five-pin DIN socket
-        l.ring(12.0, 6.0, 5.6);
-        for (int k = 0; k < 5; ++k) {
-            const double a = pi + k * pi / 4.0;   // 180..360 degrees: the pins' half circle
-            l.set(int(std::lround(12.0 + 3.2 * std::cos(a) - 0.5)), int(std::lround(6.5 + 3.2 * std::sin(a) + 2.0)));
-        }
-        l.rect(11, 0, 2, 1);
-    } else if (is("CTR")) {   // three faders
-        for (int k = 0; k < 3; ++k) { const int x = 4 + 8 * k; l.rect(x, 0, 1, 12); }
-        l.rect(2, 7, 5, 3); l.rect(10, 2, 5, 3); l.rect(18, 5, 5, 3);
-    }
-    return l;
+    for (const auto& l : kLogoArt) if (std::strcmp(l.family, family) == 0) return &l;
+    return nullptr;
 }
+inline bool logoLit(const LogoArt& l, int x, int y) { return (l.rows[y] >> (63 - x)) & 1u; }
 
 } // namespace mnm::plugin::md::text

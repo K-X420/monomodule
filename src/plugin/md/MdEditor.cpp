@@ -121,9 +121,20 @@ void MdMachineBlock::setMachine(int index)
     repaint();
 }
 
+// The machine block, as Monomodule's: the family's logo (its name for GND), the machine, the picker arrow. The logo is
+// drawn in screen pixels, kLogoPx per logo pixel, after the LCD canvas.
+namespace {
+constexpr int kLogoPx = 4, kLogoX = 4, kLogoGap = 6;   // screen px per logo pixel; LCD px
+int logoWidthLcd(const juce::String& fam)
+{
+    if (const auto* art = text::logoArt(fam.toRawUTF8())) return (art->w * kLogoPx + kScale - 1) / kScale;
+    return LcdCanvas::textWidth(spec::kFontBold8, fam.toRawUTF8());
+}
+}
+
 int MdMachineBlock::preferredWidth() const
 {
-    const int w = 4 + LcdCanvas::textWidth(spec::kFontBold8, familyOf(m_index).toRawUTF8()) + 6
+    const int w = kLogoX + logoWidthLcd(familyOf(m_index)) + kLogoGap
                 + LcdCanvas::textWidth(spec::kFontBold8, shortOf(m_index).toRawUTF8()) + 4 + 5 + 4;
     return juce::jmax(64, w) * kScale;
 }
@@ -134,9 +145,10 @@ void MdMachineBlock::paint(juce::Graphics& g)
     LcdCanvas cv(w, h);
     cv.fillRect(0, 0, w, h, true);
     const auto fam = familyOf(m_index), name = shortOf(m_index);
+    const auto* art = text::logoArt(fam.toRawUTF8());
     const int ty = (h - spec::kFontBold8.h) / 2;
-    cv.text(spec::kFontBold8, fam.toRawUTF8(), 4, ty, false);
-    const int nameX = 4 + LcdCanvas::textWidth(spec::kFontBold8, fam.toRawUTF8()) + 6;
+    if (!art) cv.text(spec::kFontBold8, fam.toRawUTF8(), kLogoX, ty, false);
+    const int nameX = kLogoX + logoWidthLcd(fam) + kLogoGap;
     cv.text(spec::kFontBold8, name.toRawUTF8(), nameX, ty, false);
     const int ax = nameX + LcdCanvas::textWidth(spec::kFontBold8, name.toRawUTF8()) + 4, ay = h / 2 - 1;
     for (int r = 0; r < 3; ++r) {   // the picker arrow: down when closed, up while open
@@ -144,6 +156,13 @@ void MdMachineBlock::paint(juce::Graphics& g)
         for (int c = 2 - half; c <= 2 + half; ++c) cv.set(ax + c, ay + r, false);
     }
     cv.draw(g, 0, 0);
+    if (art) {
+        g.setColour(lcd::paper);
+        const int x0 = kLogoX * kScale, y0 = (getHeight() - art->h * kLogoPx) / 2;
+        for (int y = 0; y < art->h; ++y)
+            for (int x = 0; x < art->w; ++x)
+                if (text::logoLit(*art, x, y)) g.fillRect(x0 + x * kLogoPx, y0 + y * kLogoPx, kLogoPx, kLogoPx);
+    }
 }
 
 // ---------------------------------------------------------------------------------------------- track keys
@@ -352,16 +371,19 @@ void MdMachinePicker::drawFamily(juce::Graphics& g, const Family& f) const
 {
     g.setColour(lcd::ink);
     g.drawRect(f.bounds, kPickBorder);
-    // header: the logo above the family name, paper on ink
+    // header: the family's logo alone, paper on ink, as large as the column allows (GND: its name)
     g.fillRect(f.header);
-    const auto logo = text::familyLogo(f.name.toRawUTF8());
-    const int ls = 2, lw = text::Logo::kW * ls, lx = f.header.getCentreX() - lw / 2, ly = f.header.getY() + 6;
-    g.setColour(lcd::paper);
-    for (int y = 0; y < text::Logo::kH; ++y)
-        for (int x = 0; x < text::Logo::kW; ++x)
-            if (logo.lit(x, y)) g.fillRect(lx + x * ls, ly + y * ls, ls, ls);
-    const int nw = LcdCanvas::textWidth(spec::kFontBold8, f.name.toRawUTF8()) * 2;
-    drawLcdText(g, spec::kFontBold8, f.name.toRawUTF8(), f.header.getCentreX() - nw / 2, ly + text::Logo::kH * ls + 3, 2, lcd::paper);
+    if (const auto* art = text::logoArt(f.name.toRawUTF8())) {
+        const int px = juce::jlimit(1, 3, juce::jmin((f.header.getWidth() - 12) / art->w, (f.header.getHeight() - 12) / art->h));
+        const int lx = f.header.getCentreX() - art->w * px / 2, ly = f.header.getCentreY() - art->h * px / 2;
+        g.setColour(lcd::paper);
+        for (int y = 0; y < art->h; ++y)
+            for (int x = 0; x < art->w; ++x)
+                if (text::logoLit(*art, x, y)) g.fillRect(lx + x * px, ly + y * px, px, px);
+    } else {
+        const int nw = LcdCanvas::textWidth(spec::kFontBold8, f.name.toRawUTF8()) * 3;
+        drawLcdText(g, spec::kFontBold8, f.name.toRawUTF8(), f.header.getCentreX() - nw / 2, f.header.getCentreY() - spec::kFontBold8.h * 3 / 2, 3, lcd::paper);
+    }
     // the blurb, or what the hovered machine of this family is
     const bool hovered = m_hover >= 0 && familyOf(m_hover) == int(&f - m_families.data());
     const auto words = hovered ? describe(m_hover) : juce::String(text::familyBlurb(f.name.toRawUTF8()));
