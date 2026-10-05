@@ -128,6 +128,11 @@ public:
     juce::String bankName() const { return m_bankName; }
     juce::String bankProjectId() const { return m_bankProjectId; }
     bool bankHasPattern(int slot) const;
+    // Pattern editing (message thread): the pattern of a slot (null: none), and an edit of it: fn changes a copy (an
+    // empty slot starts as a fresh 16-step pattern on the loaded bank kit), which replaces it in the bank; the playing
+    // pattern takes it from its next block. With no bank, a new one ("PLUGIN") is made. Kept in the plugin state.
+    std::shared_ptr<const mnm::mddump::Pattern> bankPattern(int slot) const;
+    void editPattern(int slot, const std::function<void(mnm::mddump::Pattern&)>& fn);
     int seqStep() const { return m_seqStepUi.load(); }        // the playing step, -1 when not playing
     int seqLength() const { return m_seqLenUi.load(); }       // the pattern's length (steps)
     int seqPattern() const { return m_seqPatternUi.load(); }  // the playing (or next, when stopped) pattern slot, -1 = none
@@ -262,7 +267,7 @@ private:
 
     // ---- pattern playback (audio thread unless noted)
     struct SeqBank {
-        std::vector<mnm::mddump::Pattern> patterns;   // by slot (128)
+        std::vector<std::shared_ptr<const mnm::mddump::Pattern>> patterns;   // by slot (128); an edit replaces one
         std::vector<mnm::mddump::Kit> kits;           // by slot (64)
         std::vector<mnm::mddump::Song> songs;         // by slot (32)
         std::array<bool, 128> hasPattern{};
@@ -308,6 +313,7 @@ private:
     double m_hostPpq = 0;
     const mnm::mddump::Kit* m_kitSwitch = nullptr;   // the kit a pending switch event (PendingTrig track -2) brings in
     std::atomic<bool> m_bankFresh{false};
+    std::atomic<int> m_patternEdited{-1};   // a slot whose pattern an edit replaced (-1 none; -2 several)
     bool m_trigLogOn = false;
     std::vector<TrigLog> m_trigLog;
     int64_t m_logClock = 0;

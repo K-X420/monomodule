@@ -56,6 +56,11 @@ public:
     int cellValue(int k) const { return int(std::lround(m_cells[size_t(k)].getValue())); }
     // Binds the eight cells to parameters; the descriptors are copied (the SYN page changes with the machine).
     void bind(const spec::Param* params8, const std::function<juce::String(int)>& paramId);
+    // Binds the cells to values that are not parameters (MD pattern settings, a held step's locks): get(k) gives the
+    // value, set(k, v) takes a turn. pull() refreshes the cells from get (the editor's timer).
+    void bindCustom(const spec::Param* params8, std::function<int(int)> get, std::function<void(int, int)> set);
+    void pull();
+    bool isCustom() const { return m_custom; }
     void paint(juce::Graphics&) override;
     void resized() override;
     void mouseDown(const juce::MouseEvent&) override;   // any press outside the inline editor commits it
@@ -80,6 +85,9 @@ private:
     std::array<std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>, 8> m_attach;
     juce::TextEditor m_editor;
     int m_editing = -1;
+    bool m_custom = false, m_pulling = false;
+    std::function<int(int)> m_get;
+    std::function<void(int, int)> m_set;
     juce::Component::SafePointer<juce::Component> m_listenedTop;   // window we listen on while editing
 };
 

@@ -131,6 +131,43 @@ int Pattern::lockRow(int track, int param) const
     return -1;
 }
 
+bool Pattern::setLock(int track, int param, int step, int value)
+{
+    if (track < 0 || track >= kTracks || param < 0 || param >= 24 || step < 0 || step >= 64) return false;
+    int row = 0;   // the row it has or would have: the locked (track, param) pairs before it
+    for (int t = 0; t < kTracks; ++t)
+        for (int q = 0; q < 24; ++q)
+            if ((t < track || (t == track && q < param)) && ((lockMasks[t] >> q) & 1)) ++row;
+    if (!((lockMasks[track] >> param) & 1)) {
+        int used = 0;
+        for (int t = 0; t < kTracks; ++t) for (int q = 0; q < 24; ++q) used += int((lockMasks[t] >> q) & 1);
+        if (used >= int(kLockRows)) return false;
+        for (int r = int(kLockRows) - 1; r > row; --r) std::memcpy(locks[r], locks[r - 1], 64);
+        std::memset(locks[row], 0xFF, 64);
+        lockMasks[track] |= 1u << param;
+        numLockedRows = uint8_t(used + 1);
+    }
+    locks[row][step] = uint8_t(std::clamp(value, 0, 127));
+    return true;
+}
+
+void Pattern::clearLock(int track, int param, int step)
+{
+    const int row = lockRow(track, param);
+    if (row < 0 || step < 0 || step >= 64) return;
+    locks[row][step] = 0xFF;
+    for (int s = 0; s < 64; ++s) if (locks[row][s] <= 127) return;
+    for (int r = row; r < int(kLockRows) - 1; ++r) std::memcpy(locks[r], locks[r + 1], 64);   // the row is empty: drop it
+    std::memset(locks[kLockRows - 1], 0xFF, 64);
+    lockMasks[track] &= ~(1u << param);
+    if (numLockedRows > 0) --numLockedRows;
+}
+
+void Pattern::clearStepLocks(int track, int step)
+{
+    for (int q = 0; q < 24; ++q) clearLock(track, q, step);
+}
+
 std::string patternSlotName(int position)
 {
     if (position < 0 || position > 127) return "?";

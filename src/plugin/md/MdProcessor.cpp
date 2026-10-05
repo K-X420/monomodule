@@ -316,6 +316,52 @@ bool MdProcessor::bankHasPattern(int slot) const
     return m_bank && slot >= 0 && slot < 128 && m_bank->hasPattern[size_t(slot)];
 }
 
+std::shared_ptr<const mnm::mddump::Pattern> MdProcessor::bankPattern(int slot) const
+{
+    const juce::SpinLock::ScopedLockType l(m_bankLock);
+    if (!m_bank || slot < 0 || slot >= 128 || !m_bank->hasPattern[size_t(slot)]) return nullptr;
+    return m_bank->patterns[size_t(slot)];
+}
+
+void MdProcessor::editPattern(int slot, const std::function<void(mnm::mddump::Pattern&)>& fn)
+{
+    if (slot < 0 || slot >= 128) return;
+    std::shared_ptr<const SeqBank> cur;
+    { const juce::SpinLock::ScopedLockType l(m_bankLock); cur = m_bank; }
+    auto bank = cur ? std::make_shared<SeqBank>(*cur) : std::make_shared<SeqBank>();
+    if (!cur) {
+        bank->patterns.resize(128);
+        bank->kits.resize(64);
+        bank->songs.resize(32);
+        m_bankProjectId = {};
+        m_bankName = "PLUGIN";
+    }
+    mnm::mddump::Pattern p;
+    if (bank->hasPattern[size_t(slot)]) {
+        p = *bank->patterns[size_t(slot)];
+    } else {   // a fresh pattern: 16 steps at 1x, the accents / slides / swing of all tracks edited together
+        p.position = slot;
+        p.length = 16;
+        p.kit = uint8_t(juce::jmax(0, m_seqKitSlot.load()));
+        p.accentEditAll = p.slideEditAll = p.swingEditAll = 1;
+        p.accentAmount = 64;
+        for (auto& row : p.locks) std::fill(std::begin(row), std::end(row), uint8_t(0xFF));
+    }
+    fn(p);
+    p.position = slot;
+    p.extended = p.extended || p.length > 32;
+    bank->patterns[size_t(slot)] = std::make_shared<const mnm::mddump::Pattern>(p);
+    bank->hasPattern[size_t(slot)] = true;
+    {
+        const juce::SpinLock::ScopedLockType l(m_bankLock);
+        m_bankOld = std::move(m_bank);
+        m_bank = std::move(bank);
+    }
+    const int was = m_patternEdited.exchange(slot);
+    if (was >= 0 && was != slot) m_patternEdited.store(-2);
+    if (!cur) m_bankFresh.store(true);
+}
+
 void MdProcessor::setPatternBank(const juce::String& projectId, const juce::String& name, const mnm::mddump::Dump& dump, int kitSlot)
 {
     m_seqKitSlot.store(kitSlot);
@@ -323,7 +369,7 @@ void MdProcessor::setPatternBank(const juce::String& projectId, const juce::Stri
     bank->patterns.resize(128);
     bank->kits.resize(64);
     for (const auto& p : dump.patterns)
-        if (p.position >= 0 && p.position < 128) { bank->patterns[size_t(p.position)] = p; bank->hasPattern[size_t(p.position)] = true; }
+        if (p.position >= 0 && p.position < 128) { bank->patterns[size_t(p.position)] = std::make_shared<const mnm::mddump::Pattern>(p); bank->hasPattern[size_t(p.position)] = true; }
     for (const auto& k : dump.kits)
         if (k.position >= 0 && k.position < 64) { bank->kits[size_t(k.position)] = k; bank->hasKit[size_t(k.position)] = true; }
     bank->songs.resize(32);
@@ -386,7 +432,7 @@ void MdProcessor::seqStart(Segment& seg, int slot, int start, int end, int64_t s
     seg.valid = bank && slot >= 0 && slot < 128 && bank->hasPattern[size_t(slot)];
     m_seqPatternUi.store(slot);
     if (!seg.valid) { for (auto& u : m_seqTrigsUi) u.store(0); return; }
-    const auto& pat = bank->patterns[size_t(slot)];
+    const auto& pat = *bank->patterns[size_t(slot)];
     seg.player.set(pat);
     seg.player.setRange(start, end);
     seg.accentOn = 0x80 + 2 * int(pat.accentAmount);
@@ -483,6 +529,22 @@ void MdProcessor::scheduleSequencer(int n, double ratio)
     const bool song = m_seqMode->load() >= 0.5f;
     const int songSlot = juce::jlimit(0, 31, int(std::lround(m_songParam->load())));
     bool relocate = false;
+    if (const int ed = m_patternEdited.exchange(-1); ed != -1 && bank) {   // an edit: the new pattern in place
+        for (auto* s : {&m_seg, &m_prevSeg}) {
+            if (s->slot < 0 || (ed >= 0 && s->slot != ed) || !bank->hasPattern[size_t(s->slot)]) continue;
+            const int start = s->player.rangeStart(), end = start + s->player.span();
+            const bool whole = start == 0 && end == s->player.length();
+            const auto& pat = *bank->patterns[size_t(s->slot)];
+            s->player.set(pat);
+            if (!whole) s->player.setRange(start, end);
+            s->accentOn = 0x80 + 2 * int(pat.accentAmount);
+            s->valid = true;
+            if (s == &m_seg) {
+                m_seqLenUi.store(s->player.length());
+                for (int t = 0; t < kTracks; ++t) m_seqTrigsUi[size_t(t)].store(pat.trigs[t]);
+            }
+        }
+    }
     if (m_bankFresh.exchange(false)) { m_patternSeen = -1; m_seg.slot = -1; relocate = true; }
     if (int(song) != m_modeSeen || songSlot != m_songSeen) { m_modeSeen = int(song); m_songSeen = songSlot; relocate = true; }
     const int want = juce::jlimit(0, 127, int(std::lround(m_patternParam->load())));
@@ -1381,7 +1443,7 @@ void MdProcessor::getStateInformation(juce::MemoryBlock& destData)
         if (bank) {
             juce::MemoryBlock syx;
             for (int s = 0; s < 64; ++s) if (bank->hasKit[size_t(s)]) { const auto m = mnm::mddump::encodeKit(bank->kits[size_t(s)]); syx.append(m.data(), m.size()); }
-            for (int s = 0; s < 128; ++s) if (bank->hasPattern[size_t(s)]) { const auto m = mnm::mddump::encodePattern(bank->patterns[size_t(s)]); syx.append(m.data(), m.size()); }
+            for (int s = 0; s < 128; ++s) if (bank->hasPattern[size_t(s)]) { const auto m = mnm::mddump::encodePattern(*bank->patterns[size_t(s)]); syx.append(m.data(), m.size()); }
             for (int s = 0; s < 32; ++s) if (bank->hasSong[size_t(s)]) { const auto m = mnm::mddump::encodeSong(bank->songs[size_t(s)]); syx.append(m.data(), m.size()); }
             juce::ValueTree b("BANK");
             b.setProperty("project", m_bankProjectId, nullptr);

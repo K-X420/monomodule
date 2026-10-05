@@ -61,6 +61,19 @@ public:
     // Pattern playback, as the hardware's trig keys: key n is step n of the playing page (16 steps a page); a step LED
     // per key (solid = the selected track has a trig there), the playing step marked along the key's top.
     // length 0 = no pattern (keys as usual); step -1 = not playing (page 1)
+    // GRID (the OUTPUT panel's PATTERN tab), as the hardware's grid recording: the keys are the selected track's steps
+    // on the page. Click: its trig on / off; Shift + click: hold the step (the track pages set its locks); Ctrl / Cmd +
+    // click: select that key's track (FUNC + trig); right-click: the step's menu (accent, slide, swing, locks, track).
+    struct Grid {
+        bool on = false;
+        int page = 0, length = 16, play = -1, held = -1;
+        uint64_t trigs = 0, accent = 0, slide = 0, swing = 0, locks = 0;
+        bool operator==(const Grid& o) const { return on == o.on && page == o.page && length == o.length && play == o.play && held == o.held && trigs == o.trigs && accent == o.accent && slide == o.slide && swing == o.swing && locks == o.locks; }
+    };
+    void setGrid(const Grid& g) { if (!(g == m_grid)) { m_grid = g; repaint(); } }
+    std::function<void(int step)> onStep, onHold;
+    std::function<void(int step)> onStepMenu;
+    std::function<void(int track)> onSelect;
     void setSeq(int step, int length, uint64_t trigs)
     {
         if (m_seqStep != step || m_seqLen != length || m_seqTrigs != trigs) { m_seqStep = step; m_seqLen = length; m_seqTrigs = trigs; repaint(); }
@@ -76,6 +89,8 @@ private:
     int m_dropTarget = -1;
     int m_seqStep = -1, m_seqLen = 0;
     uint64_t m_seqTrigs = 0;
+    Grid m_grid;
+    void paintGrid(one::LcdCanvas& cv);
 };
 
 // The machine picker over the pages, as Monomodule's: a column per family (GND TRX EFM E12 P-I INP, ROM over three
@@ -139,6 +154,14 @@ public:
     void showKitList() { openKitList(); }                         // dev/snapshot
     void showLibrary(int tab) { m_panel.open(false); m_panel.setTab(MdLibraryPanel::Tab(tab)); }   // dev/snapshot
     void showAbout() { m_about.setVisible(true); m_about.toFront(false); }                     // dev/snapshot
+    void showGrid(int held)   // dev/snapshot: the PATTERN tab, GRID on, a step held (-1 none)
+    {
+        m_out.setTabs({"OUT", "PATTERN"}, 1, [this](int tab) { bindOutPage(tab); });
+        bindOutPage(1);
+        m_gridOn = true;
+        holdStep(held);
+        refreshGrid();
+    }
     void showSkinDialog() { m_skinDialog.setBounds(getLocalBounds()); m_skinDialog.open(); }   // dev/snapshot
     // Dropped on the editor: .syx files go into the library (a file of one kit is loaded as well); a .mdkit from the
     // Library app loads; a .mdsound lands on the track key it is dropped on, else on the selected track
@@ -155,6 +178,14 @@ private:
     void timerCallback() override;
     void bindTrackPages();
     void rebuildSynPage();
+    // A track page: bound to the parameters, or (a step held in GRID) to that step's locks: mdParam(k) = the MD
+    // parameter (0..23) the cell is, -1 for one that cannot be locked (it stays the parameter)
+    void bindTrackPage(one::KnobPage& page, const spec::Param* params, std::function<juce::String(int)> id, std::function<int(int)> mdParam);
+    void bindOutPage(int tab);   // OUTPUT: the plugin's output and playback; PATTERN: the pattern's settings and GRID
+    int editSlot() const;        // PTN: the pattern GRID and the PATTERN tab edit
+    void holdStep(int step);     // -1 releases
+    void stepMenu(int step);
+    void refreshGrid();
     void bindMasterFx(int fx);
     void showMenu();
     void chooseOsFile();
@@ -211,6 +242,11 @@ private:
     one::KnobPage m_syn, m_fx, m_routing, m_lfo, m_master, m_out;
     MdBadgeButton m_sample;
     MdTrackKeys m_keys;
+    bool m_gridOn = false;
+    int m_gridPage = 0, m_heldStep = -1, m_outTab = 0, m_ptnPoll = 0;
+    std::array<std::string, 128> m_ptnNames;      // "A01", or "A01 --" for an empty slot
+    std::array<const char*, 128> m_ptnNamePtrs{};
+    juce::String m_bankBadge;
     MdMachinePicker m_picker;
 
     // descriptors the pages draw from (the labels must outlive the bind)

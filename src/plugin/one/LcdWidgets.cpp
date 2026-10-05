@@ -153,10 +153,57 @@ void KnobPage::showValueList(int k)
 // A page's cells are repainted when any of its values change, so DEST follows PAGE live.
 
 
-void KnobPage::bind(const spec::Param* params8, const std::function<juce::String(int)>& paramId)
+void KnobPage::bindCustom(const spec::Param* params8, std::function<int(int)> get, std::function<void(int, int)> set)
 {
+    m_custom = true;
+    m_get = std::move(get);
+    m_set = std::move(set);
+    m_pulling = true;
     for (int k = 0; k < 8; ++k) {
         auto& cell = m_cells[size_t(k)];
+        m_attach[size_t(k)].reset();
+        m_params[size_t(k)] = params8[k];
+        const auto d = params8[k].display;
+        const bool blank = d == spec::Display::Blank;
+        cell.setVisible(!blank);
+        const bool dial = d == spec::Display::Numeric || d == spec::Display::Bipolar;
+        cell.setValueArea(juce::Rectangle<int>(0, (kValueBoxY - 1) * kScale, (kCell - 1) * kScale, kValueBoxH * kScale),
+                          dial ? juce::MouseCursor::IBeamCursor : juce::MouseCursor::PointingHandCursor);
+        cell.onValueChange = nullptr;
+        if (blank) continue;
+        cell.setRange(0.0, double(params8[k].maxRaw), 1.0);
+        cell.setValue(double(m_get ? m_get(k) : 0), juce::dontSendNotification);
+        cell.setDoubleClickReturnValue(true, double(params8[k].defaultRaw));
+        cell.onValueChange = [this, k] { repaint(); if (!m_pulling && m_set) m_set(k, int(std::lround(m_cells[size_t(k)].getValue()))); };
+    }
+    m_pulling = false;
+    endEdit(false);
+    repaint();
+}
+
+void KnobPage::pull()
+{
+    if (!m_custom || !m_get) return;
+    m_pulling = true;
+    bool changed = false;
+    for (int k = 0; k < 8; ++k) {
+        auto& cell = m_cells[size_t(k)];
+        if (!cell.isVisible() || cell.isMouseButtonDown()) continue;
+        const double v = double(m_get(k));
+        if (v != cell.getValue()) { cell.setValue(v, juce::dontSendNotification); changed = true; }
+    }
+    m_pulling = false;
+    if (changed) repaint();
+}
+
+void KnobPage::bind(const spec::Param* params8, const std::function<juce::String(int)>& paramId)
+{
+    m_custom = false;
+    m_get = nullptr;
+    m_set = nullptr;
+    for (int k = 0; k < 8; ++k) {
+        auto& cell = m_cells[size_t(k)];
+        cell.onValueChange = [this] { repaint(); };   // the page draws the cells
         m_attach[size_t(k)].reset();
         m_params[size_t(k)] = params8[k];
         const auto d = params8[k].display;

@@ -185,10 +185,40 @@ juce::Rectangle<int> MdTrackKeys::keyRect(int t) const
     return {x, 0, kw + (t < extra ? 1 : 0), kLcdH};
 }
 
+void MdTrackKeys::paintGrid(LcdCanvas& cv)
+{
+    const auto& gr = m_grid;
+    for (int i = 0; i < kTracks; ++i) {
+        const auto r = keyRect(i);
+        const int s = gr.page * 16 + i;
+        if (s >= gr.length) {   // past the pattern's end: only the corners
+            for (int c = 0; c < 3; ++c) { cv.set(r.getX() + c, r.getY(), true); cv.set(r.getRight() - 1 - c, r.getY(), true); cv.set(r.getX() + c, r.getBottom() - 1, true); cv.set(r.getRight() - 1 - c, r.getBottom() - 1, true); }
+            continue;
+        }
+        const bool trig = (gr.trigs >> s) & 1;
+        if (trig) cv.fillRect(r.getX(), r.getY(), r.getWidth(), r.getHeight(), true);
+        else dottedFrame(cv, r.getX(), r.getY(), r.getWidth(), r.getHeight());
+        const bool ink = !trig;
+        cv.text(spec::kFontBold8, juce::String(s + 1).toRawUTF8(), r.getX() + 3, r.getY() + 3, ink);
+        int fx = r.getX() + 3;   // the step's flags along the bottom
+        auto flag = [&](const char* c, bool on) { if (on) cv.text(spec::kFontTiny3x5, c, fx, r.getBottom() - 8, ink); fx += 6; };
+        flag("A", (gr.accent >> s) & 1);
+        flag("S", (gr.slide >> s) & 1);
+        flag("W", (gr.swing >> s) & 1);
+        flag("L", (gr.locks >> s) & 1);
+        if (s == gr.held) {   // held for locks: an inner frame
+            cv.invertRect(r.getX() + 2, r.getY() + 2, r.getWidth() - 4, 1); cv.invertRect(r.getX() + 2, r.getBottom() - 3, r.getWidth() - 4, 1);
+            cv.invertRect(r.getX() + 2, r.getY() + 3, 1, r.getHeight() - 6); cv.invertRect(r.getRight() - 3, r.getY() + 3, 1, r.getHeight() - 6);
+        }
+        if (s == gr.play) cv.invertRect(r.getX() + 1, r.getY() + 1, r.getWidth() - 2, 2);
+    }
+}
+
 void MdTrackKeys::paint(juce::Graphics& g)
 {
     const int w = getWidth() / kScale, h = getHeight() / kScale;
     LcdCanvas cv(w, h);
+    if (m_grid.on) { paintGrid(cv); cv.draw(g, 0, 0); return; }
     for (int t = 0; t < kTracks; ++t) {
         const auto r = keyRect(t);
         const bool sel = t == m_selected, ink = !sel;
@@ -231,6 +261,19 @@ void MdTrackKeys::paint(juce::Graphics& g)
 void MdTrackKeys::mouseDown(const juce::MouseEvent& e)
 {
     const auto p = e.getPosition() / kScale;
+    if (m_grid.on) {
+        for (int i = 0; i < kTracks; ++i) {
+            if (!keyRect(i).contains(p)) continue;
+            const int s = m_grid.page * 16 + i;
+            if (e.mods.isPopupMenu()) { if (onStepMenu && s < m_grid.length) onStepMenu(s); }
+            else if (e.mods.isCommandDown() || e.mods.isCtrlDown()) { if (onSelect) onSelect(i); }
+            else if (s >= m_grid.length) return;
+            else if (e.mods.isShiftDown()) { if (onHold) onHold(s); }
+            else if (onStep) onStep(s);
+            return;
+        }
+        return;
+    }
     for (int t = 0; t < kTracks; ++t) {
         if (!keyRect(t).contains(p)) continue;
         if (lockBox(t).expanded(1).contains(p)) { if (onLock) onLock(t); }
@@ -244,6 +287,11 @@ void MdTrackKeys::mouseMove(const juce::MouseEvent& e)
 {
     const auto p = e.getPosition() / kScale;
     juce::String tip;
+    if (m_grid.on) {
+        setTooltip("Step " + juce::String(m_grid.page * 16 + 1) + "-" + juce::String(m_grid.page * 16 + 16)
+                   + ". Click: trig on/off. Shift+click: hold for locks (turn the track's knobs). Ctrl+click: select that track. Right-click: step menu.");
+        return;
+    }
     for (int t = 0; t < kTracks; ++t)
         if (lockBox(t).expanded(1).contains(p)) tip = "Lock: keep this track's sound when a kit is loaded";
         else if (muteBox(t).expanded(1).contains(p)) tip = "Mute: ignore this track's trigs";
@@ -606,7 +654,22 @@ MdEditor::MdEditor(MdProcessor& p)
 
     for (auto* pg : {&m_syn, &m_fx, &m_routing, &m_lfo, &m_master, &m_out}) addAndMakeVisible(pg);
     m_master.setTabs({kMasterTabs[0], kMasterTabs[1], kMasterTabs[2], kMasterTabs[3]}, 0, [this](int tab) { bindMasterFx(tab); });
-    m_out.bind(kOutParams, [](int k) { return k == 0 ? masterId() : k == 1 ? velModeId() : k == 2 ? accentId() : k == 4 ? seqId() : k == 5 ? patternId() : k == 6 ? seqModeId() : k == 7 ? songId() : juce::String(); });
+    for (int s = 0; s < 128; ++s) { m_ptnNames[size_t(s)] = kPatternNames[s]; m_ptnNamePtrs[size_t(s)] = m_ptnNames[size_t(s)].c_str(); }
+    m_out.setTabs({"OUT", "PATTERN"}, 0, [this](int tab) { bindOutPage(tab); });
+    bindOutPage(0);
+    m_keys.onStep = [this](int s) {
+        const int t = m_track;
+        bool removed = false;
+        m_proc.editPattern(editSlot(), [&](mnm::mddump::Pattern& p) {
+            if ((p.trigs[t] >> s) & 1) { p.trigs[t] &= ~(1ull << s); p.clearStepLocks(t, s); removed = true; }
+            else p.trigs[t] |= 1ull << s;
+        });
+        if (removed && s == m_heldStep) holdStep(-1);
+        refreshGrid();
+    };
+    m_keys.onHold = [this](int s) { holdStep(s == m_heldStep ? -1 : s); };
+    m_keys.onSelect = [this](int t) { selectTrack(t); };
+    m_keys.onStepMenu = [this](int s) { stepMenu(s); };
     bindMasterFx(0);
 
     m_sample.onClick = [this] { sampleMenu(); };
@@ -649,9 +712,190 @@ void MdEditor::selectTrack(int t)
         if (m_picker.isOpen()) m_picker.close(false);
         if (m_drop.isVisible()) m_drop.close();
     }
+    if (t != m_track) m_heldStep = -1;
     m_track = t;
     m_keys.setSelected(t);
     bindTrackPages();
+    refreshGrid();
+}
+
+int MdEditor::editSlot() const
+{
+    return juce::jlimit(0, 127, int(std::lround(m_proc.apvts.getRawParameterValue(patternId())->load())));
+}
+
+void MdEditor::holdStep(int step)
+{
+    if (step == m_heldStep) return;
+    m_heldStep = step;
+    const juce::String badge = step >= 0 ? "LOCK" + juce::String(step + 1) : juce::String();
+    for (auto* pg : {&m_syn, &m_fx, &m_routing, &m_lfo}) pg->setBadge(step >= 0 ? badge.toRawUTF8() : nullptr);
+    m_shownMachineId = -2;
+    m_pagesMachineId = -2;
+    rebuildSynPage();
+    refreshGrid();
+}
+
+void MdEditor::bindTrackPage(one::KnobPage& page, const spec::Param* params, std::function<juce::String(int)> id, std::function<int(int)> mdParam)
+{
+    if (m_heldStep < 0) { page.bind(params, id); return; }
+    const int t = m_track, step = m_heldStep, slot = editSlot();
+    auto paramValue = [this, id](int k) {
+        if (auto* a = m_proc.apvts.getParameter(id(k))) return int(std::lround(a->convertFrom0to1(a->getValue())));
+        return 0;
+    };
+    page.bindCustom(params,
+        [this, t, step, slot, mdParam, paramValue](int k) {
+            const int p = mdParam(k);
+            if (p >= 0)
+                if (const auto pat = m_proc.bankPattern(slot)) {
+                    const int row = pat->lockRow(t, p);
+                    if (row >= 0 && pat->locks[row][step] <= 127) return int(pat->locks[row][step]);
+                }
+            return paramValue(k);
+        },
+        [this, t, step, slot, id, mdParam](int k, int v) {
+            const int p = mdParam(k);
+            if (p < 0) {   // not lockable: the parameter itself
+                if (auto* a = m_proc.apvts.getParameter(id(k))) a->setValueNotifyingHost(a->convertTo0to1(float(v)));
+                return;
+            }
+            m_proc.editPattern(slot, [&](mnm::mddump::Pattern& pat) { pat.trigs[t] |= 1ull << step; pat.setLock(t, p, step, v); });
+            refreshGrid();
+        });
+}
+
+void MdEditor::bindOutPage(int tab)
+{
+    m_outTab = tab;
+    for (int k = 0; k < 8; ++k) m_out.setValuesSource(k, nullptr);
+    if (tab == 0) {
+        m_out.bind(kOutParams, [](int k) { return k == 0 ? masterId() : k == 1 ? velModeId() : k == 2 ? accentId() : k == 4 ? seqId() : k == 5 ? patternId() : k == 6 ? seqModeId() : k == 7 ? songId() : juce::String(); });
+        m_out.setValuesSource(5, [this] { return m_ptnNamePtrs.data(); });
+        return;
+    }
+    static const auto names = [] {
+        struct N { std::array<std::string, 64> len, kit; std::array<std::string, 31> swing; std::array<const char*, 64> lenP{}, kitP{}; std::array<const char*, 31> swingP{}; } n;
+        for (int i = 0; i < 64; ++i) { n.len[size_t(i)] = std::to_string(i + 1); n.kit[size_t(i)] = (i < 9 ? "0" : "") + std::to_string(i + 1); n.lenP[size_t(i)] = n.len[size_t(i)].c_str(); n.kitP[size_t(i)] = n.kit[size_t(i)].c_str(); }
+        for (int i = 0; i < 31; ++i) { n.swing[size_t(i)] = std::to_string(50 + i) + "%"; n.swingP[size_t(i)] = n.swing[size_t(i)].c_str(); }
+        return n;
+    }();
+    static const char* const kSpd[4] = {"1X", "2X", "3/4X", "3/2X"};
+    static const char* const kPages[4] = {"1", "2", "3", "4"};
+    const spec::Param params[8] = {readout("LEN", names.lenP.data(), 64, 15), readout("SPD", kSpd, 4), readout("SWNG", names.swingP.data(), 31), numeric("ACC", 64),
+                                   readout("KIT", names.kitP.data(), 64), readout("GRID", kSeqNames, 2), readout("PAGE", kPages, 4), readout("PTN", kPatternNames, 128)};
+    m_out.bindCustom(params,
+        [this](int k) {
+            const auto p = m_proc.bankPattern(editSlot());
+            switch (k) {
+                case 0: return p ? juce::jlimit(0, 63, int(p->length) - 1) : 15;
+                case 1: return p ? int(p->doubleTempo & 3) : 0;
+                case 2: return p ? juce::jlimit(0, 30, p->swingPercent() - 50) : 0;
+                case 3: return p ? int(p->accentAmount) : 64;
+                case 4: return p ? juce::jlimit(0, 63, int(p->kit)) : 0;
+                case 5: return m_gridOn ? 1 : 0;
+                case 6: return m_gridPage;
+                default: return editSlot();
+            }
+        },
+        [this](int k, int v) {
+            if (k == 5) { m_gridOn = v != 0; if (!m_gridOn) holdStep(-1); refreshGrid(); return; }
+            if (k == 6) { m_gridPage = v; refreshGrid(); return; }
+            if (k == 7) {
+                if (auto* a = m_proc.apvts.getParameter(patternId())) a->setValueNotifyingHost(a->convertTo0to1(float(v)));
+                holdStep(-1);
+                refreshGrid();
+                return;
+            }
+            m_proc.editPattern(editSlot(), [&](mnm::mddump::Pattern& p) {
+                switch (k) {
+                    case 0: p.length = uint8_t(v + 1); p.scale = uint8_t(v / 16); break;   // SCALE: the pages the length needs
+                    case 1: p.doubleTempo = uint8_t(v & 3); break;
+                    case 2: p.swingAmount = uint32_t(v * 16384 / 50); break;
+                    case 3: p.accentAmount = uint8_t(v); break;
+                    case 4: p.kit = uint8_t(v); break;
+                    default: break;
+                }
+            });
+            refreshGrid();
+        });
+    m_out.setValuesSource(7, [this] { return m_ptnNamePtrs.data(); });
+}
+
+void MdEditor::stepMenu(int s)
+{
+    const int t = m_track, slot = editSlot();
+    const auto p = m_proc.bankPattern(slot);
+    auto maskBit = [&](uint32_t editAll, uint64_t global, uint64_t perTrack) { return (((editAll ? global : perTrack) >> s) & 1) != 0; };
+    const bool trig = p && ((p->trigs[t] >> s) & 1);
+    bool locks = false;
+    if (p) for (int q = 0; q < 24; ++q) { const int row = p->lockRow(t, q); if (row >= 0 && p->locks[row][s] <= 127) locks = true; }
+    juce::PopupMenu m;
+    m.addSectionHeader("STEP " + juce::String(s + 1) + " - TRACK " + juce::String(t + 1));
+    m.addItem(1, "Trig", true, trig);
+    m.addItem(2, p && p->accentEditAll ? "Accent (all tracks)" : "Accent", true, p && maskBit(p->accentEditAll, p->accent, p->accentPerTrack[t]));
+    m.addItem(3, p && p->slideEditAll ? "Slide (all tracks)" : "Slide", true, p && maskBit(p->slideEditAll, p->slide, p->slidePerTrack[t]));
+    m.addItem(4, p && p->swingEditAll ? "Swing (all tracks)" : "Swing", true, p && maskBit(p->swingEditAll, p->swing, p->swingPerTrack[t]));
+    m.addSeparator();
+    m.addItem(5, m_heldStep == s ? "Release locks hold" : "Hold for locks (turn the knobs)");
+    m.addItem(6, "Clear this step's locks", locks);
+    m.addSeparator();
+    m.addItem(7, "Accent / slide / swing per track", true, p && !p->accentEditAll);
+    juce::PopupMenu tracks;
+    for (int i = 0; i < kTracks; ++i) tracks.addItem(100 + i, "T" + juce::String(i + 1), true, i == t);
+    m.addSubMenu("Select track", tracks);
+    m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&m_keys), [this, s, t, slot](int r) {
+        if (r >= 100) { selectTrack(r - 100); return; }
+        if (r == 5) { holdStep(m_heldStep == s ? -1 : s); return; }
+        if (r <= 0) return;
+        m_proc.editPattern(slot, [&](mnm::mddump::Pattern& p) {
+            auto flip = [&](uint32_t editAll, uint64_t& global, uint64_t& perTrack) { (editAll ? global : perTrack) ^= 1ull << s; };
+            switch (r) {
+                case 1: if ((p.trigs[t] >> s) & 1) { p.trigs[t] &= ~(1ull << s); p.clearStepLocks(t, s); } else p.trigs[t] |= 1ull << s; break;
+                case 2: flip(p.accentEditAll, p.accent, p.accentPerTrack[t]); break;
+                case 3: flip(p.slideEditAll, p.slide, p.slidePerTrack[t]); break;
+                case 4: flip(p.swingEditAll, p.swing, p.swingPerTrack[t]); break;
+                case 6: p.clearStepLocks(t, s); break;
+                case 7: {   // the masks of all tracks <-> each track's own (the current marks carry over)
+                    const bool perTrack = p.accentEditAll != 0;
+                    if (perTrack) for (int u = 0; u < 16; ++u) { p.accentPerTrack[u] = p.accent; p.slidePerTrack[u] = p.slide; p.swingPerTrack[u] = p.swing; }
+                    else { p.accent = p.accentPerTrack[t]; p.slide = p.slidePerTrack[t]; p.swing = p.swingPerTrack[t]; }
+                    p.accentEditAll = p.slideEditAll = p.swingEditAll = perTrack ? 0 : 1;
+                    break;
+                }
+                default: break;
+            }
+        });
+        if (r == 1 && s == m_heldStep) holdStep(-1);
+        refreshGrid();
+    });
+}
+
+void MdEditor::refreshGrid()
+{
+    MdTrackKeys::Grid g;
+    g.on = m_gridOn;
+    if (m_gridOn) {
+        const int slot = editSlot(), t = m_track;
+        const auto p = m_proc.bankPattern(slot);
+        g.length = p ? juce::jlimit(1, 64, int(p->length)) : 16;
+        m_gridPage = juce::jlimit(0, (g.length - 1) / 16, m_gridPage);
+        g.page = m_gridPage;
+        g.held = m_heldStep;
+        if (p) {
+            g.trigs = p->trigs[t];
+            g.accent = p->accentEditAll ? p->accent : p->accentPerTrack[t];
+            g.slide = p->slideEditAll ? p->slide : p->slidePerTrack[t];
+            g.swing = p->swingEditAll ? p->swing : p->swingPerTrack[t];
+            for (int q = 0; q < 24; ++q) {
+                const int row = p->lockRow(t, q);
+                if (row < 0) continue;
+                for (int s = 0; s < 64; ++s) if (p->locks[row][s] <= 127) g.locks |= 1ull << s;
+            }
+        }
+        if (m_proc.seqPattern() == slot) g.play = m_proc.seqStep();
+    }
+    m_keys.setGrid(g);
 }
 
 // Binds the LEV column and the track pages to the selected track
@@ -695,17 +939,17 @@ void MdEditor::rebuildSynPage()
             m_synParams[size_t(k)].label = m_synLabels[size_t(k)].c_str();
         }
     const int t = m_track;
-    m_syn.bind(m_synParams.data(), [t](int k) { return knobId(t, k); });
+    bindTrackPage(m_syn, m_synParams.data(), [t](int k) { return knobId(t, k); }, [](int k) { return k; });
     // the other pages follow the machine family (rebound on a machine change only: a turn of an 8P TRK / PAR is not one)
     if (id == m_pagesMachineId) return;
     m_pagesMachineId = id;
     const bool mid = isMidMachine(id), master = ctrMasterFx(id) >= 0;
-    m_fx.bind(mid ? kMidFx : id == kCtr8p ? kCtr8pFx : master ? kBlankPage : kFxParams, [t](int k) { return fxId(t, k); });
-    m_routing.bind(mid ? kMidRouting : id == kCtr8p ? kCtr8pRouting : master ? kBlankPage : id == kCtrAll ? kCtrAllRouting : kRoutingParams, [t](int k) {
+    bindTrackPage(m_fx, mid ? kMidFx : id == kCtr8p ? kCtr8pFx : master ? kBlankPage : kFxParams, [t](int k) { return fxId(t, k); }, [](int k) { return 8 + k; });
+    bindTrackPage(m_routing, mid ? kMidRouting : id == kCtr8p ? kCtr8pRouting : master ? kBlankPage : id == kCtrAll ? kCtrAllRouting : kRoutingParams, [t](int k) {
         static juce::String (* const ids[6])(int) = {distId, volId, panId, delId, revId, routeId};
         return k < 6 ? ids[k](t) : juce::String();
-    });
-    m_lfo.bind(id == kCtr8p ? kCtr8pLfo : id == kCtrAll ? kCtrAllLfo : kLfoParams, [t](int k) { return lfoId(t, k); });
+    }, [](int k) { return k < 5 ? 16 + k : -1; });
+    bindTrackPage(m_lfo, id == kCtr8p ? kCtr8pLfo : id == kCtrAll ? kCtrAllLfo : kLfoParams, [t](int k) { return lfoId(t, k); }, [](int k) { return k >= 5 ? 21 + (k - 5) : -1; });
 }
 
 void MdEditor::bindMasterFx(int fx)
@@ -1130,6 +1374,20 @@ void MdEditor::timerCallback()
         if (t == 0) {
             const bool seq = m_proc.apvts.getRawParameterValue(seqId())->load() >= 0.5f && m_proc.seqPattern() >= 0 && m_proc.bankHasPattern(m_proc.seqPattern());
             m_keys.setSeq(m_proc.seqStep(), seq ? m_proc.seqLength() : 0, m_proc.seqTrigs(m_track));
+            refreshGrid();
+            if (m_outTab == 1) m_out.pull();
+            if (m_heldStep >= 0) for (auto* pg : {&m_syn, &m_fx, &m_routing, &m_lfo}) pg->pull();
+            if (--m_ptnPoll <= 0) {   // the bank: its name on the panel, its empty slots marked
+                m_ptnPoll = 10;
+                const auto badge = m_proc.bankName().isNotEmpty() ? m_proc.bankName().toUpperCase().removeCharacters(" ").substring(0, 8) : juce::String("NO PTNS");
+                if (badge != m_bankBadge) { m_bankBadge = badge; m_out.setBadge(m_bankBadge.toRawUTF8()); }
+                bool changed = false;
+                for (int s = 0; s < 128; ++s) {
+                    const std::string want = std::string(kPatternNames[s]) + (m_proc.bankHasPattern(s) ? "" : " --");
+                    if (want != m_ptnNames[size_t(s)]) { m_ptnNames[size_t(s)] = want; m_ptnNamePtrs[size_t(s)] = m_ptnNames[size_t(s)].c_str(); changed = true; }
+                }
+                if (changed) m_out.repaint();
+            }
         }
         m_keys.setFlags(t, m_proc.apvts.getRawParameterValue(muteId(t))->load() >= 0.5f, m_proc.trackLocked(t));
         if (t == m_track && idx != m_machineIndex) { m_machineIndex = idx; m_machineBlock.setMachine(idx); }

@@ -33,6 +33,74 @@ int main(int argc, char** argv)
     const int block = 480;
     proc.setPlayConfigDetails(0, 2, rate, block);
     proc.prepareToPlay(rate, block);
+    if (std::getenv("MD_EDIT_TEST")) {
+        // Pattern editing: the lock rows as the unit keeps them, the sysex round trip, a bank made from nothing, and an
+        // edit while it plays (it plays from the next block)
+        int fails = 0;
+        auto check = [&](bool ok, const juce::String& what) { std::printf("  %s %s\n", ok ? "ok  " : "FAIL", what.toRawUTF8()); fails += ok ? 0 : 1; };
+        mnm::mddump::Pattern pat;
+        for (auto& row : pat.locks) std::fill(std::begin(row), std::end(row), uint8_t(0xFF));
+        pat.length = 16;
+        pat.setLock(3, 5, 2, 90); pat.setLock(1, 2, 0, 10); pat.setLock(3, 1, 7, 33); pat.setLock(3, 5, 9, 91);
+        check(pat.lockRow(1, 2) == 0 && pat.lockRow(3, 1) == 1 && pat.lockRow(3, 5) == 2 && pat.numLockedRows == 3, "rows in track / param order (T2 P3, T4 P2, T4 P6)");
+        check(pat.locks[2][2] == 90 && pat.locks[2][9] == 91 && pat.locks[1][7] == 33 && pat.locks[0][0] == 10, "values on their steps");
+        pat.clearLock(1, 2, 0);
+        check(pat.lockRow(1, 2) == -1 && pat.lockRow(3, 1) == 0 && pat.lockRow(3, 5) == 1 && pat.numLockedRows == 2, "an emptied row goes, the rest move up");
+        pat.clearLock(3, 5, 2);
+        check(pat.lockRow(3, 5) == 1 && pat.locks[1][9] == 91, "a row with a lock left stays");
+        pat.trigs[3] = (1u << 7) | (1u << 9);
+        pat.position = 5;
+        mnm::mddump::Pattern back;
+        const auto syx = mnm::mddump::encodePattern(pat);
+        const bool dec = mnm::mddump::decodePattern(syx.data(), syx.size(), back);
+        check(dec && back.lockRow(3, 1) == 0 && back.locks[0][7] == 33 && back.locks[back.lockRow(3, 5)][9] == 91 && back.trigs[3] == pat.trigs[3], "sysex round trip");
+        int full = 0;
+        for (int t = 0; t < 16; ++t) for (int q = 0; q < 24; ++q) full += pat.setLock(t, q, 0, 1) ? 1 : 0;
+        check(full == 64, "64 lock rows at most (" + juce::String(full) + ")");
+
+        struct Head : juce::AudioPlayHead {
+            double ppq = 0; bool playing = true;
+            juce::Optional<PositionInfo> getPosition() const override { PositionInfo p; p.setPpqPosition(ppq); p.setBpm(120); p.setIsPlaying(playing); return p; }
+        } head;
+        MdProcessor p;
+        p.setFirmwarePath(juce::String(argv[1]), false);
+        p.setPlayHead(&head);
+        p.prepareToPlay(rate, block);
+        p.editPattern(0, [](mnm::mddump::Pattern& x) { x.trigs[0] = (1u << 0) | (1u << 4); x.setLock(0, 0, 4, 100); });
+        check(p.bankName() == "PLUGIN" && p.bankHasPattern(0) && !p.bankHasPattern(1), "an edit with no bank makes one (PLUGIN) with A01");
+        auto setParam = [&](const juce::String& id, float v) { if (auto* q = p.apvts.getParameter(id)) q->setValueNotifyingHost(q->convertTo0to1(v)); };
+        setParam(seqId(), 1.0f);
+        p.setTrigLogging(true);
+        juce::AudioBuffer<float> buf(2, block);
+        const double spc = rate * 60.0 / 120.0 / 24.0;
+        int lockSeen = -1;
+        auto run = [&](int blocks) {
+            for (int i = 0; i < blocks; ++i) {
+                juce::MidiBuffer midi; buf.clear(); p.processBlock(buf, midi);
+                head.ppq += block / spc / 24.0;
+                if (std::abs(head.ppq * 24.0 - 26.0) < 0.6) lockSeen = (p.engineForTests()->cpu().baseParam(0, 0) + 64) >> 7;
+            }
+        };
+        run(int(48 * spc / block));   // half a pass
+        p.editPattern(0, [](mnm::mddump::Pattern& x) { x.trigs[0] |= 1u << 12; });   // step 13 added while it plays
+        run(int(48 * spc / block) + 2);
+        std::vector<int> steps;
+        for (const auto& e : p.trigLog()) if (e.step >= 0 && e.track == 0) steps.push_back(e.step);
+        juce::String st; for (int s : steps) st << s + 1 << " ";
+        check(steps.size() == 4 && steps[0] == 0 && steps[1] == 4 && steps[2] == 12 && steps[3] == 0, "T1 plays steps 1 5, then 13 added while playing, then 1 again: " + st);
+        check(lockSeen == 100, "step 5's lock from the edit (" + juce::String(lockSeen) + ")");
+        if (argc > 3) {
+            std::unique_ptr<juce::AudioProcessorEditor> ed(p.createEditor());
+            if (auto* med = dynamic_cast<MdEditor*>(ed.get())) { med->showGrid(4); med->refresh(); }
+            auto img = ed->createComponentSnapshot(ed->getLocalBounds(), true, 1.0f);
+            juce::File png{juce::String(argv[3])};
+            png.deleteFile();
+            juce::PNGImageFormat pf;
+            if (auto s = std::unique_ptr<juce::FileOutputStream>(png.createOutputStream())) pf.writeImageToStream(img, *s);
+        }
+        std::printf(fails ? "EDIT TEST FAILED (%d)\n" : "EDIT TEST OK\n", fails);
+        return fails ? 1 : 0;
+    }
     if (std::getenv("MD_SEQ_TEST")) {
         // Pattern playback against a simulated host transport (120 BPM, 48 kHz, 480-sample blocks), on a bank made here:
         //   A01 (16 steps, 1x): T1 GND-SN on steps 0 4 8 12; PTCH locked to 100 on step 4, none on 8 (back to the kit's

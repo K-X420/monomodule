@@ -52,6 +52,12 @@ struct Pattern {
     bool empty() const;                                // no trig on any track within the length
     // The lock row of (track, param), -1 when that param is not locked
     int lockRow(int track, int param) const;
+    // Editing (as the unit keeps them): a lock row per locked (track, param), in track then param order, 64 at most.
+    // setLock puts a value (0..127) on a step, inserting the row if needed (false: all 64 rows in use); clearLock
+    // takes it off and drops a row left empty. clearStepLocks: every lock of the track on that step (its trig gone).
+    bool setLock(int track, int param, int step, int value);
+    void clearLock(int track, int param, int step);
+    void clearStepLocks(int track, int step);
 };
 
 struct SongRow {
