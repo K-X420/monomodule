@@ -416,6 +416,7 @@ void MdProcessor::trigLocks(int t, const mnm::md::SeqTrig* s)
 
 void MdProcessor::seqStop()
 {
+    m_seqPlayingUi.store(false);
     for (auto& tr : m_lockVal) tr.fill(-1);   // the knobs slew back to the kit
     for (auto& tr : m_glide) for (auto& g : tr) g.active = false;
     m_seqRunning = false;
@@ -557,7 +558,7 @@ void MdProcessor::scheduleSequencer(int n, double ratio)
         return;
     }
     const double c0 = m_hostPpq * 24.0;
-    const double cps = juce::jmax(1.0, m_hostBpm.load()) * 24.0 / 60.0 / m_hostRate;
+    const double cps = juce::jmax(1.0, m_seqBpm) * 24.0 / 60.0 / m_hostRate;
     m_seqClock0 = c0;
     m_seqCps = cps;
     const double c1 = c0 + n * cps;
@@ -577,6 +578,7 @@ void MdProcessor::scheduleSequencer(int n, double ratio)
         }
     }
     m_seqExpect = c1;
+    m_seqPlayingUi.store(true);
     // the segment that ended last: its swung steps' trigs after its end
     if (m_prevSeg.valid) {
         seqGenerate(m_prevSeg, c0, c1, ratio);
@@ -846,6 +848,21 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
             m_hostPlaying = pos->getIsPlaying();
             if (const auto q = pos->getPpqPosition()) m_hostPpq = *q; else m_hostPlaying = false;
         }
+    m_hostPlayingUi.store(m_hostPlaying);
+    m_seqBpm = m_hostBpm.load();
+    if (m_hostPlaying) {   // the host's transport: PLAY gives way
+        m_intPlay.store(false);
+        m_intWas = false;
+    } else if (m_intPlay.load()) {   // PLAY: a timeline of the plugin's own, from its start
+        if (!m_intWas) m_intPpq = 0;
+        m_intWas = true;
+        m_seqBpm = tempo();
+        m_hostPlaying = true;
+        m_hostPpq = m_intPpq;
+        m_intPpq += buffer.getNumSamples() * m_seqBpm / 60.0 / m_hostRate;
+    } else {
+        m_intWas = false;
+    }
     const juce::ScopedTryLock sl(m_engineLock);
     if (!sl.isLocked() || !m_engineReady) { midi.clear(); mixPreview(buffer); return; }
     const double ratio = kEngineRate / m_hostRate;   // engine frames per host frame

@@ -1,5 +1,6 @@
 #include "MdLibraryUi.h"
 #include "MdNames.h"
+#include "MdParams.h"
 
 namespace mnm::plugin::md {
 
@@ -72,6 +73,110 @@ void MdKitStrip::paint(juce::Graphics& g)
     r = part(SoundSave, m_soundMod); pixelIcon(cv, kIconSave, 9, r.getX() + 3, r.getY() + 3, !m_soundMod);
     r = part(Library, m_libOpen); pixelIcon(cv, kIconLibrary, 9, r.getX() + 3, r.getY() + 3, !m_libOpen);
     cv.draw(g, 0, 0, kS);
+}
+
+// ---------------------------------------------------------------------------------------------- sequencer bar
+
+void MdSeqBar::resized()
+{
+    const int arrowW = 12, gap = 6;
+    int x = 0;
+    auto take = [&](Part p, int pw) { m_rects[size_t(p)] = {x, 0, pw, kLcdH}; x += pw - 1; };
+    take(Play, 33);
+    x += 1 + gap;
+    take(TrkPrev, arrowW); take(Trk, 64); take(TrkNext, arrowW);
+    x += 1 + gap;
+    take(PtnPrev, arrowW); take(Ptn, 46); take(PtnNext, arrowW);
+    x += 1 + gap;
+    take(Pages, 22 + 4 * 11 + 2);
+    x += 1 + gap;
+    take(Step, juce::jmax(40, getWidth() / kS - x));
+}
+
+void MdSeqBar::paint(juce::Graphics& g)
+{
+    LcdCanvas cv(getWidth() / kS, kLcdH);
+    auto box = [&](Part p, bool solid) {
+        const auto r = m_rects[size_t(p)];
+        if (solid) cv.fillRect(r.getX(), r.getY(), r.getWidth(), r.getHeight(), true);
+        frame(cv, r);
+        if (!solid && m_hover == p) frame(cv, r.reduced(1));
+        return r;
+    };
+    {   // PLAY: a triangle, a square while playing
+        const auto r = box(Play, m_s.playing);
+        const bool ink = !m_s.playing;
+        const int cx = r.getX() + 5, cy = r.getCentreY();
+        if (m_s.playing) cv.fillRect(cx, cy - 3, 7, 7, ink);
+        else for (int i = 0; i < 5; ++i) for (int y = -4 + i; y <= 4 - i; ++y) cv.set(cx + i, cy + y, ink);
+        cv.text(spec::kFontTiny3x5, m_s.playing ? "STOP" : "PLAY", r.getX() + 14, r.getY() + 5, ink);
+        (void) ink;
+    }
+    auto arrows = [&](Part prev, Part next) {
+        auto r = box(prev, false); arrowH(cv, r.getCentreX(), r.getCentreY(), true, true);
+        r = box(next, false); arrowH(cv, r.getCentreX(), r.getCentreY(), false, true);
+    };
+    auto labelled = [&](Part p, const char* label, const juce::String& text) {
+        const auto r = box(p, false);
+        cv.text(spec::kFontTiny3x5, label, r.getX() + 4, r.getY() + 5, true);
+        const int lw = LcdCanvas::textWidth(spec::kFontTiny3x5, label);
+        cv.text(spec::kFontBold8, fit(spec::kFontBold8, text, r.getRight() - (r.getX() + 8 + lw) - 3).toRawUTF8(), r.getX() + 8 + lw, r.getY() + 4, true);
+    };
+    arrows(TrkPrev, TrkNext);
+    labelled(Trk, "TRK", "T" + juce::String(m_s.track + 1) + " " + m_s.machine);
+    arrows(PtnPrev, PtnNext);
+    labelled(Ptn, "PTN", juce::String(kPatternNames[juce::jlimit(0, 127, m_s.pattern)]) + (m_s.empty ? "-" : ""));
+    {   // the pages: a ring each (a point past the length), solid when playing, underlined when GRID shows it
+        const auto r = box(Pages, false);
+        cv.text(spec::kFontTiny3x5, "PAGE", r.getX() + 4, r.getY() + 5, true);
+        const int pages = (juce::jlimit(1, 64, m_s.length) + 15) / 16, playing = m_s.step >= 0 ? m_s.step / 16 : -1;
+        for (int i = 0; i < 4; ++i) {
+            const int x = dotX(i), y = r.getY() + 3;
+            if (i >= pages) { cv.fillRect(x + 3, y + 3, 1, 1, true); continue; }
+            static const char* const ring[7] = {"..###..", ".#...#.", "#.....#", "#.....#", "#.....#", ".#...#.", "..###.."};
+            static const char* const disc[7] = {"..###..", ".#####.", "#######", "#######", "#######", ".#####.", "..###.."};
+            const auto& shape = i == playing ? disc : ring;
+            for (int dy = 0; dy < 7; ++dy) for (int dx = 0; dx < 7; ++dx) if (shape[dy][dx] == '#') cv.set(x + dx, y + dy, true);
+            if (m_s.grid && i == m_s.page) cv.fillRect(x, y + 9, 7, 1, true);
+        }
+    }
+    {
+        juce::String s = m_s.step >= 0 ? juce::String(m_s.step + 1).paddedLeft('0', 2) + "/" + juce::String(m_s.length) : "--/" + juce::String(m_s.length);
+        if (m_s.row >= 0) s << "  ROW " << (m_s.row + 1);
+        labelled(Step, "STEP", s);
+    }
+    cv.draw(g, 0, 0, kS);
+}
+
+MdSeqBar::Part MdSeqBar::partAt(juce::Point<int> lcd) const
+{
+    for (int i = 0; i < kParts; ++i) if (m_rects[size_t(i)].contains(lcd)) return Part(i);
+    return None;
+}
+
+void MdSeqBar::mouseDown(const juce::MouseEvent& e)
+{
+    const auto lcd = e.getPosition() / kS;
+    const auto p = partAt(lcd);
+    if (p == Pages) {
+        for (int i = 0; i < 4; ++i)
+            if (lcd.x >= dotX(i) - 2 && lcd.x <= dotX(i) + 8) { if (onPage) onPage(i); return; }
+        return;
+    }
+    if (p != None && onPart) onPart(p);
+}
+
+void MdSeqBar::mouseMove(const juce::MouseEvent& e)
+{
+    const auto p = partAt(e.getPosition() / kS);
+    if (p != m_hover) { m_hover = p; repaint(); }
+    switch (p) {
+        case Play: setTooltip(m_s.hostPlaying ? "The host's transport is running: the pattern follows it" : "Play / stop the pattern on the plugin's own clock (while the host is stopped)"); break;
+        case TrkPrev: case TrkNext: case Trk: setTooltip("The track whose steps GRID shows and edits"); break;
+        case PtnPrev: case PtnNext: case Ptn: setTooltip("The pattern (PTN): played by SEQ, edited by GRID (\"-\" = an empty slot)"); break;
+        case Pages: setTooltip("Pages of 16 steps: solid = playing, underlined = shown by GRID. Click one to show it"); break;
+        default: setTooltip({}); break;
+    }
 }
 
 MdKitStrip::Part MdKitStrip::partAt(juce::Point<int> p) const

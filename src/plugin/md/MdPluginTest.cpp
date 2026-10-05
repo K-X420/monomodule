@@ -89,6 +89,21 @@ int main(int argc, char** argv)
         juce::String st; for (int s : steps) st << s + 1 << " ";
         check(steps.size() == 4 && steps[0] == 0 && steps[1] == 4 && steps[2] == 12 && steps[3] == 0, "T1 plays steps 1 5, then 13 added while playing, then 1 again: " + st);
         check(lockSeen == 100, "step 5's lock from the edit (" + juce::String(lockSeen) + ")");
+        {   // PLAY: the plugin's own clock while the host is stopped, from step 1
+            head.playing = false;
+            p.setTrigLogging(true);
+            run(4);   // stopped: nothing
+            const bool quiet = p.trigLog().empty();
+            p.setInternalPlay(true);
+            p.setTrigLogging(true);
+            run(int(96 * spc / block) + 1);
+            std::vector<int> st2;
+            for (const auto& e : p.trigLog()) if (e.step >= 0 && e.track == 0) st2.push_back(e.step);
+            check(quiet && st2.size() >= 3 && st2[0] == 0 && st2[1] == 4 && st2[2] == 12 && p.seqPlaying(), "PLAY with the host stopped: steps 1 5 13 from the start");
+            head.playing = true;
+            run(1);
+            check(!p.internalPlay(), "the host's transport takes over");
+        }
         if (argc > 3) {
             std::unique_ptr<juce::AudioProcessorEditor> ed(p.createEditor());
             if (auto* med = dynamic_cast<MdEditor*>(ed.get())) { med->showGrid(4); med->refresh(); }

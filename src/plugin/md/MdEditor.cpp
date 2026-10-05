@@ -210,7 +210,7 @@ void MdTrackKeys::paintGrid(LcdCanvas& cv)
             cv.invertRect(r.getX() + 2, r.getY() + 2, r.getWidth() - 4, 1); cv.invertRect(r.getX() + 2, r.getBottom() - 3, r.getWidth() - 4, 1);
             cv.invertRect(r.getX() + 2, r.getY() + 3, 1, r.getHeight() - 6); cv.invertRect(r.getRight() - 3, r.getY() + 3, 1, r.getHeight() - 6);
         }
-        if (s == gr.play) cv.invertRect(r.getX() + 1, r.getY() + 1, r.getWidth() - 2, 2);
+        if (s == gr.play) cv.invertRect(r.getX(), r.getY(), r.getWidth(), r.getHeight());   // the running light
     }
 }
 
@@ -247,7 +247,7 @@ void MdTrackKeys::paint(juce::Graphics& g)
             if (s < m_seqLen) {
                 const int bx = r.getCentreX() - 3, by = r.getBottom() - 9;
                 if ((m_seqTrigs >> s) & 1) cv.fillRect(bx, by, 6, 6, ink);   // unlit: nothing (the L and M keys stay clear)
-                if (s == m_seqStep) cv.invertRect(r.getX() + 1, r.getY() + 1, r.getWidth() - 2, 2);
+                if (s == m_seqStep) cv.invertRect(r.getX(), r.getY(), r.getWidth(), r.getHeight());   // the running light
             }
         }
         if (t == m_dropTarget) {   // a sound from the library would land here: an inner frame
@@ -670,6 +670,31 @@ MdEditor::MdEditor(MdProcessor& p)
     m_keys.onHold = [this](int s) { holdStep(s == m_heldStep ? -1 : s); };
     m_keys.onSelect = [this](int t) { selectTrack(t); };
     m_keys.onStepMenu = [this](int s) { stepMenu(s); };
+    addAndMakeVisible(m_seqBar);
+    m_seqBar.onPart = [this](MdSeqBar::Part p) {
+        switch (p) {
+            case MdSeqBar::Play: {
+                if (m_proc.hostPlaying()) return;
+                const bool on = !m_proc.internalPlay();
+                if (on)   // the sequencer has to be on to play
+                    if (auto* a = m_proc.apvts.getParameter(seqId()); a && a->getValue() < 0.5f) a->setValueNotifyingHost(1.0f);
+                m_proc.setInternalPlay(on);
+                break;
+            }
+            case MdSeqBar::TrkPrev: selectTrack((m_track + kTracks - 1) % kTracks); break;
+            case MdSeqBar::TrkNext: selectTrack((m_track + 1) % kTracks); break;
+            case MdSeqBar::PtnPrev: case MdSeqBar::PtnNext:
+                if (auto* a = m_proc.apvts.getParameter(patternId())) {
+                    const int v = (editSlot() + (p == MdSeqBar::PtnNext ? 1 : 127)) % 128;
+                    a->setValueNotifyingHost(a->convertTo0to1(float(v)));
+                    holdStep(-1);
+                }
+                break;
+            default: break;
+        }
+        refreshGrid();
+    };
+    m_seqBar.onPage = [this](int page) { m_gridPage = page; refreshGrid(); };
     bindMasterFx(0);
 
     m_sample.onClick = [this] { sampleMenu(); };
@@ -873,6 +898,24 @@ void MdEditor::stepMenu(int s)
 
 void MdEditor::refreshGrid()
 {
+    {   // the bar
+        MdSeqBar::State s;
+        const int slot = editSlot();
+        const auto p = m_proc.bankPattern(slot);
+        s.playing = m_proc.seqPlaying() || m_proc.internalPlay();
+        s.hostPlaying = m_proc.hostPlaying();
+        s.grid = m_gridOn;
+        s.track = m_track;
+        const int mi = juce::jlimit(0, kNumMachines - 1, int(std::lround(m_proc.apvts.getRawParameterValue(machineId(m_track))->load())));
+        s.machine = shortOf(mi) == "---" ? familyOf(mi) : shortOf(mi);
+        s.pattern = slot;
+        s.empty = p == nullptr;
+        s.length = p ? juce::jlimit(1, 64, int(p->length)) : 16;
+        s.page = juce::jlimit(0, (s.length - 1) / 16, m_gridPage);
+        s.step = m_proc.seqPlaying() && m_proc.seqPattern() == slot ? m_proc.seqStep() : -1;
+        s.row = m_proc.seqPlaying() ? m_proc.seqSongRow() : -1;
+        m_seqBar.setState(s);
+    }
     MdTrackKeys::Grid g;
     g.on = m_gridOn;
     if (m_gridOn) {
@@ -1450,6 +1493,10 @@ void MdEditor::resized()
         m_status.setBounds(s.removeFromLeft(LcdCanvas::textWidth(spec::kFontBold8, "NO MACHINEDRUM OS FILE") * kScale + 6));
         s.removeFromLeft(10);
         m_osButton.setBounds(s.removeFromLeft((LcdCanvas::textWidth(spec::kFontBold8, "SELECT OS FILE") + 8) * kScale));
+    }
+    {   // the sequencer bar: under the kit strip, from the machine block to the right edge
+        const int x0 = m_machineBlock.getRight() + 12;
+        m_seqBar.setBounds(x0, m_strip.getBottom() + 6, (r.getRight() - x0) / MdSeqBar::kS * MdSeqBar::kS, MdSeqBar::kLcdH * MdSeqBar::kS);
     }
     r.removeFromTop(6);
 

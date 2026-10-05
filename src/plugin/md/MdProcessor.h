@@ -138,6 +138,12 @@ public:
     int seqPattern() const { return m_seqPatternUi.load(); }  // the playing (or next, when stopped) pattern slot, -1 = none
     uint64_t seqTrigs(int t) const { return m_seqTrigsUi[size_t(t)].load(); }   // that pattern's trig steps of track t
     int seqSongRow() const { return m_seqRowUi.load(); }      // SONG: the playing row, -1 = none
+    // PLAY: the plugin's own transport, from the start of the pattern / song, at the plugin's tempo, while the host's
+    // transport is stopped (the host's always wins: starting it ends this)
+    void setInternalPlay(bool on) { m_intPlay.store(on); }
+    bool internalPlay() const { return m_intPlay.load(); }
+    bool seqPlaying() const { return m_seqPlayingUi.load(); }
+    bool hostPlaying() const { return m_hostPlayingUi.load(); }
     // dev: the trigs the last blocks fired (track, host sample from the start of logging), when logging is on
     struct TrigLog { int track; int64_t sample; int step; };
     void setTrigLogging(bool on) { m_trigLogOn = on; m_trigLog.clear(); m_trigLog.reserve(on ? 8192 : 0); m_logClock = 0; }
@@ -310,7 +316,10 @@ private:
     std::atomic<int> m_seqKitRequest{-1};
     std::atomic<int> m_seqStepUi{-1}, m_seqLenUi{16}, m_seqPatternUi{-1};
     bool m_hostPlaying = false;
-    double m_hostPpq = 0;
+    double m_hostPpq = 0, m_seqBpm = 120.0;
+    std::atomic<bool> m_intPlay{false}, m_seqPlayingUi{false}, m_hostPlayingUi{false};
+    bool m_intWas = false;
+    double m_intPpq = 0;
     const mnm::mddump::Kit* m_kitSwitch = nullptr;   // the kit a pending switch event (PendingTrig track -2) brings in
     std::atomic<bool> m_bankFresh{false};
     std::atomic<int> m_patternEdited{-1};   // a slot whose pattern an edit replaced (-1 none; -2 several)

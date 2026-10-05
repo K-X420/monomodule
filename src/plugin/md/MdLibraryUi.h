@@ -36,6 +36,35 @@ private:
     std::array<juce::Rectangle<int>, 9> m_rects{};   // LCD px
 };
 
+// The sequencer bar under the kit strip: PLAY (the plugin's own transport while the host's is stopped), the track the
+// GRID edits (< T1 BD >), the pattern (< A01 >), its pages (a dot each: ring = there, solid = playing, underlined = the
+// page GRID shows; a click shows that page) and the playing step (SONG: the row as well).
+class MdSeqBar : public juce::Component, public juce::SettableTooltipClient {
+public:
+    enum Part { None = -1, Play, TrkPrev, Trk, TrkNext, PtnPrev, Ptn, PtnNext, Pages, Step, kParts };
+    static constexpr int kS = 2, kLcdH = 15;
+    struct State {
+        bool playing = false, hostPlaying = false, grid = false, empty = true;
+        int track = 0, pattern = 0, length = 16, page = 0, step = -1, row = -1;
+        juce::String machine;
+        bool operator==(const State& o) const { return playing == o.playing && hostPlaying == o.hostPlaying && grid == o.grid && empty == o.empty && track == o.track && pattern == o.pattern && length == o.length && page == o.page && step == o.step && row == o.row && machine == o.machine; }
+    };
+    std::function<void(Part)> onPart;
+    std::function<void(int)> onPage;
+    void setState(const State& s) { if (!(s == m_s)) { m_s = s; repaint(); } }
+    void paint(juce::Graphics&) override;
+    void resized() override;
+    void mouseDown(const juce::MouseEvent&) override;
+    void mouseMove(const juce::MouseEvent&) override;
+    void mouseExit(const juce::MouseEvent&) override { if (m_hover != None) { m_hover = None; repaint(); } }
+private:
+    Part partAt(juce::Point<int> lcd) const;
+    int dotX(int i) const { return m_rects[size_t(Pages)].getX() + 22 + i * 11; }
+    State m_s;
+    Part m_hover = None;
+    std::array<juce::Rectangle<int>, kParts> m_rects{};   // LCD px
+};
+
 class MdLibraryDrop : public juce::Component {
 public:
     static constexpr int kS = 2, kRowH = 12, kHeadH = 15, kFootH = 15, kLcdW = 220;

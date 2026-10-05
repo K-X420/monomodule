@@ -242,6 +242,7 @@ private:
     one::KnobPage m_syn, m_fx, m_routing, m_lfo, m_master, m_out;
     MdBadgeButton m_sample;
     MdTrackKeys m_keys;
+    MdSeqBar m_seqBar;
     bool m_gridOn = false;
     int m_gridPage = 0, m_heldStep = -1, m_outTab = 0, m_ptnPoll = 0;
     std::array<std::string, 128> m_ptnNames;      // "A01", or "A01 --" for an empty slot
