@@ -908,7 +908,8 @@ void MdEditor::resized()
     body.removeFromTop(36);   // the machine block's lower part and the gap under it
     auto keys = body.removeFromBottom(MdTrackKeys::kLcdH * kScale);
     body.removeFromBottom(gap);
-    m_keys.setBounds(keys.withWidth(3 * KnobPage::kWidth + 2 * gap));
+    // the track keys run from the LEV column's left edge to the pages' right edge (the LEV column ends above them)
+    m_keys.setBounds(keys.withLeft(lev.getX()).withRight(keys.getX() + 3 * KnobPage::kWidth + 2 * gap));
     lev = lev.withTop(body.getY() - 11 * kScale).withBottom(body.getY() + 2 * KnobPage::kHeight + gap);
     m_level.setBounds(lev.withHeight((lev.getHeight() / kScale) * kScale));
 
