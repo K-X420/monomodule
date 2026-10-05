@@ -6,6 +6,7 @@
 #include <array>
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "ParamDisplay.h"
+#include "MdMachines.h"
 
 namespace mnm::plugin::md {
 
@@ -45,11 +46,12 @@ constexpr MachineEntry kMachines[] = {
     {110, "MID-15"}, {111, "MID-16"},
     {112, "CTR-AL"}, {113, "CTR-8P"}, {120, "CTR-RE"}, {121, "CTR-GB"}, {122, "CTR-EQ"}, {123, "CTR-DX"},
 };
-inline bool isMidMachine(int id) { return id >= 96 && id <= 111; }
-inline bool isCtrMachine(int id) { return id == 112 || id == 113 || (id >= 120 && id <= 123); }
-constexpr int kCtrAll = 112, kCtr8p = 113;
+using mnm::md::isMidMachine;
+using mnm::md::isCtrMachine;
+using mnm::md::kCtrAll;
+using mnm::md::kCtr8p;
 // CTR-RE (Rhythm Echo) = the delay, CTR-GB (Gate Box) = the reverb, CTR-EQ, CTR-DX: index into the master effects
-inline int ctrMasterFx(int id) { return id == 120 ? 1 : id == 121 ? 0 : id == 122 ? 2 : id == 123 ? 3 : -1; }
+using mnm::md::ctrMasterFx;
 inline bool isRomMachine(int id) { return (id >= 128 && id <= 159) || (id >= 176 && id <= 191); }
 inline int romSlotOf(int id) { return id - 128; }   // the UW slot (0..31, 48..63)
 constexpr int kNumMachines = int(sizeof(kMachines) / sizeof(kMachines[0]));

@@ -220,6 +220,43 @@ int main(int argc, char** argv)
             }
             return 0;
         }
+        if (std::strcmp(argv[2], "ctrpreview") == 0) {
+            // md-render <os.syx> ctrpreview: a library preview of a kit with T1 a held GND-SN and T2 a CTR-EQ (or, with
+            // "al", a CTR-AL on T1's VOL) whose trigs lock GAIN 0 at step 5 and 127 at step 9: the level by quarter bar
+            const bool al = argc > 3 && std::strcmp(argv[3], "al") == 0;
+            mnm::mddump::Kit kit;
+            for (int tr = 0; tr < 16; ++tr) { kit.trigGroups[tr] = 127; kit.muteGroups[tr] = 127; kit.lfos[tr][0] = uint8_t(tr); kit.levels[tr] = 100; }
+            kit.models[0] = 1;   // GND-SN, long decay, filter open
+            kit.params[0][0] = 64; kit.params[0][1] = 127; kit.params[0][10] = 64; kit.params[0][13] = 127; kit.params[0][17] = 100; kit.params[0][18] = 64;
+            kit.levels[0] = 127;
+            kit.models[1] = al ? 112 : 122;
+            for (int k = 0; k < 24; ++k) kit.params[1][k] = 64;
+            const uint8_t rev[8] = {127, 0, 64, 64, 0, 127, 0, 127}, del[8] = {24, 0, 0, 32, 0, 127, 0, 127}, dyn[8] = {0, 64, 127, 0, 0, 0, 64, 0};
+            std::memcpy(kit.reverb, rev, 8); std::memcpy(kit.delay, del, 8); std::memset(kit.eq, 64, 8); std::memcpy(kit.dynamics, dyn, 8);
+            mnm::mddump::Pattern pat;
+            pat.length = 16;
+            pat.accentEditAll = pat.slideEditAll = pat.swingEditAll = 1;
+            pat.trigs[0] = 1;                            // the sine, once
+            pat.trigs[1] = (1ull << 4) | (1ull << 8);    // the CTR track, steps 5 and 9
+            const int q = al ? 17 : 7;                   // CTR-AL: VOL (onto T1); CTR-EQ: GAIN
+            pat.lockMasks[1] = 1u << q;
+            pat.numLockedRows = 1;
+            for (int st = 0; st < 64; ++st) pat.locks[0][st] = 255;
+            pat.locks[0][4] = 0; pat.locks[0][8] = 127;
+            mnm::mdpreview::Options opt;
+            opt.minSeconds = 0; opt.maxLoops = 1; opt.tailSeconds = 0;
+            const auto spec = mnm::mdpreview::patternPreview(kit, pat, opt);
+            mnm::mdpreview::Renderer rnd(fw);
+            std::vector<double> e(8, 0.0);
+            const uint32_t quarter = spec.frames / 8;
+            rnd.render(spec, 120.0, [&](uint32_t f0, const mnm::mdpreview::Block& b) {
+                for (int i = 0; i < mnm::mdpreview::Block::kFrames; ++i) { const size_t k = std::min<size_t>(7, (f0 + uint32_t(i)) / quarter); e[k] += double(b.mixL[size_t(i)]) * b.mixL[size_t(i)]; }
+            });
+            std::printf("%s lock on step 5 (0) and step 9 (127): main level per 1/8 of the bar:", al ? "CTR-AL VOL" : "CTR-EQ GAIN");
+            for (double v : e) std::printf(" %.4f", std::sqrt(v / quarter));
+            std::printf("\n");
+            return 0;
+        }
         if (std::strcmp(argv[2], "directcheck") == 0 && argc > 4) {
             // md-render <os.syx> directcheck <dump.syx> <kit>: each track of the kit alone, once in the mix and once on its
             // own output (Engine::setDirect); its own output against the main, sample by sample (neutral master section)

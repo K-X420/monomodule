@@ -5,7 +5,10 @@
 //   kit      its best pattern (the caller picks it), else a demo pattern: each track in turn, then all together
 //   sound    one trig of the sound alone (track 1 of an otherwise empty kit)
 // The sequencer plays what the pattern holds: trigs, accents (the pattern's accent amount), swing, parameter locks and
-// double tempo, at the preview tempo (patterns carry none; it is global on the unit).
+// double tempo, at the preview tempo (patterns carry none; it is global on the unit). MID and CTR tracks make no sound;
+// a CTR track's locks act as on the unit, into the kit (they last until the next one): CTR-RE / GB / EQ / DX set
+// their master effect's parameter, CTR-AL moves that parameter on every audio track by the change, CTR-8P sets the
+// parameter its P knob is assigned to; an LFO on a CTR-RE..DX knob moves the master effect (MdEngine).
 #pragma once
 #include <atomic>
 #include <functional>
@@ -14,6 +17,7 @@
 #include "MdCatalog.h"
 #include "MdDump.h"
 #include "MdEngine.h"
+#include "MdMachines.h"
 
 namespace mnm::mdpreview {
 
@@ -62,6 +66,10 @@ public:
     const std::string& error() const { return m_error; }
 private:
     void loadKit(const mddump::Kit& kit, double bpm);
+    md::Engine::Track trackFor(const mddump::Kit& kit, int t) const;   // the engine's view of a kit track (MID/CTR silent)
+    // A CTR track's parameter set to v (a lock), as the OS's parameter-change routine does; the kit and master
+    // effects it changes are updated in place. Returns true when an audio track's parameters changed.
+    bool control(mddump::Kit& kit, int t, int q, int v, std::array<bool, 16>& changed);
     std::unique_ptr<md::Engine> m_engine;
     const md::Firmware& m_fw;
     std::string m_error;
