@@ -160,6 +160,47 @@ int main(int argc, char** argv)
             }
             return 0;
         }
+        if (std::strcmp(argv[2], "tails") == 0) {
+            // md-render <os.syx> tails [knob=value ...]: every synthesis machine trigged once at its default knobs (plugin
+            // track defaults elsewhere), the level left after 0.5 / 2 / 5 s; "k3=127" sets SYNTHESIS knob 3 for all
+            std::vector<std::pair<int, int>> overrides;
+            for (int a = 3; a < argc; ++a) { int k = 0, v = 0; if (std::sscanf(argv[a], "k%d=%d", &k, &v) == 2 && k >= 1 && k <= 8) overrides.push_back({k - 1, v}); }
+            for (int id = 0; id < 80; ++id) {
+                const auto* m = fw.byId(id);
+                if (!m || m->labels[0].empty()) continue;
+                Engine e(fw);
+                Engine::Track x;
+                x.machine = id;
+                for (int k = 0; k < 8; ++k) x.params[size_t(k)] = m->defaults[size_t(k)];
+                for (auto [k, v] : overrides) x.params[size_t(k)] = uint8_t(v);
+                const int fxd[8] = {0, 0, 64, 64, 0, 127, 0, 0};
+                for (int k = 0; k < 8; ++k) x.params[size_t(8 + k)] = uint8_t(fxd[k]);
+                x.params[17] = 100; x.params[18] = 64; x.params[22] = 0;
+                if (const char* lp = std::getenv("TAIL_LFO")) {   // an LFO on SYNTHESIS knob n (0-7) of the track itself
+                    x.lfoConfig = {0, uint8_t(std::atoi(lp)), 0, 0, 0}; x.params[21] = 64; x.params[22] = 48;
+                }
+                x.level = 127;
+                e.setTrack(0, x);
+                e.setMasterFx({{{127, 0, 64, 64, 0, 127, 0, 127}, {24, 0, 0, 32, 0, 127, 0, 127}, {64, 64, 64, 64, 64, 64, 64, 64}, {0, 64, 127, 0, 0, 0, 64, 0}}});
+                e.snap(); e.render();
+                e.trig(0, id, 100);
+                const int passes = int(6.0 * 44100 / 32);
+                double w[4] = {}; int n[4] = {};
+                for (int pass = 0; pass < passes; ++pass) {
+                    e.render();
+                    const double sec = pass * 32 / 44100.0;
+                    const int b = sec < 0.5 ? 0 : (sec >= 1.9 && sec < 2.1) ? 1 : (sec >= 4.9 && sec < 5.1) ? 2 : (sec >= 5.8 ? 3 : -1);
+                    if (b < 0) continue;
+                    for (int i = 0; i < 32; ++i) for (int c : {2, 5}) { const double v = e.output()[size_t(i)][size_t(c)] / 8388608.0; w[b] += v * v; ++n[b]; }
+                }
+                auto db = [&](int b) { return n[b] ? 10 * std::log10(std::max(w[b] / n[b], 1e-20)) : -200.0; };
+                std::string knobs;
+                for (int k = 0; k < 8; ++k) if (!m->labels[size_t(k)].empty()) knobs += m->labels[size_t(k)] + "=" + std::to_string(x.params[size_t(k)]) + " ";
+                const bool held = db(2) > -60.0;
+                std::printf("%s%-7s  0-0.5s %6.1f dB  2s %6.1f  5s %6.1f  6s %6.1f   %s\n", held ? "HELD " : "     ", m->name().c_str(), db(0), db(1), db(2), db(3), knobs.c_str());
+            }
+            return 0;
+        }
         if (std::strcmp(argv[2], "directcheck") == 0 && argc > 4) {
             // md-render <os.syx> directcheck <dump.syx> <kit>: each track of the kit alone, once in the mix and once on its
             // own output (Engine::setDirect); its own output against the main, sample by sample (neutral master section)

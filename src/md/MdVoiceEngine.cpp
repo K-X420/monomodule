@@ -86,6 +86,8 @@ void VoiceEngine::installPatches()
 void VoiceEngine::reset()
 {
     m_faulted = false; m_fault.clear();
+    for (auto& w : m_packetWritten) w.fill(0xFFFFFFFF);   // a fresh image: every packet word goes in again
+    m_packetTrig.fill(0);
     m_dsp->resetHW();
     for (const auto& r : m_fw.voiceDsp.records)
         for (size_t k = 0; k < r.words.size(); ++k) {
@@ -137,10 +139,7 @@ void VoiceEngine::setPacket(int track, const uint32_t* words, int count)
 {
     if (track < 0 || track >= kTracks) return;
     const int n = std::min(count, 0x40);
-    for (int k = 1; k < n; ++k) {
-        m_packet[size_t(track)][size_t(k)] = words[k] & 0xFFFFFF;
-        m_dsp->memWrite(MemArea_Y, trackBase(track) + TWord(k), words[k] & 0xFFFFFF);
-    }
+    for (int k = 1; k < n; ++k) m_packet[size_t(track)][size_t(k)] = words[k] & 0xFFFFFF;
     m_packetLen[size_t(track)] = n;
 }
 
@@ -148,6 +147,7 @@ void VoiceEngine::trig(int track, int dspType)
 {
     if (track < 0 || track >= kTracks || dspType <= 0 || dspType > 192) return;
     m_dsp->memWrite(MemArea_Y, trackBase(track), TWord(dspType));
+    m_packetTrig[size_t(track)] = 2;
 }
 
 bool VoiceEngine::setSamples(const std::array<std::vector<float>, kSlots>& samples, const std::array<double, kSlots>& rates,
@@ -250,8 +250,17 @@ uint32_t VoiceEngine::peek(int space, uint32_t addr) const
 bool VoiceEngine::renderPass(Block& out)
 {
     if (m_faulted) { for (auto& t : out) t.fill(0); return false; }
-    for (int t = 0; t < kTracks; ++t)
-        for (int k = 1; k < m_packetLen[size_t(t)]; ++k) m_dsp->memWrite(MemArea_Y, trackBase(t) + TWord(k), m_packet[size_t(t)][size_t(k)]);
+    for (int t = 0; t < kTracks; ++t) {
+        const bool all = m_packetTrig[size_t(t)] > 0;
+        if (all) --m_packetTrig[size_t(t)];
+        auto& written = m_packetWritten[size_t(t)];
+        for (int k = 1; k < m_packetLen[size_t(t)]; ++k) {
+            const uint32_t w = m_packet[size_t(t)][size_t(k)];
+            if (!all && w == written[size_t(k)]) continue;
+            m_dsp->memWrite(MemArea_Y, trackBase(t) + TWord(k), w);
+            written[size_t(k)] = w;
+        }
+    }
     m_dsp->setPC(kMainLoop);
     if (!runToPark(kMaxExecPass)) { for (auto& t : out) t.fill(0); return false; }
     for (int t = 0; t < kTracks; ++t)

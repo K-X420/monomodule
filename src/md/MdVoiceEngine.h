@@ -66,6 +66,12 @@ private:
     // init routines clear packet words (P-I-ML clears HARD at Y:S+3) that the next refresh restores.
     std::array<std::array<uint32_t, 0x40>, kTracks> m_packet{};
     std::array<int, kTracks> m_packetLen{};
+    // Some voices keep running state in their packet words (TRX-XT/XC/CP/CH/OH/MA: the envelope level, decayed in
+    // place; the handler always puts the same start value there). So the whole packet goes in on the two passes after
+    // a trig (a voice's init may overwrite it: P-I-ML), and otherwise only the words whose value changed (a knob, an
+    // LFO): rewriting the state words on every pass or every knob change holds those sounds forever.
+    std::array<int, kTracks> m_packetTrig{};
+    std::array<std::array<uint32_t, 0x40>, kTracks> m_packetWritten{};
 
     const Firmware& m_fw;
     std::unique_ptr<dsp56k::DefaultMemoryValidator> m_validator;
