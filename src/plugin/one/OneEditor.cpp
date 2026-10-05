@@ -441,6 +441,9 @@ void OneEditor::showConfigMenu()
         outputs.addItem(40, "Per Track (Track 1-6)", true, mode == int(OutputMode::Tracks));
         outputs.addItem(41, "Mix Buses (AB, CD, EF on outputs 1-3)", true, mode == int(OutputMode::Buses));
         m.addSubMenu("Plugin Outputs", outputs);
+        m.addSeparator();
+        m.addItem(60, "Poly (spread notes over tracks 1-6)", true, m_proc.apvts.getRawParameterValue(polyId())->load() >= 0.5f);
+        m.addItem(61, "Copy Track " + juce::String(m_track + 1) + " Sound to All Tracks");
     }
     {   // the two colours of the UI, shared by every Monomodule window
         juce::PopupMenu skins;
@@ -472,6 +475,16 @@ void OneEditor::showConfigMenu()
         case 40: case 41:
             if (auto* p = m_proc.apvts.getParameter(outputModeId())) p->setValueNotifyingHost(p->convertTo0to1(float(r - 40)));
             break;
+        case 60:
+            if (auto* p = m_proc.apvts.getParameter(polyId())) p->setValueNotifyingHost(p->getValue() >= 0.5f ? 0.0f : 1.0f);
+            break;
+        case 61: {
+            juce::String error;
+            if (!m_proc.copySoundToAllTracks(m_track, error))
+                juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Copy Sound", error);
+            repaint();
+            break;
+        }
         case 3:
             m_showStatus = !m_showStatus;
             m_status.setVisible(m_showStatus);
