@@ -150,6 +150,7 @@ int main(int argc, char** argv)
                 const bool okG = !d.globals.empty() && d.globals[0].trackOfNote(36) == 0 && d.globals[0].trackOfNote(62) == 15 && d.globals[0].baseChannel == 0 && d.globals[0].tempo == 2400;
                 const auto fromG = d.globals.empty() ? ms : MdProcessor::fromGlobal(d.globals[0], ms);
                 check(okG && fromG.noteTrack[36] == 0 && fromG.baseChannel == 0, "the factory pack global: notes 36..62 = T1..T16, channel 1, 100 BPM; loaded as settings");
+                if (!d.globals.empty()) { int pn = 0; for (int i = 0; i < 128; ++i) if (d.globals[0].keyMap[i] >= 16) ++pn; std::printf("  (factory global: pattern-note mode %d, %d notes on patterns / start / stop, PRG CHANGE byte %d)\n", int(d.globals[0].trigMode), pn, int(d.globals[0].programChange)); } if (std::getenv("MD_KEYMAP_DUMP") && !d.globals.empty()) { for (int i = 0; i < 128; ++i) std::printf("%d:%d ", i, int(d.globals[0].keyMap[i])); std::printf("\n"); }
             }
         }
         ms = MdProcessor::defaultMidiSettings(); ms.baseChannel = 9; ms.midiOut = 1; ms.programChange = 3; ms.noteTrack[70] = 7;
@@ -160,7 +161,10 @@ int main(int argc, char** argv)
         const auto back = rHeap->midiSettings();
         check(back.baseChannel == 9 && back.midiOut == 1 && back.programChange == 3 && back.noteTrack[70] == 7 && back.noteTrack[36] == 0, "the settings come back with the plugin state");
         if (argc > 3) {
-            p.setMidiSettings(MdProcessor::defaultMidiSettings());
+            auto snap = MdProcessor::defaultMidiSettings();   // the factory key map's pattern notes: A01..A16 on the white keys from E3
+            for (int n = 64, k = 0; k < 16; ++n) if (!juce::MidiMessage::isMidiNoteBlack(n)) snap.noteAction[size_t(n)] = int16_t(k++);
+            snap.noteAction[96] = MdProcessor::kStartNote; snap.noteAction[98] = MdProcessor::kStopNote;
+            p.setMidiSettings(snap);
             std::unique_ptr<juce::AudioProcessorEditor> ed(p.createEditor());
             auto* med = dynamic_cast<MdEditor*>(ed.get());
             med->devOpenMidi(); med->refresh();
@@ -938,6 +942,59 @@ int main(int argc, char** argv)
         check(ons.size() >= 2 && ons[0].second == 95 && ons[1].second == 127, "MIDI OUT: velocity 95, then 127 on the accented step (accent amount 0)");
         check(!ons.empty() && offAt == ons[0].first, "the note-off goes out at once (at " + juce::String(offAt) + ")");
         head.playing = false; run(2);
+        // PATTERN NOTES (the key map's pattern / START / STOP notes, global byte r[18] = their mode)
+        {
+            mnm::mddump::Global fg; fg.trigMode = 1;
+            for (int i = 0; i < 128; ++i) fg.keyMap[i] = 255;
+            fg.keyMap[36] = 0; fg.keyMap[64] = 16; fg.keyMap[65] = 17; fg.keyMap[100] = 0x90; fg.keyMap[101] = 0x91;
+            const auto s = MdProcessor::fromGlobal(fg, MdProcessor::defaultMidiSettings());
+            check(s.patternNoteMode == 1 && s.noteAction[64] == 0 && s.noteAction[65] == 1 && s.noteAction[100] == MdProcessor::kStartNote
+                  && s.noteAction[101] == MdProcessor::kStopNote && s.noteAction[36] == -1 && s.noteAction[70] == -1,
+                  "a project's key map: E3 = A01, F3 = A02, START / STOP notes, mode MOMENTARY");
+        }
+        if (auto* a = p.apvts.getParameter(patternId())) a->setValueNotifyingHost(a->convertTo0to1(0.0f));
+        ms = MdProcessor::defaultMidiSettings();
+        ms.noteAction[80] = 3; ms.noteAction[90] = MdProcessor::kStartNote; ms.noteAction[91] = MdProcessor::kStopNote;
+        auto note = [&](int nn, bool on, int blocks) {
+            juce::MidiBuffer in;
+            in.addEvent(on ? juce::MidiMessage::noteOn(1, nn, uint8_t(100)) : juce::MidiMessage::noteOff(1, nn), 0);
+            run(blocks, in);
+        };
+        auto playFrom0 = [&] { head.playing = false; run(3); head.ppq = 0; head.playing = true; run(30); };   // 0.3 s into A01
+        // QUEUE: A04 waits for the end of A01 (16 steps = 96000 samples)
+        ms.patternNoteMode = 2; p.setMidiSettings(ms);
+        playFrom0();
+        note(80, true, 2);
+        const int qNow = p.seqPattern();
+        run(180);   // past 1.0 s... well past A01's end at 2 s? (each block 10 ms: to ~2.1 s)
+        run(20);
+        check(qNow == 0 && p.seqPattern() == 3, "QUEUE: A04 waits for A01's end (" + juce::String(qNow) + " then " + juce::String(p.seqPattern()) + ")");
+        // GATE: A04 at once; the note-off stops
+        ms.patternNoteMode = 0; p.setMidiSettings(ms);
+        if (auto* a = p.apvts.getParameter(patternId())) a->setValueNotifyingHost(a->convertTo0to1(0.0f));
+        run(3);
+        playFrom0();
+        note(80, true, 3);
+        const int gNow = p.seqPattern(), gStep = p.seqStep();
+        note(80, false, 3);
+        check(gNow == 3 && gStep >= 0 && gStep < 2 && p.seqStep() == -1, "GATE: A04 at once from its first step (step " + juce::String(gStep) + "); the note-off stops (" + juce::String(p.seqStep()) + ")");
+        // MOMENTARY: A04 at once; the note-off queues A01 back
+        ms.patternNoteMode = 1; p.setMidiSettings(ms);
+        if (auto* a = p.apvts.getParameter(patternId())) a->setValueNotifyingHost(a->convertTo0to1(0.0f));
+        run(3);
+        playFrom0();
+        note(80, true, 3);
+        const int mNow = p.seqPattern();
+        note(80, false, 3);
+        const int mHeld = p.seqPattern();
+        run(200);
+        check(mNow == 3 && mHeld == 3 && p.seqPattern() == 0, "MOMENTARY: A04 at once, A01 back after it (" + juce::String(mNow) + ", " + juce::String(mHeld) + ", " + juce::String(p.seqPattern()) + ")");
+        // START / STOP notes with the host stopped: the plugin's own PLAY
+        head.playing = false; run(3);
+        note(90, true, 3);
+        const bool started = p.internalPlay();
+        note(91, true, 3);
+        check(started && !p.internalPlay(), "the START note runs PLAY, the STOP note stops it");
         std::printf(fails ? "OSCHECK TEST FAILED (%d)\n" : "OSCHECK TEST OK\n", fails);
         return fails ? 1 : 0;
     }

@@ -142,7 +142,14 @@ public:
     //   pcChannel    0 AUTO (in: the base channel and the next three; out: the base channel), n = MIDI channel n
     //   midiOut      0 OFF, 1 TRIGS (the trigs played go out as notes: a step long, velocity 127 when accented),
     //                2 TRIGS+CCS (and the parameters as CCs: knob turns, locks as they play and release)
-    struct MidiSettings { int baseChannel = 0; std::array<int8_t, 128> noteTrack{}; int programChange = 1, midiOut = 0, pcChannel = 0; };
+    //   noteAction   the key map's other notes: a pattern (0..127), kStartNote, kStopNote (-1 none; a track note wins)
+    //   patternNoteMode 0 GATE (the pattern plays at once, the note-off stops), 1 MOMENTARY (at once; the note-off
+    //                queues the pattern that was playing), 2 QUEUE (the next pattern, at the end of the playing one)
+    static constexpr int kStartNote = 200, kStopNote = 201;
+    struct MidiSettings {
+        int baseChannel = 0; std::array<int8_t, 128> noteTrack{}; int programChange = 1, midiOut = 0, pcChannel = 0;
+        std::array<int16_t, 128> noteAction{}; int patternNoteMode = 1;
+    };
     static MidiSettings defaultMidiSettings();
     MidiSettings midiSettings() const;
     void setMidiSettings(const MidiSettings& s);
@@ -406,7 +413,14 @@ private:
     static int overrideMachine(const mnm::mddump::Kit& kit, int t);   // the kit's machine, GND--- for one the plugin has not
     void trigLocks(int t, const mnm::md::SeqTrig* s, int pos = 0);   // a trig's locks and slides (none: a MIDI / UI trig releases them)
     // MIDI settings and out
-    std::atomic<int> m_baseCh{0}, m_pcMode{1}, m_midiOutMode{0}, m_pcChannel{0};
+    std::atomic<int> m_baseCh{0}, m_pcMode{1}, m_midiOutMode{0}, m_pcChannel{0}, m_ptnNoteMode{1};
+    std::array<std::atomic<int16_t>, 128> m_noteAction{};
+    // pattern notes (audio thread): the held note, the pattern MOMENTARY brings back (-1 = stop), a pattern to start at
+    // once, the sequencer halted by STOP / a GATE note-off, a pattern the parameter is still to catch up with
+    int m_ptnHeldNote = -1, m_ptnMomentBack = -1, m_ptnJump = -1;
+    std::atomic<int> m_ptnPending{-1};   // cleared by the message thread once the parameter shows it
+    bool m_seqHalted = false;
+    void patternNote(int note, bool on);
     int m_pcLastSent = -1;   // PRG CHANGE OUT: the program last sent (the OS sends a change only)
     int pcOutChannel() const { const int c = m_pcChannel.load(); return c > 0 ? c - 1 : m_baseCh.load(); }
     int songPeekPattern(const SeqBank* bank) const;   // the pattern the song's next row will play (-1 none)

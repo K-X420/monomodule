@@ -88,6 +88,8 @@ struct Global {
     int position = 0;
     uint8_t routing[kTracks] = {};
     uint8_t keyMap[128] = {};
+    // keyMap: 0..15 a track, 16 + n pattern n, 0x90 START, 0x91 STOP, else none. trigMode = the pattern notes' mode
+    // (MainOS 0x20D104): 0 GATE, 1 MOMENTARY (the pattern before comes back at the note-off), 2 QUEUE
     uint8_t baseChannel = 0, programChange = 0, trigMode = 0, flags = 0;
     int tempo = 120 * 24;
     int trackOfNote(int note) const { return note >= 0 && note < 128 && keyMap[note] < kTracks ? keyMap[note] : -1; }

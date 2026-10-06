@@ -668,8 +668,9 @@ void MdProcessor::scheduleSequencer(int n, double ratio)
     if (int(song) != m_modeSeen || songSlot != m_songSeen) { m_modeSeen = int(song); m_songSeen = songSlot; relocate = true; }
     if (m_songEdited.exchange(false) && song && !m_seg.valid) relocate = true;   // a song that had ended: rows added
     const int want = juce::jlimit(0, 127, int(std::lround(m_patternParam->load())));
-    if (want != m_patternSeen) { m_patternSeen = want; m_seqQueued = want == m_seg.slot ? -1 : want; }
-    const bool on = m_seqOn->load() >= 0.5f;   // with no bank, the pattern is empty: the steps still run
+    if (m_ptnPending.load() < 0 && want != m_patternSeen) { m_patternSeen = want; m_seqQueued = want == m_seg.slot ? -1 : want; }
+    if (!m_hostPlaying) m_seqHalted = false;   // a STOP lasts until the transport stops (or a START / pattern note)
+    const bool on = m_seqOn->load() >= 0.5f && !m_seqHalted;   // with no bank, the pattern is empty: the steps still run
     if (!on || !m_hostPlaying) {   // stopped: PATTERN shows the next pattern at once; SONG starts over
         if (m_seqRunning) seqStop();
         m_prevSeg.valid = false;
@@ -693,7 +694,7 @@ void MdProcessor::scheduleSequencer(int n, double ratio)
         m_seqRunning = true;
         m_prevSeg.valid = false;
         if (!song) {
-            if (m_seqQueued < 0) m_seqQueued = want;
+            if (m_seqQueued < 0) { const int pend = m_ptnPending.load(); m_seqQueued = pend >= 0 ? pend : want; }
             seqNext(0.0, bank.get(), bank, -1.0, false);
         } else {
             m_cursor = {};
@@ -702,6 +703,12 @@ void MdProcessor::scheduleSequencer(int n, double ratio)
                 seqNext(m_seg.endClock(), bank.get(), bank, -1.0, true);
         }
     }
+    if (m_ptnJump >= 0 && !song) {   // a GATE / MOMENTARY pattern note: that pattern from its first step, now
+        m_prevSeg.valid = false;   // the old pattern stops where it is
+        m_seqQueued = m_ptnJump;
+        seqNext(c0, bank.get(), bank, 0.0, false);
+    }
+    m_ptnJump = -1;
     m_seqExpect = c1;
     m_seqPlayingUi.store(true);
     // the segment that ended last: its swung steps' trigs after its end
@@ -759,8 +766,10 @@ void MdProcessor::scheduleSequencer(int n, double ratio)
 
 MdProcessor::MidiSettings MdProcessor::defaultMidiSettings()
 {
+    // (no pattern notes: the factory map puts A01..A16 on the white keys from E3, FROM PROJECT brings it in)
     MidiSettings s;
     s.noteTrack.fill(-1);
+    s.noteAction.fill(-1);
     for (int t = 0; t < kTracks; ++t) s.noteTrack[size_t(kTrackNotes[t])] = int8_t(t);
     return s;
 }
@@ -772,6 +781,8 @@ MdProcessor::MidiSettings MdProcessor::midiSettings() const
     for (int i = 0; i < 128; ++i) s.noteTrack[size_t(i)] = m_noteTrack[size_t(i)].load();
     s.programChange = m_pcMode.load();
     s.pcChannel = m_pcChannel.load();
+    for (int i = 0; i < 128; ++i) s.noteAction[size_t(i)] = m_noteAction[size_t(i)].load();
+    s.patternNoteMode = m_ptnNoteMode.load();
     s.midiOut = m_midiOutMode.load();
     return s;
 }
@@ -787,6 +798,12 @@ void MdProcessor::setMidiSettings(const MidiSettings& s)
     }
     m_pcMode.store(juce::jlimit(0, 3, s.programChange));
     m_pcChannel.store(juce::jlimit(0, 16, s.pcChannel));
+    m_ptnNoteMode.store(juce::jlimit(0, 2, s.patternNoteMode));
+    for (int i = 0; i < 128; ++i) {
+        const int a = s.noteAction[size_t(i)];
+        const bool ok = s.noteTrack[size_t(i)] < 0 && ((a >= 0 && a < 128) || a == kStartNote || a == kStopNote);
+        m_noteAction[size_t(i)].store(int16_t(ok ? a : -1));
+    }
     m_midiOutMode.store(juce::jlimit(0, 2, s.midiOut));
 }
 
@@ -797,6 +814,11 @@ MdProcessor::MidiSettings MdProcessor::fromGlobal(const mnm::mddump::Global& g, 
     for (int i = 0; i < 128; ++i) s.noteTrack[size_t(i)] = int8_t(g.trackOfNote(i));
     s.programChange = g.programChange & 3;   // bits 0-1 the mode (IN, OUT), bits 2-6 the channel (0 AUTO)
     s.pcChannel = juce::jlimit(0, 16, (g.programChange >> 2) & 31);
+    for (int i = 0; i < 128; ++i) {
+        const int k = g.keyMap[i];
+        s.noteAction[size_t(i)] = int16_t(k >= 16 && k < 16 + 128 ? k - 16 : k == 0x90 ? kStartNote : k == 0x91 ? kStopNote : -1);
+    }
+    s.patternNoteMode = juce::jlimit(0, 2, int(g.trigMode));
     return s;
 }
 
@@ -842,6 +864,42 @@ void MdProcessor::recordPush(const RecEvent& e)
 
 // A trig played while recording (MainOS 0x2379AC): onto the step playing; at 2x, 3/4x and 3/2x a hit late in its step
 // goes onto the next one (past 2/3, 5/8 and 1/2 of the step). Recorded trigs are never accented, whatever the velocity.
+// A note the key map gives a pattern, START or STOP (MainOS 0x20D104 / 0x20D1B8), by the PATTERN NOTES mode:
+// GATE plays the pattern at once and its note-off stops; MOMENTARY plays it at once and its note-off queues the pattern
+// that was playing (or stops, if none was); QUEUE makes it the next pattern (at once when stopped).
+void MdProcessor::patternNote(int note, bool on)
+{
+    const int act = m_noteAction[size_t(note)].load();
+    const int mode = m_ptnNoteMode.load();
+    const bool running = m_seqRunning && !m_seqHalted;
+    auto choose = [&](int p) { m_patternSeen = p; m_ptnPending.store(p); m_programChange.store(p); triggerAsyncUpdate(); };
+    auto stop = [&] { m_seqHalted = true; m_intPlay.store(false); };
+    auto start = [&] { m_seqHalted = false; if (!m_hostPlaying) m_intPlay.store(true); };
+    if (!on) {
+        if (note != m_ptnHeldNote) return;
+        m_ptnHeldNote = -1;
+        if (mode == 0) stop();
+        else if (mode == 1) {
+            if (m_ptnMomentBack < 0) stop();
+            else { m_seqQueued = m_ptnMomentBack == m_seg.slot ? -1 : m_ptnMomentBack; choose(m_ptnMomentBack); }
+        }
+        return;
+    }
+    if (act == kStartNote) { start(); return; }
+    if (act == kStopNote) { stop(); return; }
+    if (act < 0 || act > 127) return;
+    if (mode == 2) {   // QUEUE
+        if (running) { m_seqQueued = act == m_seg.slot ? -1 : act; choose(act); }
+        else { m_seqQueued = act; choose(act); start(); }
+        return;
+    }
+    if (m_ptnHeldNote < 0) m_ptnMomentBack = running ? m_seg.slot : -1;   // MOMENTARY: what comes back
+    m_ptnHeldNote = note;
+    choose(act);
+    if (running) m_ptnJump = act;
+    else { m_seqQueued = act; start(); }
+}
+
 void MdProcessor::recordTrig(int t, double clock, int velocity)
 {
     juce::ignoreUnused(velocity);
@@ -1203,10 +1261,14 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
             const int pc = m.getProgramChangeNumber();
             m_seqQueued = pc == m_seg.slot ? -1 : pc;
             m_patternSeen = pc;
+            m_ptnPending.store(pc);
             m_programChange.store(pc);
             triggerAsyncUpdate();
+        } else if (m.isNoteOff() && base >= 0 && m.getChannel() == base + 1) {   // a pattern note let go
+            patternNote(m.getNoteNumber() & 127, false);
         } else if (m.isNoteOn()) {   // a trig: the note map, on the base channel
             if (base < 0 || m.getChannel() != base + 1) continue;
+            if (m_noteAction[size_t(m.getNoteNumber() & 127)].load() >= 0) { patternNote(m.getNoteNumber() & 127, true); continue; }
             const int t = m_noteTrack[size_t(m.getNoteNumber() & 127)].load();
             if (t >= 0 && t < kTracks && !silenced(t)) {
                 m_pending.push_back({t, meta.samplePosition * ratio, int(m.getVelocity()), -1, false});
@@ -1686,8 +1748,11 @@ void MdProcessor::parameterChanged(const juce::String& id, float)
 void MdProcessor::handleAsyncUpdate()
 {
     recordApply();
-    if (const int pc = m_programChange.exchange(-1); pc >= 0)
+    if (const int pc = m_programChange.exchange(-1); pc >= 0) {   // a MIDI choice of pattern: the parameter follows, then rules again
         if (auto* p = apvts.getParameter(patternId())) p->setValueNotifyingHost(p->convertTo0to1(float(pc)));
+        int expect = pc;
+        m_ptnPending.compare_exchange_strong(expect, -1);
+    }
     if (const int k = m_seqKitRequest.exchange(-1); k >= 0) {   // a pattern change brought this kit: the knobs take it
         const auto* kit = m_kitOverride.load();
         if (kit) {
@@ -1852,6 +1917,10 @@ void MdProcessor::getStateInformation(juce::MemoryBlock& destData)
         g.setProperty("base", ms.baseChannel, nullptr);
         g.setProperty("pc", ms.programChange, nullptr);
         g.setProperty("pcch", ms.pcChannel, nullptr);
+        g.setProperty("pnm", ms.patternNoteMode, nullptr);
+        juce::String acts;
+        for (int i = 0; i < 128; ++i) acts << juce::String::toHexString(int(uint16_t(ms.noteAction[size_t(i)]))).paddedLeft('0', 4);
+        g.setProperty("acts", acts, nullptr);
         g.setProperty("out", ms.midiOut, nullptr);
         juce::String map;
         for (int i = 0; i < 128; ++i) map << juce::String::toHexString(int(uint8_t(ms.noteTrack[size_t(i)]))).paddedLeft('0', 2);
@@ -1900,6 +1969,10 @@ void MdProcessor::setStateInformation(const void* data, int sizeInBytes)
         ms.baseChannel = int(g.getProperty("base", 0));
         ms.programChange = int(g.getProperty("pc", 1));
         ms.pcChannel = int(g.getProperty("pcch", 0));
+        ms.patternNoteMode = int(g.getProperty("pnm", 1));
+        const auto acts = g.getProperty("acts").toString();
+        if (acts.length() == 512)
+            for (int i = 0; i < 128; ++i) ms.noteAction[size_t(i)] = int16_t(uint16_t(acts.substring(4 * i, 4 * i + 4).getHexValue32()));
         ms.midiOut = int(g.getProperty("out", 0));
         const auto map = g.getProperty("map").toString();
         if (map.length() == 256)

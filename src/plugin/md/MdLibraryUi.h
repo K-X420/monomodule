@@ -110,7 +110,12 @@ private:
 class MdMidiPanel : public juce::Component {
 public:
     static constexpr int kS = 3;
-    struct Values { int baseChannel = 0, programChange = 1, midiOut = 0, pcChannel = 0; std::array<int, 16> note{}; };   // note -1 = none; pcChannel 0 AUTO
+    // note -1 = none; pcChannel 0 AUTO. PATTERN NOTES: mode 0 GATE 1 MOMENTARY 2 QUEUE; from = the white key that plays
+    // BANK's pattern 01 (the next white keys 02..16; -1 OFF, -2 a map of the project's own); start / stop notes (-1 none)
+    struct Values {
+        int baseChannel = 0, programChange = 1, midiOut = 0, pcChannel = 0; std::array<int, 16> note{};
+        int ptnMode = 1, ptnFrom = -1, ptnBank = 0, startNote = -1, stopNote = -1;
+    };
     std::function<Values()> get;
     std::function<void(const Values&)> set;
     std::function<void()> onDefault, onFromProject, onClose;
@@ -121,7 +126,8 @@ public:
     void mouseWheelMove(const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
     bool keyPressed(const juce::KeyPress& k) override;
 private:
-    // cells: 0 base channel, 1 program change, 2 MIDI out, 3..18 the tracks' notes, 19 the program change channel
+    // cells: 0 base channel, 1 program change, 2 MIDI out, 3..18 the tracks' notes, 19 the program change channel,
+    // 20 the pattern notes' mode, 21 their first note, 22 their bank, 23 START, 24 STOP
     juce::Rectangle<int> cellRect(int c) const;
     int cellAt(juce::Point<int> lcd) const;
     void change(int cell, int to);

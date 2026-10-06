@@ -786,6 +786,27 @@ MdEditor::MdEditor(MdProcessor& p)
         v.baseChannel = s.baseChannel; v.programChange = s.programChange; v.midiOut = s.midiOut; v.pcChannel = s.pcChannel;
         v.note.fill(-1);
         for (int n = 0; n < 128; ++n) { const int t = s.noteTrack[size_t(n)]; if (t >= 0 && t < kTracks && v.note[size_t(t)] < 0) v.note[size_t(t)] = n; }
+        v.ptnMode = s.patternNoteMode;
+        for (int n = 0; n < 128; ++n) {
+            const int a = s.noteAction[size_t(n)];
+            if (a == MdProcessor::kStartNote && v.startNote < 0) v.startNote = n;
+            if (a == MdProcessor::kStopNote && v.stopNote < 0) v.stopNote = n;
+        }
+        // the pattern notes as FROM / BANK when they are a bank's 16 patterns on consecutive white keys, else CUSTOM
+        int from = -1, count = 0;
+        for (int n = 0; n < 128; ++n) if (s.noteAction[size_t(n)] >= 0 && s.noteAction[size_t(n)] < 128) { ++count; if (from < 0) from = n; }
+        if (count > 0) {
+            const int bank = s.noteAction[size_t(from)] / 16;
+            bool regular = s.noteAction[size_t(from)] % 16 == 0;
+            int n = from, k = 0;
+            for (; regular && k < 16 && n < 128; ++n) {
+                if (juce::MidiMessage::isMidiNoteBlack(n)) continue;
+                regular = s.noteAction[size_t(n)] == bank * 16 + k;
+                ++k;
+            }
+            v.ptnFrom = regular && k == count ? from : -2;
+            v.ptnBank = regular ? bank : 0;
+        }
         return v;
     };
     m_midiPanel.set = [this](const MdMidiPanel::Values& v) {
@@ -793,6 +814,15 @@ MdEditor::MdEditor(MdProcessor& p)
         s.baseChannel = v.baseChannel; s.programChange = v.programChange; s.midiOut = v.midiOut; s.pcChannel = v.pcChannel;
         s.noteTrack.fill(-1);
         for (int t = 0; t < kTracks; ++t) if (v.note[size_t(t)] >= 0) s.noteTrack[size_t(v.note[size_t(t)])] = int8_t(t);
+        s.patternNoteMode = v.ptnMode;
+        if (v.ptnFrom != -2) {   // CUSTOM (a project's map) stays as it is until FROM is turned
+            for (auto& a : s.noteAction) if (a >= 0 && a < 128) a = -1;
+            for (int n = v.ptnFrom, k = 0; v.ptnFrom >= 0 && n < 128 && k < 16; ++n)
+                if (!juce::MidiMessage::isMidiNoteBlack(n)) s.noteAction[size_t(n)] = int16_t(v.ptnBank * 16 + k++);
+        }
+        for (auto& a : s.noteAction) if (a == MdProcessor::kStartNote || a == MdProcessor::kStopNote) a = -1;
+        if (v.startNote >= 0) s.noteAction[size_t(v.startNote)] = MdProcessor::kStartNote;
+        if (v.stopNote >= 0) s.noteAction[size_t(v.stopNote)] = MdProcessor::kStopNote;
         m_proc.setMidiSettings(s);
     };
     m_midiPanel.onDefault = [this] {

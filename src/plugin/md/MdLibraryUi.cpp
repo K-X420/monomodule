@@ -249,13 +249,17 @@ juce::Rectangle<int> MdMidiPanel::cellRect(int c) const
 {
     if (c < 3) return {110, kMpRowY + c * kMpRowH - 2, 80, 12};
     if (c == 19) return {194, kMpRowY + kMpRowH - 2, 46, 12};   // PRG CHANGE's channel
+    if (c >= 20) {   // the PATTERN NOTES row, under the note map
+        static const int x[5] = {110, 194, 262, 302, 352}, w[5] = {80, 64, 36, 46, 40};
+        return {x[c - 20], kMpGridY + 46, w[c - 20], 12};
+    }
     const int t = c - 3;
     return {6 + (t % 8) * 48, kMpGridY + (t / 8) * 22, 44, 19};
 }
 
 int MdMidiPanel::cellAt(juce::Point<int> p) const
 {
-    for (int c = 0; c < 20; ++c) if (cellRect(c).contains(p)) return c;
+    for (int c = 0; c < 25; ++c) if (cellRect(c).contains(p)) return c;
     return -1;
 }
 
@@ -265,6 +269,11 @@ int MdMidiPanel::cellValue(const Values& v, int c) const
     if (c == 1) return v.programChange;
     if (c == 2) return v.midiOut;
     if (c == 19) return v.pcChannel;
+    if (c == 20) return v.ptnMode;
+    if (c == 21) return v.ptnFrom;
+    if (c == 22) return v.ptnBank;
+    if (c == 23) return v.startNote;
+    if (c == 24) return v.stopNote;
     return v.note[size_t(c - 3)];
 }
 
@@ -276,6 +285,17 @@ void MdMidiPanel::change(int c, int to)
     else if (c == 1) v.programChange = juce::jlimit(0, 3, to);
     else if (c == 2) v.midiOut = juce::jlimit(0, 2, to);
     else if (c == 19) v.pcChannel = juce::jlimit(0, 16, to);
+    else if (c == 20) v.ptnMode = juce::jlimit(0, 2, to);
+    else if (c == 21) {   // white keys only: a step is the next white key
+        const bool black[12] = {false, true, false, true, false, false, true, false, true, false, true, false};
+        int n = juce::jlimit(-1, 127, to);
+        const int dir = to >= cellValue(get(), 21) ? 1 : -1;
+        while (n >= 0 && n < 128 && black[n % 12]) n += dir;
+        v.ptnFrom = juce::jlimit(-1, 127, n);
+    }
+    else if (c == 22) v.ptnBank = juce::jlimit(0, 7, to);
+    else if (c == 23) v.startNote = juce::jlimit(-1, 127, to);
+    else if (c == 24) v.stopNote = juce::jlimit(-1, 127, to);
     else {
         const int t = c - 3, n = juce::jlimit(-1, 127, to);
         if (n >= 0) for (auto& o : v.note) if (o == n) o = -1;   // a note plays one track: taken from another
@@ -306,6 +326,23 @@ void MdMidiPanel::paint(juce::Graphics& g)
         frame(cv, r);
         cv.text(spec::kFontBold8, vals[c].toRawUTF8(), r.getX() + 4, r.getY() + 2, true);
         cv.text(spec::kFontTiny3x5, notes[c], (c == 1 ? cellRect(19).getRight() : r.getRight()) + 8, r.getY() + 4, true);
+    }
+    {   // PATTERN NOTES: notes that play patterns (the unit's key map), START, STOP
+        const int y = cellRect(20).getY();
+        cv.text(spec::kFontSmall4x5, "PATTERN NOTES", 6, y + 3, true);
+        static const char* const modes[3] = {"GATE", "MOMENTARY", "QUEUE"};
+        auto cell = [&](int c, const char* label, const juce::String& value) {
+            const auto r = cellRect(c);
+            frame(cv, r);
+            int x = r.getX() + 3;
+            if (label) { cv.text(spec::kFontTiny3x5, label, x, r.getY() + 4, true); x += LcdCanvas::textWidth(spec::kFontTiny3x5, label) + 3; }
+            cv.text(spec::kFontBold8, value.toRawUTF8(), x, r.getY() + 2, true);
+        };
+        cell(20, nullptr, modes[juce::jlimit(0, 2, v.ptnMode)]);
+        cell(21, "FROM", v.ptnFrom == -2 ? juce::String("CUSTOM") : v.ptnFrom < 0 ? juce::String("OFF") : noteName(v.ptnFrom));
+        cell(22, "BNK", juce::String::charToString(juce::juce_wchar('A' + juce::jlimit(0, 7, v.ptnBank))));
+        cell(23, "START", v.startNote < 0 ? juce::String("--") : noteName(v.startNote));
+        cell(24, "STOP", v.stopNote < 0 ? juce::String("--") : noteName(v.stopNote));
     }
     {   // PRG CHANGE's channel
         const auto r = cellRect(19);
@@ -343,7 +380,9 @@ void MdMidiPanel::mouseDown(const juce::MouseEvent& e)
     const int c = cellAt(p);
     if (c < 0 || !get) return;
     m_drag = c; m_dragY = e.getPosition().y; m_dragV = cellValue(get(), c);
-    if (c >= 3 && m_dragV < 0) m_dragV = 36 + (c - 3);
+    if (c >= 3 && c <= 18 && m_dragV < 0) m_dragV = 36 + (c - 3);
+    if (c == 21 && m_dragV < 0) m_dragV = 64;   // E3, as the factory map
+    if ((c == 23 || c == 24) && m_dragV < 0) m_dragV = c == 23 ? 91 : 93;
 }
 
 void MdMidiPanel::mouseDrag(const juce::MouseEvent& e)
@@ -359,7 +398,8 @@ void MdMidiPanel::mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWhe
     if (c < 0 || !get) return;
     const int dir = d.deltaY > 0 ? 1 : d.deltaY < 0 ? -1 : 0;
     int v = cellValue(get(), c);
-    if (c >= 3 && v < 0) v = 36 + (c - 3);
+    if (c >= 3 && c <= 18 && v < 0) v = 36 + (c - 3);
+    if (c == 21 && v == -2) v = 64;
     change(c, v + dir);
 }
 
