@@ -97,3 +97,23 @@ target_compile_definitions(MnmUiSnapshot PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CUR
   JUCE_MODAL_LOOPS_PERMITTED=0 JucePlugin_VersionString="${PROJECT_VERSION}"
   JucePlugin_Name="Monomodule" JUCE_STANDALONE_APPLICATION=1)
 target_link_libraries(MnmUiSnapshot PRIVATE mnmcore mnmlibrary juce::juce_audio_utils juce::juce_recommended_config_flags)
+
+# Audio capture harness: fixed scenarios rendered through the processor to WAV files, for before/after comparisons of
+# the audio path (a development tool, not installed; see Capture.cpp)
+juce_add_console_app(MnmCapture PRODUCT_NAME "mnm-capture")
+target_sources(MnmCapture PRIVATE Capture.cpp Overlays.cpp ${MNM_ONE_SOURCES})
+target_include_directories(MnmCapture PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(MnmCapture PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
+  JUCE_MODAL_LOOPS_PERMITTED=0 JucePlugin_VersionString="${PROJECT_VERSION}"
+  JucePlugin_Name="Monomodule" JUCE_STANDALONE_APPLICATION=1 MNM_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_link_libraries(MnmCapture PRIVATE mnmcore mnmlibrary juce::juce_audio_utils juce::juce_cryptography juce::juce_recommended_config_flags)
+if(MNM_BUILD_TESTS)
+  # Monomodule FX must pass THRU flat: its filters must not track the effect's fixed trig note (issue #5). Needs the
+  # OS file (MNM_OS or -DMNM_OS_SYX=...), else reported as skipped, like the unit tests.
+  add_test(NAME fx-thru-flat COMMAND MnmCapture --check-fx-flat)
+  set_tests_properties(fx-thru-flat PROPERTIES SKIP_RETURN_CODE 77)
+  # Library previews through the sample-rate converter (no OS file needed), and the reported latency against what
+  # bypass and (with the OS file) THRU really do
+  add_test(NAME preview-resampling COMMAND MnmCapture --check-preview)
+  add_test(NAME reported-latency COMMAND MnmCapture --check-latency)
+endif()

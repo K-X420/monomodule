@@ -6,6 +6,7 @@ add_executable(mnm-tests
   test_hostmodel.cpp
   test_lfo.cpp
   test_preview.cpp
+  test_resampler.cpp
   test_uispec.cpp
   ${CMAKE_SOURCE_DIR}/src/plugin/one/SpecData.cpp
   ${CMAKE_SOURCE_DIR}/src/plugin/one/RomArt.cpp

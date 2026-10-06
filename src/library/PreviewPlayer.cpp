@@ -159,16 +159,23 @@ void PreviewRenderer::renderJob(Job& job)
 // ---------------------------------------------------------------------------
 // PreviewVoice
 
-PreviewVoice::PreviewVoice() { m_padL.resize(kMaxPad); m_padR.resize(kMaxPad); m_tmpL.resize(kMaxPad); m_tmpR.resize(kMaxPad); }
+PreviewVoice::PreviewVoice() { m_tmpL.resize(kMaxPad); m_tmpR.resize(kMaxPad); }
+
+void PreviewVoice::prepare(double sampleRate)
+{
+    if (std::abs(sampleRate - preview::kSampleRate) < 0.5 || std::abs(sampleRate - m_kernelRate) < 0.5) return;
+    m_kernel.design(preview::kSampleRate, sampleRate);
+    m_taps.assign(size_t(m_kernel.numTaps()), 0.f);
+    m_kernelRate = sampleRate;
+}
 
 void PreviewVoice::start(std::shared_ptr<PreviewAudio> audio, int stem)
 {
     const juce::SpinLock::ScopedLockType sl(m_lock);
     m_playing = std::move(audio);
     m_stem = m_playing && m_playing->stems ? stem : -1;
-    m_pos = 0; m_started = false;
+    m_pos = 0; m_frac = 0.0; m_started = false;
     m_playPos.store(0); m_finished.store(false); m_loop.store(false);
-    m_interpL.reset(); m_interpR.reset();
 }
 
 void PreviewVoice::stop() { const juce::SpinLock::ScopedLockType sl(m_lock); m_playing.reset(); m_playPos.store(0); }
@@ -209,38 +216,44 @@ bool PreviewVoice::process(float* outL, float* outR, int n, double sampleRate, b
     float* tl = m_tmpL.data();
     float* tr = m_tmpR.data();
     std::fill_n(tl, n, 0.f); std::fill_n(tr, n, 0.f);
-    const double ratio = preview::kSampleRate / sampleRate;   // input frames per output frame
     const uint32_t avail = ready - std::min(ready, m_pos);
-    if (loop) {   // read modulo the length: the block that crosses the end continues from the start
-        const auto need = std::abs(ratio - 1.0) < 1e-9 ? uint32_t(n) : uint32_t(std::ceil(n * ratio)) + 4;
-        const auto cnt = std::min<uint32_t>(need, uint32_t(m_padL.size()));
-        for (uint32_t i = 0, p = m_pos; i < cnt; ++i, p = advance(p, 1)) { m_padL[i] = srcL[p]; m_padR[i] = srcR[p]; }
-        if (std::abs(ratio - 1.0) < 1e-9) { std::copy_n(m_padL.data(), n, tl); std::copy_n(m_padR.data(), n, tr); m_pos = advance(m_pos, uint32_t(n)); }
-        else {
-            const int used = m_interpL.process(ratio, m_padL.data(), tl, n);
-            m_interpR.process(ratio, m_padR.data(), tr, n);
-            m_pos = advance(m_pos, uint32_t(std::max(0, used)));
+    if (std::abs(sampleRate - preview::kSampleRate) < 0.5) {   // the render's own rate: the frames themselves
+        if (loop) {   // read modulo the length: the block that crosses the end continues from the start
+            for (int i = 0; i < n; ++i, m_pos = advance(m_pos, 1)) { tl[i] = srcL[m_pos]; tr[i] = srcR[m_pos]; }
+        } else {
+            const uint32_t want = uint32_t(n);
+            if (avail < want && !a->done.load()) return false;   // the render is behind: a silent block, then continue
+            const uint32_t take = std::min(want, avail);
+            if (take) { std::copy_n(srcL + m_pos, take, tl); std::copy_n(srcR + m_pos, take, tr); }
+            m_pos += take;
         }
-    } else if (std::abs(ratio - 1.0) < 1e-9) {
-        const uint32_t want = uint32_t(n);
-        if (avail < want && !a->done.load()) return false;   // the render is behind: a silent block, then continue
-        const uint32_t take = std::min(want, avail);
-        if (take) { std::copy_n(srcL + m_pos, take, tl); std::copy_n(srcR + m_pos, take, tr); }
-        m_pos += take;
     } else {
-        const auto need = uint32_t(std::ceil(n * ratio)) + 4;
-        if (avail < need && !a->done.load()) return false;
-        if (avail >= need) {
-            const int used = m_interpL.process(ratio, srcL + m_pos, tl, n);
-            m_interpR.process(ratio, srcR + m_pos, tr, n);
-            m_pos += uint32_t(std::max(0, used));
-        } else {   // the tail: pad the last frames with silence
-            const auto cnt = std::min<size_t>(avail, m_padL.size());
-            std::fill(m_padL.begin(), m_padL.end(), 0.f); std::fill(m_padR.begin(), m_padR.end(), 0.f);
-            std::copy_n(srcL + m_pos, cnt, m_padL.begin()); std::copy_n(srcR + m_pos, cnt, m_padR.begin());
-            const auto outN = std::min(n, int(std::floor(double(cnt) / ratio)));
-            if (outN > 0) { m_interpL.process(ratio, m_padL.data(), tl, outN); m_interpR.process(ratio, m_padR.data(), tr, outN); }
-            m_pos = a->frames;
+        // another rate: output sample k is the band-limited render at m_pos + m_frac, then the position moves on by
+        // 44100 / rate frames. The taps reach H frames either side: ahead they wrap inside the loop region, past the
+        // render's end and before its start they read silence.
+        if (!m_kernel.ready() || std::abs(sampleRate - m_kernelRate) > 0.5) return false;   // not prepared for this rate
+        const double step = preview::kSampleRate / sampleRate;
+        const int half = m_kernel.halfTaps(), taps = m_kernel.numTaps();
+        if (!loop && avail < uint32_t(std::ceil(n * step)) + uint32_t(half) + 2 && !a->done.load()) return false;   // the render is behind
+        const uint32_t frames = a->frames;
+        for (int k = 0; k < n; ++k) {
+            if (!loop && m_pos >= frames) break;
+            m_kernel.taps(m_frac, m_taps.data());
+            double l = 0.0, r = 0.0;
+            for (int j = 0; j < taps; ++j) {
+                const int off = j - half + 1;
+                uint32_t idx;
+                if (off < 0) { if (m_pos < uint32_t(-off)) continue; idx = m_pos - uint32_t(-off); }
+                else idx = loop ? advance(m_pos, uint32_t(off)) : m_pos + uint32_t(off);
+                if (idx >= frames) continue;
+                l += double(m_taps[size_t(j)]) * srcL[idx];
+                r += double(m_taps[size_t(j)]) * srcR[idx];
+            }
+            tl[k] = float(l); tr[k] = float(r);
+            m_frac += step;
+            const auto whole = uint32_t(m_frac);
+            m_frac -= whole;
+            m_pos = loop ? advance(m_pos, whole) : std::min(frames, m_pos + whole);
         }
     }
     if (replace) { std::copy_n(tl, n, outL); if (outR) std::copy_n(tr, n, outR); }
@@ -306,7 +319,7 @@ void PreviewPlayer::handleAsyncUpdate()
 void PreviewPlayer::audioDeviceAboutToStart(juce::AudioIODevice* device)
 {
     m_deviceRate = device ? device->getCurrentSampleRate() : 44100.0;
-    m_voice.resetRate();
+    m_voice.prepare(m_deviceRate);
 }
 
 void PreviewPlayer::audioDeviceIOCallbackWithContext(const float* const*, int, float* const* out, int numOut, int n, const juce::AudioIODeviceCallbackContext&)

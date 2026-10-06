@@ -14,6 +14,7 @@
 #include <list>
 #include <map>
 #include <memory>
+#include "dsp/Resampler.h"
 #include "preview/KitRenderer.h"
 #include "preview/Preview.h"
 
@@ -93,19 +94,23 @@ public:
     void setLoop(bool on) { m_loop.store(on); }
     bool loop() const { return m_loop.load(); }
     bool consumeFinished() { return m_finished.exchange(false); }   // true once after the preview played to its end
-    // audio thread: adds (or writes, when `replace`) n frames of the preview at `sampleRate` into outL / outR
-    // (outR may be null). Returns false when there is nothing to play.
+    // The output rate process() will be called with (not on the audio thread: builds the converter for it). The
+    // previews render at 44.1 kHz; another rate plays through the band-limited converter (dsp/Resampler.h).
+    void prepare(double sampleRate);
+    // audio thread: adds (or writes, when `replace`) n frames of the preview at `sampleRate` (the prepared rate) into
+    // outL / outR (outR may be null). Returns false when there is nothing to play.
     bool process(float* outL, float* outR, int n, double sampleRate, bool replace);
-    void resetRate() { m_interpL.reset(); m_interpR.reset(); }
 
 private:
     mutable juce::SpinLock m_lock;
     std::shared_ptr<PreviewAudio> m_playing;
     int m_stem = -1;
     uint32_t m_pos = 0;
+    double m_frac = 0.0;          // position between frame m_pos and the next (converted playback)
     bool m_started = false;
-    juce::LagrangeInterpolator m_interpL, m_interpR;
-    std::vector<float> m_padL, m_padR, m_tmpL, m_tmpR;
+    dsp::SincKernel m_kernel;     // 44.1 kHz -> m_kernelRate
+    double m_kernelRate = 0.0;
+    std::vector<float> m_taps, m_tmpL, m_tmpR;
     std::atomic<uint32_t> m_playPos{0};
     std::atomic<bool> m_finished{false}, m_loop{false};
 };

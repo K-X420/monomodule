@@ -16,6 +16,7 @@
 #include <memory>
 #include <vector>
 #include "MonoVoice.h"
+#include "dsp/Resampler.h"
 #include "OneParams.h"
 #include "library/MnmDump.h"
 #include "PreviewPlayer.h"
@@ -34,6 +35,12 @@ public:
     void releaseResources() override {}
     bool isBusesLayoutSupported(const BusesLayout& layouts) const override;
     void processBlock(juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
+    void processBlockBypassed(juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
+
+    // Host samples the sample-rate conversion delays every output by (0 at 44.1 kHz): the input converter's look-ahead
+    // plus the output converter's. Part of the reported latency (getLatencySamples), which for Monomodule FX also
+    // holds the emulated FX path's own delay.
+    int conversionLatency() const { return m_inLag + m_outLag; }
 
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
@@ -127,11 +134,10 @@ private:
         std::atomic<float>* outBus[3] = {};     // OUT BUS AB/CD/EF (Six only)
         std::atomic<float>* lpKeyTrack = nullptr;
         std::atomic<float>* hpKeyTrack = nullptr;
-        int lastFrames = 0;                     // engine frames rendered in the last block (engL/R)
-        juce::LagrangeInterpolator interpL, interpR, interpInL, interpInR;
+        int lastFrames = 0;                     // engine frames rendered in the last chunk (engL/R)
         std::vector<float> engL, engR;     // 44.1 kHz render (also the NEIBOR feed for the next track)
-        std::vector<float> hostL, hostR;   // resampled to host rate
-        std::vector<float> inL, inR;       // FX machine input at 44.1 kHz
+        std::vector<float> inL, inR;       // silence for an FX machine on track 1 reading NEIBOR
+        std::array<dsp::History, 2> hist;  // the render's history, for the output converter (host rate != 44.1 kHz)
         std::atomic<float> peak{0.0f};
         // Per-machine SYN memory (state, not parameters): the eight values of every machine this track
         // has visited, and the machine slot whose values the SYN parameters currently hold.
@@ -154,11 +160,19 @@ private:
     void applyParametersToHost(Track&);
     void handleMidi(Track&, const juce::MidiMessage&);
     void pushParamFromCC(Track&, host::Page page, int k, int value);
-    void renderTrack(Track&, int nEngine, double ratio, const juce::MidiBuffer&);
-    void fillFxInput(Track&, int nEngine, double ratio);
-    void writeOutputs(juce::AudioBuffer<float>&, int nEngine, double ratio);
+    void processChunk(juce::AudioBuffer<float>&, int offset, int n);
+    void fillSideChain(int offset, int n, int64_t firstFrame, int nEngine);
+    void renderTrack(Track&, int64_t firstFrame, int nEngine);
+    void writeOutputs(juce::AudioBuffer<float>&, int offset, int n, int nEngine);
+    int64_t engineFrameOf(int64_t hostSample) const { return m_needsResample ? m_engineAt.ceilAt(hostSample) : hostSample; }
+    bool readsSideChain(const Track& tr) const;
+    int latencyAt(double rate) const;
     int outBusMask(const Track& tr) const;
     host::FxInput fxInputOf(const Track& tr) const;
+    // A KIT > ASSIGN > KEY flag as the engine gets it. Monomodule FX plays no notes, only the fixed note-60 trig that opens
+    // its envelope, so tracking would park the filters at that note: the HPF alone took 29 dB off THRU at 30 Hz
+    // (issue #5). The parameter keeps its stored value (presets carry it to and from the hardware).
+    bool keyTracks(const std::atomic<float>* flag) const { return !isEffect() && flag->load() >= 0.5f; }
     void parameterChanged(const juce::String& id, float newValue) override;
     void handleAsyncUpdate() override { syncMachineSideEffects(); }
     int machineSlotOf(const Track& tr) const { return juce::jlimit(0, spec::kNumMachines - 1, int(tr.machine->load())); }
@@ -179,12 +193,33 @@ private:
     std::atomic<float>* m_bpm = nullptr;
     std::atomic<float>* m_bpmSync = nullptr;
     std::atomic<float>* m_outputMode = nullptr;   // Six only
-    std::array<std::vector<float>, 3> m_busL, m_busR;   // mix buses AB/CD/EF at 44.1 kHz, rebuilt every block in track order
-    std::vector<float> m_outL, m_outR;                  // resampling scratch for the bus outputs
+    std::array<std::vector<float>, 3> m_busL, m_busR;   // mix buses AB/CD/EF at 44.1 kHz, rebuilt every chunk in track order
     std::atomic<float> m_hostBpm{120.0f};
     bool m_wasSynced = true;
-    std::vector<float> m_sideL, m_sideR;   // side-chain input captured before the buffer is cleared
+    std::vector<float> m_sideL, m_sideR;   // side-chain input captured before the buffer is cleared (host rate)
     int m_sideChannels = 0;
+
+    // The clock (see Resampler.h). The engine runs at 44.1 kHz whatever the host's rate: host sample s is engine time
+    // s * 44100 / rate, exactly. A host block is processed in chunks of at most m_maxChunk samples; each renders the
+    // engine frames whose input has fully arrived, so the engine trails the host by the input converter's look-ahead
+    // (m_inLag), and every output is m_outLag later still, so its converter only reads frames already rendered. MIDI
+    // events wait in m_midi for their engine frame. At 44.1 kHz nothing is converted and nothing waits: the engine
+    // frames are the host samples.
+    int m_maxChunk = 512, m_maxEngine = 512;    // host samples / engine frames per chunk at most
+    int m_inLag = 0, m_outLag = 0;              // host samples
+    int64_t m_hostPos = 0, m_enginePos = 0;     // processed since prepareToPlay
+    dsp::SincKernel m_toHost, m_toEngine;       // engine -> host rate, host -> engine rate
+    dsp::RateMap m_engineAt, m_hostAt;          // engine position of a host sample, host position of an engine frame
+    std::array<dsp::History, 2> m_sideHist;     // side-chain history (host rate)
+    std::array<std::array<dsp::History, 2>, 3> m_busHist;   // mix-bus history (engine rate)
+    std::vector<float> m_sideEngL, m_sideEngR;  // the side-chain at the engine rate, this chunk (FX machines on INP A/B/AB)
+    std::vector<float> m_taps;                  // scratch: one sample's filter taps
+    struct PendingMidi { int64_t frame; juce::MidiMessage msg; };
+    std::vector<PendingMidi> m_midi;            // events by engine frame, oldest first (fixed capacity)
+    static constexpr size_t kMaxPendingMidi = 4096;
+    // Bypassed: the main input delayed by the reported latency (processBlockBypassed)
+    juce::AudioBuffer<float> m_bypassDelay;
+    int m_bypassPos = 0;
     LoadedRef m_loadedKit;
     std::vector<uint8_t> m_loadedKitPrint;
     mnm::dump::Kit m_kitCarry;
