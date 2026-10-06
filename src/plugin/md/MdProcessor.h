@@ -136,11 +136,13 @@ public:
     // MIDI settings, as the unit's globals (message thread to set; kept in the plugin state):
     //   baseChannel  0..15 (-1 = OFF: no trigs or CCs in): trigs come in on it, the CC map spans it and the next three
     //   noteTrack    the trig note map: note -> track (-1 none); a track's first note is the one it sends
-    //   programChange 0 OFF, 1 IN (a program change on the base channel = the next pattern), 2 OUT (the pattern
-    //                changes go out), 3 IN+OUT
+    //   programChange 0 OFF, 1 IN (a program change = the next pattern, at the end of the playing one), 2 OUT (the
+    //                next pattern goes out at the start of the playing one's last step, when it differs from the last
+    //                sent), 3 IN+OUT. As the OS keeps it (global byte: bits 0-1 the mode, bits 2-6 the channel)
+    //   pcChannel    0 AUTO (in: the base channel and the next three; out: the base channel), n = MIDI channel n
     //   midiOut      0 OFF, 1 TRIGS (the trigs played go out as notes: a step long, velocity 127 when accented),
     //                2 TRIGS+CCS (and the parameters as CCs: knob turns, locks as they play and release)
-    struct MidiSettings { int baseChannel = 0; std::array<int8_t, 128> noteTrack{}; int programChange = 1, midiOut = 0; };
+    struct MidiSettings { int baseChannel = 0; std::array<int8_t, 128> noteTrack{}; int programChange = 1, midiOut = 0, pcChannel = 0; };
     static MidiSettings defaultMidiSettings();
     MidiSettings midiSettings() const;
     void setMidiSettings(const MidiSettings& s);
@@ -404,7 +406,11 @@ private:
     static int overrideMachine(const mnm::mddump::Kit& kit, int t);   // the kit's machine, GND--- for one the plugin has not
     void trigLocks(int t, const mnm::md::SeqTrig* s, int pos = 0);   // a trig's locks and slides (none: a MIDI / UI trig releases them)
     // MIDI settings and out
-    std::atomic<int> m_baseCh{0}, m_pcMode{1}, m_midiOutMode{0};
+    std::atomic<int> m_baseCh{0}, m_pcMode{1}, m_midiOutMode{0}, m_pcChannel{0};
+    int m_pcLastSent = -1;   // PRG CHANGE OUT: the program last sent (the OS sends a change only)
+    int pcOutChannel() const { const int c = m_pcChannel.load(); return c > 0 ? c - 1 : m_baseCh.load(); }
+    int songPeekPattern(const SeqBank* bank) const;   // the pattern the song's next row will play (-1 none)
+    std::array<std::array<bool, 24>, kTracks> m_ctlLockHeld{};   // CTR-AL: a parameter that a lock / slide held last block
     std::array<std::atomic<int8_t>, 128> m_noteTrack{};
     std::array<std::atomic<int8_t>, kTracks> m_trackNote{};
     std::vector<mnm::mddump::Global> m_bankGlobals;

@@ -783,14 +783,14 @@ MdEditor::MdEditor(MdProcessor& p)
     m_midiPanel.get = [this] {
         const auto s = m_proc.midiSettings();
         MdMidiPanel::Values v;
-        v.baseChannel = s.baseChannel; v.programChange = s.programChange; v.midiOut = s.midiOut;
+        v.baseChannel = s.baseChannel; v.programChange = s.programChange; v.midiOut = s.midiOut; v.pcChannel = s.pcChannel;
         v.note.fill(-1);
         for (int n = 0; n < 128; ++n) { const int t = s.noteTrack[size_t(n)]; if (t >= 0 && t < kTracks && v.note[size_t(t)] < 0) v.note[size_t(t)] = n; }
         return v;
     };
     m_midiPanel.set = [this](const MdMidiPanel::Values& v) {
         auto s = m_proc.midiSettings();
-        s.baseChannel = v.baseChannel; s.programChange = v.programChange; s.midiOut = v.midiOut;
+        s.baseChannel = v.baseChannel; s.programChange = v.programChange; s.midiOut = v.midiOut; s.pcChannel = v.pcChannel;
         s.noteTrack.fill(-1);
         for (int t = 0; t < kTracks; ++t) if (v.note[size_t(t)] >= 0) s.noteTrack[size_t(v.note[size_t(t)])] = int8_t(t);
         m_proc.setMidiSettings(s);
@@ -798,7 +798,7 @@ MdEditor::MdEditor(MdProcessor& p)
     m_midiPanel.onDefault = [this] {
         auto s = MdProcessor::defaultMidiSettings();
         const auto cur = m_proc.midiSettings();
-        s.baseChannel = cur.baseChannel; s.programChange = cur.programChange; s.midiOut = cur.midiOut;
+        s.baseChannel = cur.baseChannel; s.programChange = cur.programChange; s.midiOut = cur.midiOut; s.pcChannel = cur.pcChannel;
         m_proc.setMidiSettings(s);
     };
     m_midiPanel.onFromProject = [this] {

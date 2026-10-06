@@ -248,13 +248,14 @@ constexpr int kMpTitleH = 10, kMpRowY = 16, kMpRowH = 14, kMpGridY = 78;
 juce::Rectangle<int> MdMidiPanel::cellRect(int c) const
 {
     if (c < 3) return {110, kMpRowY + c * kMpRowH - 2, 80, 12};
+    if (c == 19) return {194, kMpRowY + kMpRowH - 2, 46, 12};   // PRG CHANGE's channel
     const int t = c - 3;
     return {6 + (t % 8) * 48, kMpGridY + (t / 8) * 22, 44, 19};
 }
 
 int MdMidiPanel::cellAt(juce::Point<int> p) const
 {
-    for (int c = 0; c < 19; ++c) if (cellRect(c).contains(p)) return c;
+    for (int c = 0; c < 20; ++c) if (cellRect(c).contains(p)) return c;
     return -1;
 }
 
@@ -263,6 +264,7 @@ int MdMidiPanel::cellValue(const Values& v, int c) const
     if (c == 0) return v.baseChannel;
     if (c == 1) return v.programChange;
     if (c == 2) return v.midiOut;
+    if (c == 19) return v.pcChannel;
     return v.note[size_t(c - 3)];
 }
 
@@ -273,6 +275,7 @@ void MdMidiPanel::change(int c, int to)
     if (c == 0) v.baseChannel = juce::jlimit(-1, 15, to);
     else if (c == 1) v.programChange = juce::jlimit(0, 3, to);
     else if (c == 2) v.midiOut = juce::jlimit(0, 2, to);
+    else if (c == 19) v.pcChannel = juce::jlimit(0, 16, to);
     else {
         const int t = c - 3, n = juce::jlimit(-1, 127, to);
         if (n >= 0) for (auto& o : v.note) if (o == n) o = -1;   // a note plays one track: taken from another
@@ -296,13 +299,20 @@ void MdMidiPanel::paint(juce::Graphics& g)
     static const char* const pcs[4] = {"OFF", "IN", "OUT", "IN+OUT"};
     static const char* const outs[3] = {"OFF", "TRIGS", "TRIGS+CCS"};
     const juce::String vals[3] = {v.baseChannel < 0 ? juce::String("OFF") : juce::String(v.baseChannel + 1), pcs[juce::jlimit(0, 3, v.programChange)], outs[juce::jlimit(0, 2, v.midiOut)]};
-    static const char* const notes[3] = {"TRIGS ON IT, CCS ON IT AND THE NEXT 3", "A PROGRAM CHANGE = THE NEXT PATTERN", "THE PLAYED TRIGS AS NOTES (+ KNOBS, LOCKS AS CCS)"};
+    static const char* const notes[3] = {"TRIGS ON IT, CCS ON IT AND THE NEXT 3", "= THE NEXT PATTERN (AUTO: BASE CH+0..3)", "THE PLAYED TRIGS AS NOTES (+ KNOBS, LOCKS AS CCS)"};
     for (int c = 0; c < 3; ++c) {
         const auto r = cellRect(c);
         cv.text(spec::kFontSmall4x5, labels[c], 6, r.getY() + 3, true);
         frame(cv, r);
         cv.text(spec::kFontBold8, vals[c].toRawUTF8(), r.getX() + 4, r.getY() + 2, true);
-        cv.text(spec::kFontTiny3x5, notes[c], r.getRight() + 8, r.getY() + 4, true);
+        cv.text(spec::kFontTiny3x5, notes[c], (c == 1 ? cellRect(19).getRight() : r.getRight()) + 8, r.getY() + 4, true);
+    }
+    {   // PRG CHANGE's channel
+        const auto r = cellRect(19);
+        frame(cv, r);
+        cv.text(spec::kFontTiny3x5, "CH", r.getX() + 3, r.getY() + 4, true);
+        const juce::String ch = v.pcChannel > 0 ? juce::String(v.pcChannel) : juce::String("AUTO");
+        cv.text(spec::kFontBold8, ch.toRawUTF8(), r.getX() + 14, r.getY() + 2, true);
     }
     cv.dotsH(2, w - 3, kMpGridY - 17);
     cv.text(spec::kFontSmall4x5, "TRIG NOTES (THE NOTE MAP): DRAG A NOTE, WHEEL IT", 6, kMpGridY - 11, true);

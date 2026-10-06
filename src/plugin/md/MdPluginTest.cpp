@@ -819,6 +819,102 @@ int main(int argc, char** argv)
         set(machineId(2), float(machineIndexOf(16)));
         std::printf("RAM test: RAM-R1 records the kicks of bar 1, RAM-P1 plays them in bar 2\n");
     }
+    if (std::getenv("MD_OSCHECK_TEST")) {   // behaviour checked against the OS: PRG CHANGE's channel + timing, song HALT, empty song slots
+        int fails = 0;
+        auto check = [&](bool ok, const juce::String& what) { std::printf("  %s %s\n", ok ? "ok  " : "FAIL", what.toRawUTF8()); fails += ok ? 0 : 1; };
+        struct Head : juce::AudioPlayHead {
+            double ppq = 0; bool playing = false;
+            juce::Optional<PositionInfo> getPosition() const override { PositionInfo q; q.setPpqPosition(ppq); q.setBpm(120); q.setIsPlaying(playing); return q; }
+        } head;
+        auto pHeap = std::make_unique<MdProcessor>();
+        auto& p = *pHeap;
+        p.setFirmwarePath(juce::String(argv[1]), false);
+        p.setPlayHead(&head);
+        const int blk = 480;
+        p.prepareToPlay(48000.0, blk);
+        juce::AudioBuffer<float> buf(2, blk);
+        int64_t clock = 0;
+        std::vector<std::pair<int64_t, juce::MidiMessage>> out;
+        auto run = [&](int blocks, juce::MidiBuffer in = {}) {
+            for (int i = 0; i < blocks; ++i) {
+                buf.clear(); juce::MidiBuffer m = i == 0 ? in : juce::MidiBuffer();
+                p.processBlock(buf, m);
+                for (const auto e : m) out.push_back({clock + e.samplePosition, e.getMessage()});
+                clock += blk;
+                if (head.playing) head.ppq += blk / 48000.0 * 2.0;   // 120 BPM
+                p.syncMachineSideEffects();
+            }
+        };
+        mnm::mddump::Global g; g.programChange = 0x05;   // the OS's byte: IN, channel 1
+        const auto fromG = MdProcessor::fromGlobal(g, MdProcessor::defaultMidiSettings());
+        check(fromG.programChange == 1 && fromG.pcChannel == 1, "global PRG CHANGE byte 0x05 = IN on channel 1 (was read as IN+OUT)");
+        auto ms = MdProcessor::defaultMidiSettings(); ms.baseChannel = 0; ms.programChange = 3; ms.pcChannel = 0;
+        p.setMidiSettings(ms);
+        auto patNow = [&] { return int(std::lround(p.apvts.getRawParameterValue(patternId())->load())); };
+        { juce::MidiBuffer in; in.addEvent(juce::MidiMessage::programChange(4, 7), 0); run(1, in); }
+        check(patNow() == 7, "AUTO: a program change on base channel + 3 is taken");
+        { juce::MidiBuffer in; in.addEvent(juce::MidiMessage::programChange(5, 9), 0); run(1, in); }
+        check(patNow() == 7, "AUTO: base channel + 4 is not");
+        ms.pcChannel = 10; p.setMidiSettings(ms);
+        { juce::MidiBuffer in; in.addEvent(juce::MidiMessage::programChange(10, 2), 0); run(1, in); }
+        { juce::MidiBuffer in; in.addEvent(juce::MidiMessage::programChange(1, 3), 0); run(1, in); }
+        check(patNow() == 2, "channel 10: taken on 10, not on the base channel");
+        // PRG CHANGE OUT: A01 plays (16 steps, 1x = 6000 samples a step); B01... queue A04 mid-pattern: PC 3 goes out at
+        // the start of A01's last step (step 16 = 15 x 6000 = 90000), on channel 10
+        if (auto* a = p.apvts.getParameter(patternId())) a->setValueNotifyingHost(a->convertTo0to1(0.0f));
+        p.editPattern(0, [](mnm::mddump::Pattern& x) { x.length = 16; x.trigs[0] = 1; });
+        p.editPattern(3, [](mnm::mddump::Pattern& x) { x.length = 16; x.trigs[0] = 1; });
+        run(2);
+        out.clear(); clock = 0; head.ppq = 0; head.playing = true;
+        run(20);   // 0.2 s in
+        if (auto* a = p.apvts.getParameter(patternId())) a->setValueNotifyingHost(a->convertTo0to1(3.0f));
+        run(200);
+        int64_t pcAt = -1; int pcCh = 0, pcNum = -1, pcs = 0;
+        for (const auto& [at, m] : out) if (m.isProgramChange()) { ++pcs; if (pcAt < 0) { pcAt = at; pcCh = m.getChannel(); pcNum = m.getProgramChangeNumber(); } }
+        check(pcNum == 3 && pcCh == 10 && std::abs(pcAt - 90000) <= blk, "PRG CHANGE OUT: program 3 on channel 10 at the last step's start (at " + juce::String(pcAt) + ", want 90000)");
+        check(pcs == 1, "sent once (A04 repeating sends nothing more): " + juce::String(pcs));
+        head.playing = false; run(2);
+        // SONG: row 0 = A01 once, row 1 = LOOP onto itself (HALT), row 2 = A04: the song ends after A01
+        p.editSong(0, [](mnm::mddump::Song& s) {
+            s.rows.clear();
+            mnm::mddump::SongRow r0; r0.bytes[0] = 0; r0.bytes[8] = 0; r0.bytes[9] = 16;
+            mnm::mddump::SongRow r1; r1.bytes[0] = 0xFE; r1.bytes[2] = 3; r1.bytes[3] = 1;
+            mnm::mddump::SongRow r2; r2.bytes[0] = 3; r2.bytes[9] = 16;
+            s.rows = {r0, r1, r2};
+        });
+        if (auto* a = p.apvts.getParameter(seqModeId())) a->setValueNotifyingHost(1.0f);
+        head.ppq = 0; head.playing = true; run(2);
+        const int rowStart = p.seqSongRow();
+        run(220);   // past A01's 96000 samples
+        check(rowStart == 0 && p.seqSongRow() == -1 && p.seqStep() == -1, "a LOOP row onto itself is HALT: the song ends after A01 (row " + juce::String(p.seqSongRow()) + ")");
+        head.playing = false; run(2);
+        // an empty slot in a song plays (as an empty pattern) instead of being skipped: row 0 = empty slot H16, row 1 = A01
+        p.editSong(0, [](mnm::mddump::Song& s) {
+            mnm::mddump::SongRow r0; r0.bytes[0] = 127; r0.bytes[9] = 16;
+            mnm::mddump::SongRow r1; r1.bytes[0] = 0; r1.bytes[9] = 16;
+            s.rows = {r0, r1};
+        });
+        head.ppq = 0; head.playing = true; run(2);
+        check(p.seqSongRow() == 0 && p.seqPattern() == 127, "an empty slot's row plays (row " + juce::String(p.seqSongRow()) + ", pattern " + juce::String(p.seqPattern()) + ")");
+        head.playing = false; run(2);
+        // CTR-AL locks set the value itself on every track (MainOS 0x237AE4), not a difference: T2 = CTR-AL (PTCH 64),
+        // T5 / T6 = TRX-BD with PTCH 40 / 100; T2 trigs on step 1 with PTCH locked to 10 -> both 10
+        if (auto* a = p.apvts.getParameter(seqModeId())) a->setValueNotifyingHost(0.0f);
+        auto setP = [&](const juce::String& id, float v) { if (auto* q = p.apvts.getParameter(id)) q->setValueNotifyingHost(q->convertTo0to1(v)); };
+        setP(machineId(1), float(machineIndexOf(kCtrAll))); setP(machineId(4), float(machineIndexOf(16))); setP(machineId(5), float(machineIndexOf(16)));
+        run(40);
+        setP(knobId(1, 0), 64); setP(knobId(4, 0), 40); setP(knobId(5, 0), 100);
+        run(5);
+        if (auto* a = p.apvts.getParameter(patternId())) a->setValueNotifyingHost(a->convertTo0to1(5.0f));
+        p.editPattern(5, [](mnm::mddump::Pattern& x) { x.length = 16; x.trigs[1] = 1; x.setLock(1, 0, 0, 10); });
+        run(2);
+        head.ppq = 0; head.playing = true; run(10);
+        const int v5 = int(std::lround(p.apvts.getRawParameterValue(knobId(4, 0))->load())), v6 = int(std::lround(p.apvts.getRawParameterValue(knobId(5, 0))->load()));
+        check(v5 == 10 && v6 == 10, "CTR-AL PTCH lock 10: T5 / T6 PTCH = " + juce::String(v5) + " / " + juce::String(v6) + " (want 10 / 10)");
+        head.playing = false; run(2);
+        std::printf(fails ? "OSCHECK TEST FAILED (%d)\n" : "OSCHECK TEST OK\n", fails);
+        return fails ? 1 : 0;
+    }
     if (std::getenv("MD_MIXER_TEST")) {   // G = GRID, M = the mixer; its faders, mutes and solos
         int fails = 0;
         auto check = [&](bool ok, const juce::String& what) { std::printf("  %s %s\n", ok ? "ok  " : "FAIL", what.toRawUTF8()); fails += ok ? 0 : 1; };
@@ -953,11 +1049,11 @@ int main(int argc, char** argv)
             }
         };
         auto machine = [&](int tr, int id) { set(machineId(tr), float(machineIndexOf(id))); };
-        // T1 = MID-01: NOTE 60 (C3), N2 +4, N3 +7, LEN 7 (one 16th), VEL 90, PCHG 5 (program 4)
+        // T1 = MID-01: NOTE 60 (C3), N2 +4, N3 +7, LEN 1 (one 16th: 6 ticks at 24 per quarter), VEL 90, PCHG 5 (program 4)
         machine(0, 96);
         machine(1, kCtrAll); machine(2, 121); machine(3, kCtr8p); machine(4, 16); machine(5, 17);
         run(40);   // settle (the machine changes and the load quiet time)
-        set(knobId(0, 0), 60); set(knobId(0, 1), 68); set(knobId(0, 2), 71); set(knobId(0, 3), 7); set(knobId(0, 4), 90);
+        set(knobId(0, 0), 60); set(knobId(0, 1), 68); set(knobId(0, 2), 71); set(knobId(0, 3), 1); set(knobId(0, 4), 90);
         set(knobId(0, 5), 64); set(knobId(0, 6), 0); set(knobId(0, 7), 0); set(revId(0), 5);
         run(2);
         check(std::any_of(out.begin(), out.end(), [](const juce::MidiMessage& m) { return m.isProgramChange() && m.getProgramChangeNumber() == 4; }), "PCHG turned to 5: program 4 out");
@@ -971,7 +1067,7 @@ int main(int argc, char** argv)
         check(find([](const juce::MidiMessage& m) { return m.isNoteOn() && m.getNoteNumber() == 64; }) == 0 && find([](const juce::MidiMessage& m) { return m.isNoteOn() && m.getNoteNumber() == 67; }) == 0, "N2 / N3: +4 and +7 semitones");
         check(find([](const juce::MidiMessage& m) { return m.isProgramChange(); }) < 0, "the trig does not resend the program the channel already has");
         const int off = find([](const juce::MidiMessage& m) { return m.isNoteOff() && m.getNoteNumber() == 60; });
-        check(std::abs(off - 6000) <= 1, "LEN 7 = one 16th at 120 BPM (6000 samples at 48 kHz), off at " + juce::String(off));
+        check(std::abs(off - 6000) <= 1, "LEN 1 = one 16th at 120 BPM (6000 samples at 48 kHz), off at " + juce::String(off));
         // a knob turn on MID: CC1D = 74, then CC1V -> CC 74; MW -> CC 1; PB -> pitch bend
         out.clear(); clock = 0;
         set(fxId(0, 0), 74); run(2);
@@ -1040,16 +1136,16 @@ int main(int argc, char** argv)
         const double still = wobble(0), moving = wobble(127);
         check(still < 1.2 && moving > 4.0, "CTR-EQ LFO on GAIN: main level range x" + juce::String(still, 2) + " at depth 0, x" + juce::String(moving, 1) + " at depth 127");
         check(get(masterFxId(2, 7)) == get(knobId(2, 7)) && get(masterFxId(2, 7)) == 64, "the master EQ GAIN parameter stays at the knob (" + juce::String(get(masterFxId(2, 7))) + "): the LFO is not written into it");
-        // free BPM: SYNC off, BPM 90 -> LEN 7 is a 16th at 90 BPM (8000 samples at 48 kHz)
+        // free BPM: SYNC off, BPM 90 -> LEN 1 is a 16th at 90 BPM (8000 samples at 48 kHz)
         machine(0, 96); run(10);
-        set(knobId(0, 0), 60); set(knobId(0, 1), 64); set(knobId(0, 2), 64); set(knobId(0, 3), 7); set(knobId(0, 4), 90);
+        set(knobId(0, 0), 60); set(knobId(0, 1), 64); set(knobId(0, 2), 64); set(knobId(0, 3), 1); set(knobId(0, 4), 90);
         set(bpmSyncId(), 0.0f); set(bpmId(), 90.0f); run(3);
         out.clear(); clock = 0;
         run(30, {36});
         {
             const int on = find([](const juce::MidiMessage& m) { return m.isNoteOn() && m.getNoteNumber() == 60; });
             const int off = find([](const juce::MidiMessage& m) { return m.isNoteOff() && m.getNoteNumber() == 60; });
-            check(on == 0 && std::abs(off - 8000) <= 1, "SYNC off, BPM 90: LEN 7 note off at " + juce::String(off) + " (a 16th = 8000)");
+            check(on == 0 && std::abs(off - 8000) <= 1, "SYNC off, BPM 90: LEN 1 note off at " + juce::String(off) + " (a 16th = 8000)");
         }
         // all notes off: a held MID note ends at once
         set(knobId(0, 3), 127); run(2);   // LEN 127: a bar

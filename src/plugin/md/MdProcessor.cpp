@@ -508,8 +508,6 @@ void MdProcessor::seqStop()
 void MdProcessor::seqStart(Segment& seg, int slot, int start, int end, int64_t steps, uint16_t mutes, double origin,
                            const SeqBank* bank, const std::shared_ptr<const SeqBank>& hold, double atEnginePos)
 {
-    if ((m_pcMode.load() & 2) && m_seqRunning && slot >= 0 && slot < 128 && slot != seg.slot && m_baseCh.load() >= 0 && &seg == &m_seg)   // PRG CHANGE OUT
-        midSend(atEnginePos >= 0 ? juce::jlimit(0, juce::jmax(0, m_blockLen - 1), int(atEnginePos / juce::jmax(1e-9, m_lastRatio))) : 0, uint8_t(0xC0 | m_baseCh.load()), uint8_t(slot));
     seg.slot = slot;
     seg.origin = origin;
     seg.steps = steps;
@@ -542,9 +540,11 @@ void MdProcessor::seqStart(Segment& seg, int slot, int start, int end, int64_t s
     else applyKitSwitch();
 }
 
-// SONG rows (MdDump SongRow): pattern 0..127 (0xFE LOOP, 0xFF END), -, repeats - 1, the LOOP's target row, the muted
-// tracks (16 bits, track 1 = bit 0), the tempo (the host's tempo rules here), start step, end step (exclusive). A LOOP
-// row jumps back to its target as often as it says (0 = forever); END, or the rows running out, ends the song.
+// SONG rows (MdDump SongRow): pattern 0..127 (0xFE LOOP, 0xFF END, 0xFD skipped), -, repeats - 1, the LOOP's target
+// row, the muted tracks (16 bits, track 1 = bit 0), the tempo (the host's tempo rules here), start step, end step
+// (exclusive). As the OS's song walker (MainOS 0x23D998): a LOOP row jumps back to its target as often as it says
+// (0 = forever), a LOOP onto itself is HALT (the song ends), END or the rows running out end it; an empty pattern slot
+// plays as an empty pattern.
 void MdProcessor::seqNext(double origin, const SeqBank* bank, const std::shared_ptr<const SeqBank>& hold, double atEnginePos, bool song)
 {
     if (!song) {   // PATTERN: the queued one, else the same one on
@@ -562,13 +562,14 @@ void MdProcessor::seqNext(double origin, const SeqBank* bank, const std::shared_
         const auto* r = s->rows[size_t(cur.row)].bytes;
         if (r[0] == 0xFF) break;   // END
         if (r[0] == 0xFE) {        // LOOP
+            if (r[3] == cur.row) break;   // HALT
             auto& n = cur.loops[size_t(cur.row)];
             if (r[2] == 0 || n < r[2]) { ++n; cur.row = r[3]; }
             else { n = 0; ++cur.row; }
             continue;
         }
         const int row = cur.row++;
-        if (r[0] >= 128 || !bank->hasPattern[r[0]]) continue;   // an empty slot plays nothing: skip it
+        if (r[0] >= 128) continue;
         seqStart(m_seg, r[0], r[8], r[9], 0, uint16_t((r[4] << 8) | r[5]), origin, bank, hold, atEnginePos);
         m_seg.steps = int64_t(m_seg.player.span()) * (int(r[2]) + 1);
         m_seg.row = row;
@@ -579,6 +580,28 @@ void MdProcessor::seqNext(double origin, const SeqBank* bank, const std::shared_
     m_seg.steps = -1;
     m_seg.row = -1;
     m_seqRowUi.store(-1);
+}
+
+int MdProcessor::songPeekPattern(const SeqBank* bank) const
+{
+    const int sl = juce::jlimit(0, 31, int(std::lround(m_songParam->load())));
+    if (!bank || !bank->hasSong[size_t(sl)]) return -1;
+    const auto& s = bank->songs[size_t(sl)];
+    auto cur = m_cursor;
+    for (int guard = 0; guard < 4096; ++guard) {
+        if (cur.row < 0 || cur.row >= int(s.rows.size()) || cur.row >= 256) return -1;
+        const auto* r = s.rows[size_t(cur.row)].bytes;
+        if (r[0] == 0xFF) return -1;
+        if (r[0] == 0xFE) {
+            if (r[3] == cur.row) return -1;
+            auto& n = cur.loops[size_t(cur.row)];
+            if (r[2] == 0 || n < r[2]) { ++n; cur.row = r[3]; } else { n = 0; ++cur.row; }
+            continue;
+        }
+        if (r[0] >= 128) { ++cur.row; continue; }
+        return r[0];
+    }
+    return -1;
 }
 
 void MdProcessor::applyKitSwitch()
@@ -650,7 +673,13 @@ void MdProcessor::scheduleSequencer(int n, double ratio)
     if (!on || !m_hostPlaying) {   // stopped: PATTERN shows the next pattern at once; SONG starts over
         if (m_seqRunning) seqStop();
         m_prevSeg.valid = false;
-        if (!song && (m_seqQueued >= 0 || m_seg.slot < 0)) seqNext(0.0, bank.get(), bank, -1.0, false);
+        if (!song && (m_seqQueued >= 0 || m_seg.slot < 0)) {
+            if ((m_pcMode.load() & 2) && m_seqQueued >= 0 && m_seqQueued != m_pcLastSent && pcOutChannel() >= 0) {   // PRG CHANGE OUT: a select while stopped
+                midSend(0, uint8_t(0xC0 | pcOutChannel()), uint8_t(m_seqQueued));
+                m_pcLastSent = m_seqQueued;
+            }
+            seqNext(0.0, bank.get(), bank, -1.0, false);
+        }
         return;
     }
     const double c0 = m_hostPpq * 24.0;
@@ -703,6 +732,18 @@ void MdProcessor::scheduleSequencer(int n, double ratio)
         }
         break;
     }
+    // PRG CHANGE OUT (MainOS 0x23BE6A): at the start of the playing pattern's last step, the next pattern, when it
+    // differs from the program last sent
+    if ((m_pcMode.load() & 2) && pcOutChannel() >= 0 && m_seg.valid && m_seg.steps >= 0) {
+        const double last = m_seg.endClock() - m_seg.player.clocksPerStep();
+        if (last >= c0 && last < c1) {
+            const int next = song ? songPeekPattern(bank.get()) : (m_seqQueued >= 0 ? m_seqQueued : m_seg.slot);
+            if (next >= 0 && next < 128 && next != m_pcLastSent) {
+                midSend(juce::jlimit(0, juce::jmax(0, n - 1), int((last - c0) / cps)), uint8_t(0xC0 | pcOutChannel()), uint8_t(next));
+                m_pcLastSent = next;
+            }
+        }
+    }
     for (auto& sk : m_recSkip)   // a live-played step's mark ends once its step has gone by
         if (sk >= 0 && (!m_seg.valid || m_seg.origin + double(sk + 1) * m_seg.player.clocksPerStep() < c0)) sk = -1;
     if (m_seg.valid && c1 >= m_seg.origin) {
@@ -730,6 +771,7 @@ MdProcessor::MidiSettings MdProcessor::midiSettings() const
     s.baseChannel = m_baseCh.load();
     for (int i = 0; i < 128; ++i) s.noteTrack[size_t(i)] = m_noteTrack[size_t(i)].load();
     s.programChange = m_pcMode.load();
+    s.pcChannel = m_pcChannel.load();
     s.midiOut = m_midiOutMode.load();
     return s;
 }
@@ -744,6 +786,7 @@ void MdProcessor::setMidiSettings(const MidiSettings& s)
         m_trackNote[size_t(t)].store(int8_t(note));
     }
     m_pcMode.store(juce::jlimit(0, 3, s.programChange));
+    m_pcChannel.store(juce::jlimit(0, 16, s.pcChannel));
     m_midiOutMode.store(juce::jlimit(0, 2, s.midiOut));
 }
 
@@ -752,7 +795,8 @@ MdProcessor::MidiSettings MdProcessor::fromGlobal(const mnm::mddump::Global& g, 
     MidiSettings s = keep;
     s.baseChannel = g.baseChannel < 16 ? g.baseChannel : -1;
     for (int i = 0; i < 128; ++i) s.noteTrack[size_t(i)] = int8_t(g.trackOfNote(i));
-    s.programChange = juce::jlimit(0, 3, int(g.programChange));
+    s.programChange = g.programChange & 3;   // bits 0-1 the mode (IN, OUT), bits 2-6 the channel (0 AUTO)
+    s.pcChannel = juce::jlimit(0, 16, (g.programChange >> 2) & 31);
     return s;
 }
 
@@ -897,8 +941,9 @@ void MdProcessor::midSend(int pos, uint8_t a, uint8_t b, int c)
 
 // The MID trig (MainOS 0x209914) on channel n of MID-n: the track's sounding notes end; PCHG (if set and not the program
 // last sent on the channel); NOTE, and N2 / N3 when off centre (NOTE + N - 64), at VEL (0 plays as 1); PB and MW when
-// they differ from what the channel last got, AT when not 0. The notes last 3 x (LEN + 1) sequencer ticks (96 per
-// quarter note; LEN 0 = 4 ticks), so LEN 7 is one 16th step and LEN 127 a bar.
+// they differ from what the channel last got, AT when not 0. The notes last 3 x (LEN + 1) sequencer ticks (24 per
+// quarter note, MainOS 0x209DB2 / 0x23A68C; LEN 0 = 4 ticks), so LEN 1 is one 16th step, LEN 7 a quarter note and
+// LEN 127 four bars.
 void MdProcessor::midTrig(int t, int pos)
 {
     const int ch = machineIdOf(t) - 96;
@@ -911,7 +956,7 @@ void MdProcessor::midTrig(int t, int pos)
     const int vel = juce::jmax(1, midValue(t, 4));
     const double bpm = tempo();
     const int ticks = len > 0 ? 3 + 3 * len : 4;
-    const int64_t offAt = m_clock + pos + int64_t(std::lround(ticks * 60.0 / (bpm * 96.0) * m_hostRate));
+    const int64_t offAt = m_clock + pos + int64_t(std::lround(ticks * 60.0 / (bpm * 24.0) * m_hostRate));
     auto play = [&](int nn) {
         midSend(pos, uint8_t(0x90 | ch), uint8_t(nn), vel);
         notes.push_back({uint8_t(0x90 | ch), uint8_t(nn), offAt});
@@ -998,7 +1043,10 @@ void MdProcessor::controlMachines(int n)
         }
         if (!isMidMachine(id) && !isCtrMachine(id)) continue;
         for (int p = 0; p < 24; ++p) {
-            const int now = seqParam(t, p);   // a pattern lock acts as a turn of the knob
+            const int now = seqParam(t, p);   // a pattern lock acts as a turn of the knob (CTR-AL: see below)
+            const bool held = m_lockVal[size_t(t)][size_t(p)] >= 0;
+            const bool lockMove = held || m_ctlLockHeld[size_t(t)][size_t(p)];   // a lock / slide, or its release
+            m_ctlLockHeld[size_t(t)][size_t(p)] = held;
             if (!moved(t, p, now)) continue;
             const int before = m_ctlSeen[size_t(t)][size_t(p)];
             m_ctlSeen[size_t(t)][size_t(p)] = int16_t(now);
@@ -1009,14 +1057,17 @@ void MdProcessor::controlMachines(int n)
             } else if (const int fx = ctrMasterFx(id); fx >= 0) {
                 if (p < 8) queueSet(kTracks + fx, p, now, true);
             } else if (id == kCtrAll) {
+                // a knob turn moves every track's parameter by as much (MainOS 0x207E3A); a lock, and its release, set
+                // them all to the value itself (0x237AE4); a muted CTR-AL's locks do nothing (0x23B17E)
+                if (lockMove && silenced(t)) continue;
                 const int d = juce::jlimit(1, 126, now) - juce::jlimit(1, 126, before);
-                if (d == 0) continue;
+                if (!lockMove && d == 0) continue;
                 for (int u = 0; u < kTracks; ++u) {
                     const int uid = ids[size_t(u)];
                     if (u == t || isMidMachine(uid) || isCtrMachine(uid)) continue;
                     if (p < 8 && (uid == 160 || uid == 161 || uid == 165 || uid == 166)) continue;   // RAM-R1..R4
                     const int cur = m_ctlPending[size_t(u)][size_t(p)] >= 0 ? m_ctlPending[size_t(u)][size_t(p)] : kitParam(u, p);
-                    queueSet(u, p, juce::jlimit(0, 127, cur + d));
+                    queueSet(u, p, juce::jlimit(0, 127, lockMove ? now : cur + d));
                 }
             } else if (id == kCtr8p && p < 8) {
                 const int tt = juce::jmin(15, trackParam(t, 8 + 2 * p)), tp = juce::jmin(23, trackParam(t, 9 + 2 * p));
@@ -1140,7 +1191,8 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
         const auto m = meta.getMessage();
         const int base = m_baseCh.load();
         if (m.isProgramChange()) {   // as on the unit (PRG CHANGE IN, base channel): the next pattern
-            if (!(m_pcMode.load() & 1) || base < 0 || m.getChannel() != base + 1) continue;
+            const int pcCh = m_pcChannel.load(), ch = m.getChannel() - 1;   // AUTO: the base channel and the next three
+            if (!(m_pcMode.load() & 1) || (pcCh > 0 ? ch != pcCh - 1 : (base < 0 || ch < base || ch > base + 3))) continue;
             const int pc = m.getProgramChangeNumber();
             m_seqQueued = pc == m_seg.slot ? -1 : pc;
             m_patternSeen = pc;
@@ -1785,6 +1837,7 @@ void MdProcessor::getStateInformation(juce::MemoryBlock& destData)
         juce::ValueTree g("MIDI");
         g.setProperty("base", ms.baseChannel, nullptr);
         g.setProperty("pc", ms.programChange, nullptr);
+        g.setProperty("pcch", ms.pcChannel, nullptr);
         g.setProperty("out", ms.midiOut, nullptr);
         juce::String map;
         for (int i = 0; i < 128; ++i) map << juce::String::toHexString(int(uint8_t(ms.noteTrack[size_t(i)]))).paddedLeft('0', 2);
@@ -1832,6 +1885,7 @@ void MdProcessor::setStateInformation(const void* data, int sizeInBytes)
         auto ms = defaultMidiSettings();
         ms.baseChannel = int(g.getProperty("base", 0));
         ms.programChange = int(g.getProperty("pc", 1));
+        ms.pcChannel = int(g.getProperty("pcch", 0));
         ms.midiOut = int(g.getProperty("out", 0));
         const auto map = g.getProperty("map").toString();
         if (map.length() == 256)
