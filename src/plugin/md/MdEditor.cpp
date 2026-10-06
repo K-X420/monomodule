@@ -135,7 +135,7 @@ namespace {
 constexpr int kLogoPx = 2, kLogoX = 4, kLogoGap = 6;   // the picker's screen px per logo pixel (its columns are narrow); LCD px
 // The block sizes a logo as Monomodule One / Six do (drawGroupLogo): its lit rows fill an 18-row band, the scale capped
 // so the widest stays about as wide as theirs (SUPERWAVE's)
-constexpr int kLogoBand = 18 * kScale, kLogoMaxW = 150;   // screen px
+constexpr int kLogoBand = 18 * kScale, kLogoMaxW = 162;   // screen px: a 9-row logo 27 wide at 6 px (as Monomodule's are drawn)
 struct LitBox { int x = 0, y = 0, w = 0, h = 0; };
 LitBox litBox(const text::LogoArt& a)
 {
@@ -474,7 +474,9 @@ void MdMachinePicker::drawFamily(juce::Graphics& g, const Family& f) const
     // header: the family's logo alone, paper on ink, as large as the column allows (GND: its name)
     g.fillRect(f.header);
     if (const auto* art = text::logoArt(f.name.toRawUTF8())) {
-        const int px = kLogoPx;   // as in the machine block, in every header (the logos share one size)
+        int px = 4;   // one scale for every header: the largest the narrowest column takes (the logos share one size)
+        for (const auto& o : m_families) px = juce::jmin(px, (o.header.getWidth() - 8) / art->w);
+        px = juce::jmax(kLogoPx, px);
         const int lx = f.header.getCentreX() - art->w * px / 2, ly = f.header.getCentreY() - art->h * px / 2;
         g.setColour(lcd::paper);
         for (int y = 0; y < art->h; ++y)

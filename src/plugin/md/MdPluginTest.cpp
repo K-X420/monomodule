@@ -1,6 +1,7 @@
 ﻿// md-plugintest <os.syx> <out.wav> [ui.png]: headless check of Monomodule MD. Plays a two-bar beat through the
 // plugin processor at 48 kHz (resampled from the engine's 44.1 kHz) and writes the stereo result; optionally renders
 // the editor to a PNG.
+#include "one/RomArt.h"
 #include <cstdio>
 #include <cstring>
 #include <juce_audio_formats/juce_audio_formats.h>
@@ -11,6 +12,18 @@
 int main(int argc, char** argv)
 {
     juce::ScopedJuceInitialiser_GUI gui;
+    if (const char* mos = std::getenv("MD_DUMP_MNM_LOGOS")) {   // dev: the Monomachine's group logos as text (MD_DUMP_MNM_LOGOS=<mnm os.syx>)
+        std::string err;
+        if (!mnm::uispec::ensureRomArt(std::filesystem::path(mos), &err)) { std::printf("%s\n", err.c_str()); return 1; }
+        for (const char* gname : {"GND", "SID", "SWAVE", "DPRO", "FM+", "VO", "FX"}) {
+            const auto* b = mnm::uispec::groupLogo(gname);
+            if (!b) { std::printf("%s: none\n", gname); continue; }
+            const auto lb = mnm::uispec::litBounds(*b);
+            std::printf("%s %dx%d (lit %dx%d)\n", gname, b->w, b->h, lb.w, lb.h);
+            for (int y = lb.y; y < lb.y + lb.h; ++y) { std::printf("    "); for (int x = lb.x; x < lb.x + lb.w; ++x) std::printf("%s", b->lit(x, y) ? "#" : "."); std::printf("\n"); }
+        }
+        return 0;
+    }
     if (std::getenv("MD_PRINT_SIZE")) { std::printf("sizeof(MdProcessor) = %zu\n", sizeof(mnm::plugin::md::MdProcessor)); return 0; }
     if (argc < 3) { std::printf("usage: md-plugintest <os.syx> <out.wav> [ui.png]\n"); return 2; }
     using namespace mnm::plugin::md;
