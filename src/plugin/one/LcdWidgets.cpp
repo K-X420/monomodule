@@ -21,8 +21,16 @@ void KnobCell::mouseMove(const juce::MouseEvent& e)
     setMouseCursor(m_valueArea.contains(e.getPosition()) ? m_valueCursor : juce::MouseCursor(juce::MouseCursor::UpDownLeftRightResizeCursor));
 }
 
+void KnobCell::mouseDown(const juce::MouseEvent& e)
+{
+    if (!m_toggle) { Slider::mouseDown(e); return; }
+    setValue(getValue() >= 0.5 * getMaximum() ? getMinimum() : getMaximum(), juce::sendNotificationSync);   // a switch: flipped
+    notifyPage();
+}
+
 void KnobCell::mouseUp(const juce::MouseEvent& e)
 {
+    if (m_toggle) return;
     Slider::mouseUp(e);
     // a click that did not turn the knob, released on the value row, edits the value
     if (onValueClick && !e.mouseWasDraggedSinceMouseDown() && e.getNumberOfClicks() == 1
@@ -178,6 +186,7 @@ void KnobPage::bindCustom(const spec::Param* params8, std::function<int(int)> ge
         cell.setRange(0.0, double(params8[k].maxRaw), 1.0);
         cell.setValue(double(m_get ? m_get(k) : 0), juce::dontSendNotification);
         cell.setDoubleClickReturnValue(true, double(params8[k].defaultRaw));
+        cell.setToggle(params8[k].display == spec::Display::Readout && params8[k].icons == spec::Icons::Toggle && params8[k].valueCount == 2);
         cell.onValueChange = [this, k] { repaint(); if (!m_pulling && m_set) m_set(k, int(std::lround(m_cells[size_t(k)].getValue()))); };
         cell.onReset = [this, k] { if (!m_reset) return false; m_reset(k); pull(); repaint(); return true; };
     }
@@ -223,6 +232,7 @@ void KnobPage::bind(const spec::Param* params8, const std::function<juce::String
         if (blank) continue;   // a blank cell may have no parameter behind it (the MD's short pages)
         m_attach[size_t(k)] = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(m_apvts, paramId(k), cell);
         cell.setDoubleClickReturnValue(true, double(params8[k].defaultRaw));
+        cell.setToggle(params8[k].display == spec::Display::Readout && params8[k].icons == spec::Icons::Toggle && params8[k].valueCount == 2);
     }
     endEdit(false);
     repaint();

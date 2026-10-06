@@ -42,6 +42,11 @@ constexpr spec::Param readout(const char* label, const char* const* names, int n
 {
     return {label, spec::Display::Readout, false, uint8_t(def), uint8_t(n - 1), uint8_t(n), spec::Icons::Switch, names};
 }
+// a two-state switch: a click flips it (the Toggle icon, as Monomodule One's on / off parameters)
+constexpr spec::Param toggle(const char* label, const char* const* names, int def = 0)
+{
+    return {label, spec::Display::Readout, false, uint8_t(def), 1, 2, spec::Icons::Toggle, names};
+}
 constexpr spec::Param blank() { return {"", spec::Display::Blank, false, 0, 127, 128, spec::Icons::None, nullptr}; }
 
 constexpr const char* kTrackNames[kTracks] = {"T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11", "T12", "T13", "T14", "T15", "T16"};
@@ -56,8 +61,8 @@ const spec::Param kLfoParams[8] = {readout("TRK", kTrackNames, kTracks), readout
                                    readout("SHP2", kShapeNames, 8), readout("TYPE", kLfoTypes, 3), numeric("SPD", 64), numeric("DEP", 0), numeric("MIX", 0)};
 constexpr const char* kSeqNames[2] = {"OFF", "ON"};
 constexpr const char* kModeNames[2] = {"PATTERN", "SONG"};
-const spec::Param kOutParams[8] = {numeric("VOL", 80), readout("VEL", kVelNames, 2), numeric("ACNT", 64), blank(),
-                                   readout("SEQ", kSeqNames, 2), readout("PTN", kPatternNames, 128), readout("MODE", kModeNames, 2), readout("SONG", kSongNames, 32)};
+const spec::Param kOutParams[8] = {numeric("VOL", 80), toggle("VEL", kVelNames), numeric("ACNT", 64), blank(),
+                                   toggle("SEQ", kSeqNames, 1), readout("PTN", kPatternNames, 128), toggle("MODE", kModeNames), readout("SONG", kSongNames, 32)};
 constexpr const char* kMasterTabs[4] = {"REV", "DEL", "EQ", "DYN"};
 
 // The pages of the MID and CTR machines (their parameters 8..23 are not track effects / routing)
@@ -922,7 +927,7 @@ void MdEditor::bindOutPage(int tab)
     static const char* const kSpd[4] = {"1X", "2X", "3/4X", "3/2X"};
     static const char* const kPages[4] = {"1", "2", "3", "4"};
     const spec::Param params[8] = {readout("LEN", names.lenP.data(), 64, 15), readout("SPD", kSpd, 4), readout("SWNG", names.swingP.data(), 31), numeric("ACC", 64),
-                                   readout("KIT", names.kitP.data(), 64), readout("GRID", kSeqNames, 2), readout("PAGE", kPages, 4), readout("PTN", kPatternNames, 128)};
+                                   readout("KIT", names.kitP.data(), 64), toggle("GRID", kSeqNames), readout("PAGE", kPages, 4), readout("PTN", kPatternNames, 128)};
     m_out.bindCustom(params,
         [this](int k) {
             const auto p = m_proc.bankPattern(editSlot());

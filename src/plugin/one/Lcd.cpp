@@ -113,6 +113,13 @@ void drawKnobCell(LcdCanvas& cv, int x0, int y0, const spec::Param& p, int raw, 
         const int idx = p.display == spec::Display::List ? spec::listIndex(raw, p.valueCount) : raw;
         if (p.icons == spec::Icons::Switch)
             drawSwitch(cv, innerX + (innerW - spec::kRingPlain.w) / 2, y0 + kContentY + (kContentH - spec::kRingPlain.h) / 2, idx, p.valueCount);
+        else if (p.icons == spec::Icons::Toggle && p.display == spec::Display::Readout && !spec::icon(p.icons, idx)) {
+            // a two-state switch without the OS file's icon: a slide switch, the knob left (first value) or right
+            const int w = 15, h = 7, sx = innerX + (innerW - w) / 2, sy = y0 + kContentY + (kContentH - h) / 2;
+            cv.fillRect(sx + 1, sy, w - 2, 1, true); cv.fillRect(sx + 1, sy + h - 1, w - 2, 1, true);
+            cv.fillRect(sx, sy + 1, 1, h - 2, true); cv.fillRect(sx + w - 1, sy + 1, 1, h - 2, true);
+            cv.fillRect(idx ? sx + w - 8 : sx + 2, sy + 2, 6, h - 4, true);
+        }
         else if (const auto* ic = iconOverride ? iconOverride : spec::icon(p.icons, idx))
             cv.blit(*ic, innerX + (innerW - ic->w) / 2, y0 + kContentY + (kContentH - ic->h) / 2);
         else if (p.display == spec::Display::List)   // no OS file yet: the icon families are not available

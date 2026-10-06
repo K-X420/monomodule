@@ -18,6 +18,10 @@ public:
     KnobCell();
     std::function<void()> onValueClick;
     std::function<bool()> onReset;   // a double-click on the knob: true = handled (not the default value)
+    // A two-state switch (a Readout of two values with the Toggle icon): a click flips it, no drag, no value list
+    void setToggle(bool on) { m_toggle = on; }
+    void mouseDown(const juce::MouseEvent& e) override;
+    void mouseDrag(const juce::MouseEvent& e) override { if (!m_toggle) Slider::mouseDrag(e); }
     void setValueArea(juce::Rectangle<int> r, juce::MouseCursor valueCursor) { m_valueArea = r; m_valueCursor = valueCursor; }
     void paint(juce::Graphics&) override {}
     void mouseEnter(const juce::MouseEvent& e) override { Slider::mouseEnter(e); notifyPage(); }
@@ -31,6 +35,7 @@ private:
     void notifyPage() { if (auto* p = getParentComponent()) p->repaint(); }
     juce::Rectangle<int> m_valueArea;
     juce::MouseCursor m_valueCursor{juce::MouseCursor::IBeamCursor};
+    bool m_toggle = false;
 };
 
 // One hardware page: inverted title bar over the 2x4 knob grid, drawn at LCD resolution.
