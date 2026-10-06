@@ -268,30 +268,31 @@ int main(int argc, char** argv)
                 p.syncMachineSideEffects();
             }
         };
-        // T2 (note 38) at clock 23.5 (just before step 5) and 26 (just after it): both step 5; at 28 (nearer step 6, still ahead)
+        // T2 (note 38) at 1x: a hit records onto the step playing (MainOS 0x2379AC): clock 23.5 = step 4, 26 and 28 = step 5
         runTo(96, {{23.5, 38}, {26.0, 38}, {28.0, 38}});
         auto pat = p.bankPattern(0);
-        check(pat && ((pat->trigs[1] >> 4) & 1) && ((pat->trigs[1] >> 5) & 1) && (pat->trigs[1] & ~((1ull << 4) | (1ull << 5))) == 0,
-              "notes at clocks 23.5, 26, 28: T2 trigs on steps 5 and 6 (quantized to the nearest)");
+        check(pat && ((pat->trigs[1] >> 3) & 1) && ((pat->trigs[1] >> 4) & 1) && (pat->trigs[1] & ~((1ull << 3) | (1ull << 4))) == 0,
+              "notes at clocks 23.5, 26, 28: T2 trigs on steps 4 and 5 (the step playing), none accented");
+        check(pat && pat->accent == 0 && pat->accentPerTrack[1] == 0, "recorded trigs are never accented");
         int step6pass1 = 0;
-        for (const auto& e : p.trigLog()) if (e.track == 1 && e.step == 5) ++step6pass1;
-        check(step6pass1 == 0, "step 6 was played live (clock 28): the sequencer does not play it again in that pass");
+        for (const auto& e : p.trigLog()) if (e.track == 1 && e.step == 4) ++step6pass1;
+        check(step6pass1 == 0, "step 5 was played live: the sequencer does not play it again in that pass");
         p.setTrigLogging(true);
-        // pass 2: PTCH of T1 turned at clock 140 (just before step 9 at 144); step 13 (168) is too long after for a lock
+        // pass 2: PTCH of T1 turned at clock 140 (during step 8): locked onto step 9 (144, a trig); forgotten by step 13 (168)
         auto* ptch = p.apvts.getParameter(knobId(0, 0));
         runTo(192, {}, [&](double c0) { if (c0 <= 140.0 && c0 + block / spc > 140.0) ptch->setValueNotifyingHost(ptch->convertTo0to1(90.0f)); });
         int step6pass2 = 0;
-        for (const auto& e : p.trigLog()) if (e.track == 1 && e.step == 5) ++step6pass2;
-        check(step6pass2 == 1, "the next pass plays the recorded step 6");
+        for (const auto& e : p.trigLog()) if (e.track == 1 && e.step == 4) ++step6pass2;
+        check(step6pass2 == 1, "the next pass plays the recorded step 5");
         pat = p.bankPattern(0);
         const int row = pat ? pat->lockRow(0, 0) : -1;
-        check(row >= 0 && pat->locks[row][8] == 90 && pat->locks[row][12] == 0xFF, "a knob turned just before step 9: its value locked there, not on step 13");
+        check(row >= 0 && pat->locks[row][8] == 90 && pat->locks[row][12] == 0xFF, "a knob turned during step 8: its value locked on step 9 (the next, a trig), not on step 13");
         head.playing = false;
         runTo(head.ppq * 24.0 + 4, {});
         MdProcessor::RecordedEdit run;
         const bool got = p.takeRecordedEdit(run);
         MdProcessor::RecordedEdit extra;
-        check(got && run.slot == 0 && run.before == before && run.after && ((run.after->trigs[1] >> 5) & 1) && !p.takeRecordedEdit(extra),
+        check(got && run.slot == 0 && run.before == before && run.after && ((run.after->trigs[1] >> 4) & 1) && !p.takeRecordedEdit(extra),
               "the stop ends the run: one undo step from before the recording to after it");
         std::printf(fails ? "REC TEST FAILED (%d)\n" : "REC TEST OK\n", fails);
         return fails ? 1 : 0;
@@ -911,6 +912,31 @@ int main(int argc, char** argv)
         head.ppq = 0; head.playing = true; run(10);
         const int v5 = int(std::lround(p.apvts.getRawParameterValue(knobId(4, 0))->load())), v6 = int(std::lround(p.apvts.getRawParameterValue(knobId(5, 0))->load()));
         check(v5 == 10 && v6 == 10, "CTR-AL PTCH lock 10: T5 / T6 PTCH = " + juce::String(v5) + " / " + juce::String(v6) + " (want 10 / 10)");
+        head.playing = false; run(2);
+        // a muted CTR-AL applies no locks (MainOS 0x23B19C): PTCH back to 40 / 100, T2 muted, the pattern again
+        setP(knobId(4, 0), 40); setP(knobId(5, 0), 100); setP(muteId(1), 1.0f);
+        run(5);
+        head.ppq = 0; head.playing = true; run(10);
+        const int m5 = int(std::lround(p.apvts.getRawParameterValue(knobId(4, 0))->load())), m6 = int(std::lround(p.apvts.getRawParameterValue(knobId(5, 0))->load()));
+        check(m5 == 40 && m6 == 100, "a muted CTR-AL's lock does nothing: T5 / T6 PTCH stay " + juce::String(m5) + " / " + juce::String(m6));
+        head.playing = false; run(2);
+        setP(muteId(1), 0.0f);
+        // MIDI OUT of trigs (MainOS 0x23A91C): 95, or 127 on an accented step; the note-off (velocity 0) at once
+        ms = MdProcessor::defaultMidiSettings(); ms.midiOut = 1; p.setMidiSettings(ms);
+        setP(machineId(1), float(machineIndexOf(16)));
+        run(40);
+        if (auto* a = p.apvts.getParameter(patternId())) a->setValueNotifyingHost(a->convertTo0to1(6.0f));
+        p.editPattern(6, [](mnm::mddump::Pattern& x) { x.length = 16; x.trigs[0] = 1u | (1u << 4); x.accentEditAll = true; x.accent = 1u << 4; x.accentAmount = 0; });
+        run(2);
+        out.clear(); clock = 0; head.ppq = 0; head.playing = true;
+        run(60);
+        std::vector<std::pair<int64_t, int>> ons; int64_t offAt = -1;
+        for (const auto& [at, m] : out) {
+            if (m.isNoteOn() && m.getNoteNumber() == 36) ons.push_back({at, m.getVelocity()});
+            if (m.isNoteOff() && m.getNoteNumber() == 36 && offAt < 0) offAt = at;
+        }
+        check(ons.size() >= 2 && ons[0].second == 95 && ons[1].second == 127, "MIDI OUT: velocity 95, then 127 on the accented step (accent amount 0)");
+        check(!ons.empty() && offAt == ons[0].first, "the note-off goes out at once (at " + juce::String(offAt) + ")");
         head.playing = false; run(2);
         std::printf(fails ? "OSCHECK TEST FAILED (%d)\n" : "OSCHECK TEST OK\n", fails);
         return fails ? 1 : 0;

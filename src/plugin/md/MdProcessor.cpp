@@ -840,17 +840,21 @@ void MdProcessor::recordPush(const RecEvent& e)
     triggerAsyncUpdate();
 }
 
-// A trig played while recording: onto the nearest step of the playing pattern (the unit has no finer timing)
+// A trig played while recording (MainOS 0x2379AC): onto the step playing; at 2x, 3/4x and 3/2x a hit late in its step
+// goes onto the next one (past 2/3, 5/8 and 1/2 of the step). Recorded trigs are never accented, whatever the velocity.
 void MdProcessor::recordTrig(int t, double clock, int velocity)
 {
+    juce::ignoreUnused(velocity);
     if (!m_recordingUi.load() || !m_seg.valid || m_seg.slot < 0) return;
     const double T = m_seg.player.clocksPerStep();
-    int64_t k = std::llround((clock - m_seg.origin) / T);
+    const double at = (clock - m_seg.origin) / T;
+    int64_t k = int64_t(std::floor(at));
+    const double late = T == 3.0 ? 2.0 / 3.0 : T == 8.0 ? 5.0 / 8.0 : T == 4.0 ? 0.5 : 2.0;   // clocks per step 6 3 8 4 = 1x 2x 3/4x 3/2x
+    if (at - double(k) >= late - 1e-9) ++k;
     if (k < 0) k = 0;
     if (m_seg.steps >= 0 && k >= m_seg.steps) k = m_seg.steps - 1;
     const int step = m_seg.player.stepOf(k);
-    const bool accent = int(std::lround(m_velMode->load())) == 1 && velocity >= 112;
-    recordPush({0, int8_t(t), 0, int8_t(step), int16_t(accent ? 1 : 0), int16_t(m_seg.slot)});
+    recordPush({0, int8_t(t), 0, int8_t(step), 0, int16_t(m_seg.slot)});
     if (m_seg.origin + double(k) * T > clock) m_recSkip[size_t(t)] = k;   // its step is still to come in this pass: played already
 }
 
@@ -1048,18 +1052,21 @@ void MdProcessor::controlMachines(int n)
             const bool lockMove = held || m_ctlLockHeld[size_t(t)][size_t(p)];   // a lock / slide, or its release
             m_ctlLockHeld[size_t(t)][size_t(p)] = held;
             if (!moved(t, p, now)) continue;
+            // a muted CTR track (its mute or the song row's) applies no locks (MainOS 0x23B19C); knob turns still act
+            const bool ctrMuted = isCtrMachine(id) && lockMove && (silenced(t) || (m_seg.valid && ((m_seg.mutes >> t) & 1)));
             const int before = m_ctlSeen[size_t(t)][size_t(p)];
             m_ctlSeen[size_t(t)][size_t(p)] = int16_t(now);
             if (isMidMachine(id)) {
                 const int ch = id - 96;
                 if (p == 20 && now > 0) { midSend(0, uint8_t(0xC0 | ch), uint8_t(now - 1)); m_midLastPc[size_t(ch)] = now - 1; }
                 // PB MW AT and the CC values go out from midStream (knob + LFO)
+            } else if (ctrMuted) {
+                continue;
             } else if (const int fx = ctrMasterFx(id); fx >= 0) {
                 if (p < 8) queueSet(kTracks + fx, p, now, true);
             } else if (id == kCtrAll) {
                 // a knob turn moves every track's parameter by as much (MainOS 0x207E3A); a lock, and its release, set
                 // them all to the value itself (0x237AE4); a muted CTR-AL's locks do nothing (0x23B17E)
-                if (lockMove && silenced(t)) continue;
                 const int d = juce::jlimit(1, 126, now) - juce::jlimit(1, 126, before);
                 if (!lockMove && d == 0) continue;
                 for (int u = 0; u < kTracks; ++u) {
@@ -1240,13 +1247,13 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
         else m_engine->trig(t, id, accent);
         m_activity[size_t(t)].store(1.0f);
         if (m_trigLogOn && m_trigLog.size() < m_trigLog.capacity()) m_trigLog.push_back({t, m_logClock + pos, s ? s->step : -1});
-        if (echo && m_midiOutMode.load() >= 1 && m_baseCh.load() >= 0 && !isMidMachine(id)) {   // MIDI OUT: the trig as its note, a step long
+        if (echo && m_midiOutMode.load() >= 1 && m_baseCh.load() >= 0 && !isMidMachine(id)) {
+            // MIDI OUT (MainOS 0x23A91C): the trig as its note, velocity 127 on an accented step else 95, and its note-off
+            // (a note-on at velocity 0) straight after
             const int note = m_trackNote[size_t(t)].load(), ch = m_baseCh.load();
             if (note >= 0) {
-                const int vel = s ? (accent > 0x80 ? 127 : 100) : 100;
-                midSend(pos, uint8_t(0x90 | ch), uint8_t(note), vel);
-                const double stepSamples = 6.0 / juce::jmax(1e-9, m_seqCps > 0 ? m_seqCps : 120.0 * 24.0 / 60.0 / m_hostRate);
-                m_outNotes.push_back({ch, note, m_clock + pos + int64_t(stepSamples)});
+                midSend(pos, uint8_t(0x90 | ch), uint8_t(note), s && s->accent ? 127 : 95);
+                midSend(pos, uint8_t(0x90 | ch), uint8_t(note), 0);
             }
         }
     };
@@ -1263,10 +1270,17 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
                          : int(std::lround(m_velMode->load())) == 0 ? pt.velocity
                          : pt.velocity >= 112 ? 0x80 + 2 * int(std::lround(m_accent->load())) : -128;
         fireOne(pt.track, pt.enginePos, accent, s);
-        if (s && m_recordingUi.load() && m_seg.valid && m_seg.slot >= 0)   // knobs turned meanwhile: their values locked on this trig
-            for (int q = 0; q < 24; ++q)
-                if (m_clock + int64_t(pt.enginePos / ratio) - m_recTouched[size_t(pt.track)][size_t(q)] < int64_t(0.3 * m_hostRate))
+        if (s && m_recordingUi.load() && m_seg.valid && m_seg.slot >= 0) {   // knobs turned during the step before: locked on this trig
+            // (MainOS 0x21D842: the turned parameters are locked onto the next step reached if the track trigs there,
+            // and forgotten at every step either way)
+            const int64_t at = m_clock + int64_t(pt.enginePos / ratio);
+            const int64_t step = int64_t(std::ceil(m_seg.player.clocksPerStep() / juce::jmax(1e-12, m_seqCps))) + 1;
+            for (int q = 0; q < 24; ++q) {
+                const int64_t ago = at - m_recTouched[size_t(pt.track)][size_t(q)];
+                if (ago >= 0 && ago <= step)
                     recordPush({1, int8_t(pt.track), int8_t(q), int8_t(s->step), int16_t(kitParam(pt.track, q)), int16_t(m_seg.slot)});
+            }
+        }
         const int g = trigGroupOf(pt.track);
         if (g >= 0 && g != pt.track && !silenced(g)) fireOne(g, pt.enginePos, accent, nullptr);
     };
