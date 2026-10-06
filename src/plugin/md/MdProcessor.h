@@ -144,6 +144,17 @@ public:
     void setInternalPlay(bool on) { m_intPlay.store(on); }
     bool internalPlay() const { return m_intPlay.load(); }
     bool seqPlaying() const { return m_seqPlayingUi.load(); }
+    // Live recording (REC), as the unit's: armed, while the pattern plays (PATTERN mode), the trigs played (MIDI notes,
+    // the track keys) go onto the nearest step of the playing pattern (ACCENT velocity mode: >= 112 an accent), and a
+    // knob turned while recording locks its value on the track's trigs that pass meanwhile. A trig played just before
+    // its step sounds then, and the step is not played again in that pass. The edits are applied on the message
+    // thread (with or without the editor); each recording run (from the first recorded event until REC is off or the
+    // transport stops) comes back to the editor as one undo step.
+    void setRecord(bool on) { m_recArmed.store(on); triggerAsyncUpdate(); }
+    bool recordArmed() const { return m_recArmed.load(); }
+    bool recording() const { return m_recordingUi.load(); }
+    struct RecordedEdit { int slot = 0; std::shared_ptr<const mnm::mddump::Pattern> before, after; };
+    bool takeRecordedEdit(RecordedEdit& out);   // message thread: a finished recording run, oldest first
     bool hostPlaying() const { return m_hostPlayingUi.load(); }
     // dev: the trigs the last blocks fired (track, host sample from the start of logging), when logging is on
     struct TrigLog { int track; int64_t sample; int step; };
@@ -323,7 +334,24 @@ private:
     double m_intPpq = 0;
     const mnm::mddump::Kit* m_kitSwitch = nullptr;   // the kit a pending switch event (PendingTrig track -2) brings in
     std::atomic<bool> m_bankFresh{false};
-    std::atomic<int> m_patternEdited{-1};   // a slot whose pattern an edit replaced (-1 none; -2 several)
+    std::atomic<int> m_patternEdited{-1};
+    // live recording
+    std::atomic<bool> m_recArmed{false}, m_recordingUi{false};
+    bool m_recWas = false;
+    struct RecEvent { int8_t kind, track, param, step; int16_t value, slot; };   // kind 0 trig (value 1 = accent), 1 lock
+    juce::AbstractFifo m_recFifo{1024};
+    std::array<RecEvent, 1024> m_recBuf{};
+    std::array<int64_t, kTracks> m_recSkip{};                        // a step index of the playing segment not to play (-1)
+    std::array<std::array<int16_t, 24>, kTracks> m_recSeen{};        // the knob values last seen (audio thread)
+    std::array<std::array<int64_t, 24>, kTracks> m_recTouched{};     // when each knob last moved (host samples)
+    std::atomic<bool> m_recEnded{false};
+    bool m_recSession = false;   // message thread: a run's edits so far
+    RecordedEdit m_recRun;
+    std::vector<RecordedEdit> m_recDone;
+    void recordPush(const RecEvent& e);
+    void recordTrig(int t, double clock, int velocity);   // audio thread
+    void recordScanKnobs();                               // audio thread, each block while recording
+    void recordApply();                                   // message thread   // a slot whose pattern an edit replaced (-1 none; -2 several)
     bool m_trigLogOn = false;
     std::vector<TrigLog> m_trigLog;
     int64_t m_logClock = 0;

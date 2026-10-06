@@ -725,6 +725,7 @@ MdEditor::MdEditor(MdProcessor& p)
                 if (m_outTab == 1) m_out.pull();
                 break;
             case MdSeqBar::Edit: editMenu(); return;
+            case MdSeqBar::Rec: m_proc.setRecord(!m_proc.recordArmed()); break;
             case MdSeqBar::Mute: toggleMute(m_track); break;
             case MdSeqBar::TrkPrev: selectTrack((m_track + kTracks - 1) % kTracks); break;
             case MdSeqBar::TrkNext: selectTrack((m_track + 1) % kTracks); break;
@@ -1093,6 +1094,8 @@ void MdEditor::refreshGrid()
         s.grid = m_gridOn;
         s.track = m_track;
         s.muted = m_proc.apvts.getRawParameterValue(muteId(m_track))->load() >= 0.5f;
+        s.rec = m_proc.recordArmed();
+        s.recording = m_proc.recording();
         const int mi = juce::jlimit(0, kNumMachines - 1, int(std::lround(m_proc.apvts.getRawParameterValue(machineId(m_track))->load())));
         s.machine = shortOf(mi) == "---" ? familyOf(mi) : shortOf(mi);
         s.pattern = slot;
@@ -1605,6 +1608,11 @@ void MdEditor::timerCallback()
             const bool seq = m_proc.apvts.getRawParameterValue(seqId())->load() >= 0.5f && m_proc.seqPattern() >= 0 && m_proc.bankHasPattern(m_proc.seqPattern());
             m_keys.setSeq(m_proc.seqStep(), seq ? m_proc.seqLength() : 0, m_proc.seqTrigs(m_track));
             refreshGrid();
+            {   // a finished recording run: one undo step
+                MdProcessor::RecordedEdit re;
+                while (m_proc.takeRecordedEdit(re)) { m_undo.push_back({re.slot, re.before, re.after, "recording"}); m_redo.clear(); m_lastCoalesce = -1; }
+                if (m_proc.recording()) m_seqBar.repaint();   // the blinking dot
+            }
             if (m_outTab == 1) m_out.pull();
             if (m_heldStep >= 0) for (auto* pg : {&m_syn, &m_fx, &m_routing, &m_lfo}) pg->pull();
             if (--m_ptnPoll <= 0) {   // the bank: its name on the panel, its empty slots marked

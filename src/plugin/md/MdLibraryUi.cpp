@@ -84,6 +84,8 @@ void MdSeqBar::resized()
     auto take = [&](Part p, int pw) { m_rects[size_t(p)] = {x, 0, pw, kLcdH}; x += pw - 1; };
     take(Play, 33);
     x += 1 + gap;
+    take(Rec, 26);
+    x += 1 + gap;
     take(Grid, 30);
     x += 1 + gap;
     take(TrkPrev, arrowW); take(Trk, 64); take(TrkNext, arrowW); take(Mute, 13);
@@ -115,6 +117,13 @@ void MdSeqBar::paint(juce::Graphics& g)
         else for (int i = 0; i < 5; ++i) for (int y = -4 + i; y <= 4 - i; ++y) cv.set(cx + i, cy + y, ink);
         cv.text(spec::kFontTiny3x5, m_s.playing ? "STOP" : "PLAY", r.getX() + 14, r.getY() + 5, ink);
         (void) ink;
+    }
+    {   // REC: a dot, the box solid while armed (the dot blinks while recording)
+        const auto r = box(Rec, m_s.rec);
+        const bool ink = !m_s.rec;
+        const bool dot = !m_s.recording || (juce::Time::getMillisecondCounter() / 300) % 2 == 0;
+        if (dot) { const int cx = r.getX() + 4, cy = r.getCentreY() - 2; cv.fillRect(cx + 1, cy, 3, 5, ink); cv.fillRect(cx, cy + 1, 5, 3, ink); }
+        cv.text(spec::kFontTiny3x5, "REC", r.getX() + 11, r.getY() + 5, ink);
     }
     {   // GRID: solid while the keys are steps
         const auto r = box(Grid, m_s.grid);
@@ -189,6 +198,8 @@ void MdSeqBar::mouseMove(const juce::MouseEvent& e)
     if (p != m_hover) { m_hover = p; repaint(); }
     switch (p) {
         case Play: setTooltip(m_s.hostPlaying ? "The host's transport is running: the pattern follows it" : "Play / stop the pattern on the plugin's own clock (while the host is stopped)"); break;
+        case Rec: setTooltip("REC: while the pattern plays, the trigs you play (MIDI notes, the track keys) go onto its nearest steps, "
+                             "and knobs turned meanwhile lock their values on the trigs that pass. Ctrl+Z takes a run back"); break;
         case Grid: setTooltip(m_s.grid ? "GRID: the keys are the selected track's steps (click a step to place a trig). Click to get the tracks back"
                                        : "GRID: click to place steps with the keys (the selected track's steps; TRK < > picks the track)"); break;
         case Mute: setTooltip(m_s.muted ? "The track is muted: its trigs don't play. Click to unmute (Alt+click a key in GRID: that key's track)"

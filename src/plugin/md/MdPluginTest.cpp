@@ -33,6 +33,66 @@ int main(int argc, char** argv)
     const int block = 480;
     proc.setPlayConfigDetails(0, 2, rate, block);
     proc.prepareToPlay(rate, block);
+    if (std::getenv("MD_REC_TEST")) {
+        // Live recording against a simulated transport (120 BPM, 48 kHz: 1000 samples a clock, a step = 6 clocks)
+        int fails = 0;
+        auto check = [&](bool ok, const juce::String& what) { std::printf("  %s %s\n", ok ? "ok  " : "FAIL", what.toRawUTF8()); fails += ok ? 0 : 1; };
+        struct Head : juce::AudioPlayHead {
+            double ppq = 0; bool playing = true;
+            juce::Optional<PositionInfo> getPosition() const override { PositionInfo p; p.setPpqPosition(ppq); p.setBpm(120); p.setIsPlaying(playing); return p; }
+        } head;
+        MdProcessor p;
+        p.setFirmwarePath(juce::String(argv[1]), false);
+        p.setPlayHead(&head);
+        p.prepareToPlay(rate, block);
+        p.editPattern(0, [](mnm::mddump::Pattern& x) { x.trigs[0] = (1u << 8) | (1u << 12); });   // T1 on steps 9 and 13
+        const auto before = p.bankPattern(0);
+        if (auto* a = p.apvts.getParameter(seqId())) a->setValueNotifyingHost(1.0f);
+        p.setRecord(true);
+        p.setTrigLogging(true);
+        const double spc = 1000.0;
+        juce::AudioBuffer<float> buf(2, block);
+        auto runTo = [&](double clock, const std::vector<std::pair<double, int>>& notes, std::function<void(double)> each = nullptr) {
+            while (head.ppq * 24.0 < clock) {
+                const double c0 = head.ppq * 24.0, c1 = c0 + block / spc;
+                juce::MidiBuffer midi;
+                for (const auto& [c, note] : notes)
+                    if (c >= c0 && c < c1) midi.addEvent(juce::MidiMessage::noteOn(1, note, uint8_t(100)), int((c - c0) * spc));
+                if (each) each(c0);
+                buf.clear();
+                p.processBlock(buf, midi);
+                head.ppq += block / spc / 24.0;
+                p.syncMachineSideEffects();
+            }
+        };
+        // T2 (note 38) at clock 23.5 (just before step 5) and 26 (just after it): both step 5; at 28 (nearer step 6, still ahead)
+        runTo(96, {{23.5, 38}, {26.0, 38}, {28.0, 38}});
+        auto pat = p.bankPattern(0);
+        check(pat && ((pat->trigs[1] >> 4) & 1) && ((pat->trigs[1] >> 5) & 1) && (pat->trigs[1] & ~((1ull << 4) | (1ull << 5))) == 0,
+              "notes at clocks 23.5, 26, 28: T2 trigs on steps 5 and 6 (quantized to the nearest)");
+        int step6pass1 = 0;
+        for (const auto& e : p.trigLog()) if (e.track == 1 && e.step == 5) ++step6pass1;
+        check(step6pass1 == 0, "step 6 was played live (clock 28): the sequencer does not play it again in that pass");
+        p.setTrigLogging(true);
+        // pass 2: PTCH of T1 turned at clock 140 (just before step 9 at 144); step 13 (168) is too long after for a lock
+        auto* ptch = p.apvts.getParameter(knobId(0, 0));
+        runTo(192, {}, [&](double c0) { if (c0 <= 140.0 && c0 + block / spc > 140.0) ptch->setValueNotifyingHost(ptch->convertTo0to1(90.0f)); });
+        int step6pass2 = 0;
+        for (const auto& e : p.trigLog()) if (e.track == 1 && e.step == 5) ++step6pass2;
+        check(step6pass2 == 1, "the next pass plays the recorded step 6");
+        pat = p.bankPattern(0);
+        const int row = pat ? pat->lockRow(0, 0) : -1;
+        check(row >= 0 && pat->locks[row][8] == 90 && pat->locks[row][12] == 0xFF, "a knob turned just before step 9: its value locked there, not on step 13");
+        head.playing = false;
+        runTo(head.ppq * 24.0 + 4, {});
+        MdProcessor::RecordedEdit run;
+        const bool got = p.takeRecordedEdit(run);
+        MdProcessor::RecordedEdit extra;
+        check(got && run.slot == 0 && run.before == before && run.after && ((run.after->trigs[1] >> 5) & 1) && !p.takeRecordedEdit(extra),
+              "the stop ends the run: one undo step from before the recording to after it");
+        std::printf(fails ? "REC TEST FAILED (%d)\n" : "REC TEST OK\n", fails);
+        return fails ? 1 : 0;
+    }
     if (std::getenv("MD_GRID_TEST")) {
         // The GRID driven as clicks drive it: steps, undo / redo, a held step's locks (a knob drag is one undo step),
         // a double-click clearing one lock, Alt+click muting a track

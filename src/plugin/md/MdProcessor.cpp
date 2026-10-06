@@ -71,6 +71,8 @@ MdProcessor::MdProcessor()
     m_songParam = apvts.getRawParameterValue(songId());
     for (auto& a : m_lockVal) a.fill(-1);
     for (auto& a : m_ctlWrite) a.fill(-1);
+    m_recSkip.fill(-1);
+    for (auto& a : m_recSeen) a.fill(-1);
     m_firmwarePath = loadOsPath();
     loadEngine();
 }
@@ -540,6 +542,7 @@ void MdProcessor::seqGenerate(const Segment& seg, double from, double to, double
         auto& s = m_seqTrigs[i];
         s.clock += seg.origin;
         if (m_tracks[size_t(s.track)].mute->load() >= 0.5f || ((seg.mutes >> s.track) & 1)) continue;   // muted: no trig
+        if (&seg == &m_seg && m_recSkip[size_t(s.track)] == s.stepIndex) { m_recSkip[size_t(s.track)] = -1; continue; }   // played live already
         const double host = (s.clock - m_seqClock0) / m_seqCps;
         m_pending.push_back({s.track, juce::jmax(0.0, host * ratio), s.accent ? seg.accentOn : -128, int(i)});
     }
@@ -637,6 +640,8 @@ void MdProcessor::scheduleSequencer(int n, double ratio)
         }
         break;
     }
+    for (auto& sk : m_recSkip)   // a live-played step's mark ends once its step has gone by
+        if (sk >= 0 && (!m_seg.valid || m_seg.origin + double(sk + 1) * m_seg.player.clocksPerStep() < c0)) sk = -1;
     if (m_seg.valid && c1 >= m_seg.origin) {
         int64_t k = int64_t(std::floor((c1 - m_seg.origin) / m_seg.player.clocksPerStep()));
         if (m_seg.steps >= 0 && k >= m_seg.steps) k = m_seg.steps - 1;
@@ -644,6 +649,86 @@ void MdProcessor::scheduleSequencer(int n, double ratio)
     } else {
         m_seqStepUi.store(-1);
     }
+}
+
+// ---------------------------------------------------------------------------------------------- live recording
+
+void MdProcessor::recordPush(const RecEvent& e)
+{
+    const auto scope = m_recFifo.write(1);
+    if (scope.blockSize1 > 0) m_recBuf[size_t(scope.startIndex1)] = e;
+    else if (scope.blockSize2 > 0) m_recBuf[size_t(scope.startIndex2)] = e;
+    else return;
+    triggerAsyncUpdate();
+}
+
+// A trig played while recording: onto the nearest step of the playing pattern (the unit has no finer timing)
+void MdProcessor::recordTrig(int t, double clock, int velocity)
+{
+    if (!m_recordingUi.load() || !m_seg.valid || m_seg.slot < 0) return;
+    const double T = m_seg.player.clocksPerStep();
+    int64_t k = std::llround((clock - m_seg.origin) / T);
+    if (k < 0) k = 0;
+    if (m_seg.steps >= 0 && k >= m_seg.steps) k = m_seg.steps - 1;
+    const int step = m_seg.player.stepOf(k);
+    const bool accent = int(std::lround(m_velMode->load())) == 1 && velocity >= 112;
+    recordPush({0, int8_t(t), 0, int8_t(step), int16_t(accent ? 1 : 0), int16_t(m_seg.slot)});
+    if (m_seg.origin + double(k) * T > clock) m_recSkip[size_t(t)] = k;   // its step is still to come in this pass: played already
+}
+
+void MdProcessor::recordScanKnobs()
+{
+    if (m_clock < m_ctlQuietUntil) {   // a kit load: not a turn
+        for (int t = 0; t < kTracks; ++t) for (int q = 0; q < 24; ++q) m_recSeen[size_t(t)][size_t(q)] = int16_t(trackParam(t, q));
+        return;
+    }
+    for (int t = 0; t < kTracks; ++t)
+        for (int q = 0; q < 24; ++q) {
+            const int v = trackParam(t, q);
+            if (v == m_recSeen[size_t(t)][size_t(q)]) continue;
+            m_recSeen[size_t(t)][size_t(q)] = int16_t(v);
+            m_recTouched[size_t(t)][size_t(q)] = m_clock;
+        }
+}
+
+void MdProcessor::recordApply()
+{
+    std::vector<RecEvent> evs;
+    const auto scope = m_recFifo.read(m_recFifo.getNumReady());
+    for (int i = 0; i < scope.blockSize1; ++i) evs.push_back(m_recBuf[size_t(scope.startIndex1 + i)]);
+    for (int i = 0; i < scope.blockSize2; ++i) evs.push_back(m_recBuf[size_t(scope.startIndex2 + i)]);
+    auto finish = [&] {
+        if (m_recSession) { m_recRun.after = bankPattern(m_recRun.slot); m_recDone.push_back(m_recRun); }
+        m_recSession = false;
+    };
+    for (size_t i = 0; i < evs.size();) {
+        const int slot = evs[i].slot;
+        size_t j = i;
+        while (j < evs.size() && evs[j].slot == slot) ++j;
+        if (m_recSession && m_recRun.slot != slot) finish();
+        if (!m_recSession) { m_recSession = true; m_recRun = {slot, bankPattern(slot), nullptr}; }
+        editPattern(slot, [&](mnm::mddump::Pattern& p) {
+            for (size_t e = i; e < j; ++e) {
+                const auto& ev = evs[e];
+                if (ev.kind == 0) {
+                    p.trigs[ev.track] |= 1ull << ev.step;
+                    if (ev.value) (p.accentEditAll ? p.accent : p.accentPerTrack[ev.track]) |= 1ull << ev.step;
+                } else if ((p.trigs[ev.track] >> ev.step) & 1) {
+                    p.setLock(ev.track, ev.param, ev.step, ev.value);
+                }
+            }
+        });
+        i = j;
+    }
+    if (m_recEnded.exchange(false)) finish();
+}
+
+bool MdProcessor::takeRecordedEdit(RecordedEdit& out)
+{
+    if (m_recDone.empty()) return false;
+    out = m_recDone.front();
+    m_recDone.erase(m_recDone.begin());
+    return true;
 }
 
 // ---------------------------------------------------------------------------------------------- CTR and MID machines
@@ -905,6 +990,16 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
     }
 
     scheduleSequencer(n, ratio);   // the pattern's trigs of this block
+    {   // live recording: on while armed and the pattern plays (PATTERN mode)
+        const bool rec = m_recArmed.load() && m_seqRunning && m_seqMode->load() < 0.5f;
+        if (rec && !m_recWas)   // a run starts: the knobs as they are, none moved
+            for (int t = 0; t < kTracks; ++t)
+                for (int q = 0; q < 24; ++q) { m_recSeen[size_t(t)][size_t(q)] = int16_t(trackParam(t, q)); m_recTouched[size_t(t)][size_t(q)] = std::numeric_limits<int64_t>::min() / 2; }
+        if (!rec && m_recWas) { m_recSkip.fill(-1); m_recEnded.store(true); triggerAsyncUpdate(); }
+        m_recWas = rec;
+        m_recordingUi.store(rec);
+        if (rec) recordScanKnobs();
+    }
     for (const auto meta : midi) {
         const auto m = meta.getMessage();
         if (m.isProgramChange()) {   // as on the unit: the next pattern
@@ -916,7 +1011,10 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
         } else if (m.isNoteOn()) {
             for (int t = 0; t < kTracks; ++t)
                 if (kTrackNotes[t] == m.getNoteNumber() && m_tracks[size_t(t)].mute->load() < 0.5f)
+                {
                     m_pending.push_back({t, meta.samplePosition * ratio, int(m.getVelocity())});
+                    recordTrig(t, m_seqClock0 + meta.samplePosition * m_seqCps, int(m.getVelocity()));
+                }
         } else if (m.isAllNotesOff() || m.isAllSoundOff()) {   // the host stopping: the MID machines' notes end
             for (auto& notes : m_midNotes) {
                 for (const auto& nt : notes) midSend(meta.samplePosition, uint8_t(nt.status & 0xEF), nt.note, 0);
@@ -928,7 +1026,7 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
     }
     midi.clear();
     for (int t = 0; t < kTracks; ++t)
-        if (m_audition[size_t(t)].exchange(false)) m_pending.push_back({t, 0.0, 100});
+        if (m_audition[size_t(t)].exchange(false)) { m_pending.push_back({t, 0.0, 100}); recordTrig(t, m_seqClock0, 100); }
     controlMachines(n);
     for (auto& p : m_peak) p.store(p.load() * 0.8f);   // the meters' fall-off
 
@@ -964,6 +1062,10 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
                          : int(std::lround(m_velMode->load())) == 0 ? pt.velocity
                          : pt.velocity >= 112 ? 0x80 + 2 * int(std::lround(m_accent->load())) : -128;
         fireOne(pt.track, pt.enginePos, accent, s);
+        if (s && m_recordingUi.load() && m_seg.valid && m_seg.slot >= 0)   // knobs turned meanwhile: their values locked on this trig
+            for (int q = 0; q < 24; ++q)
+                if (m_clock + int64_t(pt.enginePos / ratio) - m_recTouched[size_t(pt.track)][size_t(q)] < int64_t(0.3 * m_hostRate))
+                    recordPush({1, int8_t(pt.track), int8_t(q), int8_t(s->step), int16_t(kitParam(pt.track, q)), int16_t(m_seg.slot)});
         const auto* ok = m_kitOverride.load();
         const int g = (ok ? *ok : m_baseKit).trigGroups[pt.track];
         if (g < kTracks && g != pt.track && m_tracks[size_t(g)].mute->load() < 0.5f) fireOne(g, pt.enginePos, accent, nullptr);
@@ -1341,6 +1443,7 @@ void MdProcessor::parameterChanged(const juce::String& id, float)
 // an assignment does on the hardware). Kits and sounds bring their own values (their loads clear the change flag).
 void MdProcessor::handleAsyncUpdate()
 {
+    recordApply();
     if (const int pc = m_programChange.exchange(-1); pc >= 0)
         if (auto* p = apvts.getParameter(patternId())) p->setValueNotifyingHost(p->convertTo0to1(float(pc)));
     if (const int k = m_seqKitRequest.exchange(-1); k >= 0) {   // a pattern change brought this kit: the knobs take it
