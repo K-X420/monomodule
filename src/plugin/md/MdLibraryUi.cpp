@@ -166,7 +166,8 @@ void MdSeqBar::paint(juce::Graphics& g)
         cv.text(spec::kFontBold8, "EDIT", r.getX() + 4, r.getY() + 4, true);
     }
     {
-        juce::String s = m_s.step >= 0 ? juce::String(m_s.step + 1).paddedLeft('0', 2) + "/" + juce::String(m_s.length) : "--/" + juce::String(m_s.length);
+        juce::String s = m_s.seqOff ? juce::String("SEQ OFF")
+                       : m_s.step >= 0 ? juce::String(m_s.step + 1).paddedLeft('0', 2) + "/" + juce::String(m_s.length) : "--/" + juce::String(m_s.length);
         if (m_s.row >= 0) s << "  ROW " << (m_s.row + 1);
         labelled(Step, "STEP", s);
     }
@@ -207,6 +208,7 @@ void MdSeqBar::mouseMove(const juce::MouseEvent& e)
         case TrkPrev: case TrkNext: case Trk: setTooltip("The track whose steps GRID shows and edits"); break;
         case PtnPrev: case PtnNext: case Ptn: setTooltip("The pattern (PTN): played by SEQ, edited by GRID (\"-\" = an empty slot)"); break;
         case Pages: setTooltip("Pages of 16 steps: solid = playing, underlined = shown by GRID. Click one to show it; right-click: EDIT"); break;
+        case Step: setTooltip(m_s.seqOff ? "SEQ is OFF (OUT tab): the pattern does not play. PLAY, a placed step or REC turns it on" : "The playing step / the pattern's length"); break;
         case Edit: setTooltip("Copy / paste / clear the shown page, the track or the pattern; double the pattern"); break;
         default: setTooltip({}); break;
     }

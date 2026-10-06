@@ -386,6 +386,21 @@ int main(int argc, char** argv)
             std::vector<int> seen;
             for (int i = 0; i < 100; ++i) { juce::MidiBuffer mm; b2.clear(); q.processBlock(b2, mm); if (seen.empty() || seen.back() != q.seqStep()) seen.push_back(q.seqStep()); }
             check(q.seqPlaying() && seen.size() >= 6 && seen.front() == 0, "PLAY on an empty pattern (no bank): the step moves (" + juce::String(int(seen.size())) + " steps seen)");
+            // the host's transport, no pattern, no bank: the steps run too
+            auto hHeap = std::make_unique<MdProcessor>();
+            auto& hq = *hHeap;
+            hq.setFirmwarePath(juce::String(argv[1]), false);
+            Head h3; h3.playing = true;
+            hq.setPlayHead(&h3);
+            hq.prepareToPlay(rate, block);
+            if (auto* a = hq.apvts.getParameter(seqId())) a->setValueNotifyingHost(1.0f);
+            std::vector<int> seen2;
+            for (int i = 0; i < 100; ++i) { juce::MidiBuffer mm; b2.clear(); hq.processBlock(b2, mm); h3.ppq += block / 1000.0 / 24.0; if (seen2.empty() || seen2.back() != hq.seqStep()) seen2.push_back(hq.seqStep()); }
+            check(hq.seqPlaying() && seen2.size() >= 6 && hq.seqLength() == 16, "the host's play on an empty pattern (no bank): the step moves (" + juce::String(int(seen2.size())) + " steps seen)");
+            std::unique_ptr<juce::AudioProcessorEditor> hed(hq.createEditor());
+            auto* hmed = dynamic_cast<MdEditor*>(hed.get());
+            hmed->refresh();
+            check(hmed->devKeys().devSeqLength() == 16 && hmed->devKeys().devSeqStep() >= 0, "the track keys show the running step of the empty pattern (step " + juce::String(hmed->devKeys().devSeqStep() + 1) + ")");
         }
         {   // copy / clear / double on the pattern
             mnm::mddump::Pattern a;

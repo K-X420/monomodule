@@ -725,7 +725,7 @@ MdEditor::MdEditor(MdProcessor& p)
                 if (m_outTab == 1) m_out.pull();
                 break;
             case MdSeqBar::Edit: editMenu(); return;
-            case MdSeqBar::Rec: m_proc.setRecord(!m_proc.recordArmed()); break;
+            case MdSeqBar::Rec: m_proc.setRecord(!m_proc.recordArmed()); if (m_proc.recordArmed()) seqOn(); break;
             case MdSeqBar::Mute: toggleMute(m_track); break;
             case MdSeqBar::TrkPrev: selectTrack((m_track + kTracks - 1) % kTracks); break;
             case MdSeqBar::TrkNext: selectTrack((m_track + 1) % kTracks); break;
@@ -1037,6 +1037,7 @@ void MdEditor::saveBankToLibrary()
 
 void MdEditor::doEdit(int slot, const juce::String& label, const std::function<void(mnm::mddump::Pattern&)>& fn, int coalesce)
 {
+    seqOn();
     const auto now = juce::Time::currentTimeMillis();
     const bool merge = coalesce >= 0 && !m_undo.empty() && m_undo.back().slot == slot && m_lastCoalesce == coalesce && now - m_lastEditMs < 1000;
     if (!merge) {
@@ -1066,6 +1067,13 @@ void MdEditor::doEditSong(int slot, const juce::String& label, const std::functi
     m_proc.editSong(slot, fn);
     m_undo.back().songAfter = m_proc.bankSong(slot);
     m_songEd.repaint();
+}
+
+void MdEditor::seqOn()
+{
+    if (auto* a = m_proc.apvts.getParameter(seqId()); a && a->getValue() < 0.5f) {   // sequencing: SEQ on (the host's play then runs it)
+        a->beginChangeGesture(); a->setValueNotifyingHost(1.0f); a->endChangeGesture();
+    }
 }
 
 void MdEditor::undo()
@@ -1222,6 +1230,7 @@ void MdEditor::refreshGrid()
         s.page = juce::jlimit(0, (s.length - 1) / 16, m_gridPage);
         s.step = m_proc.seqPlaying() && m_proc.seqPattern() == slot ? m_proc.seqStep() : -1;
         s.row = m_proc.seqPlaying() ? m_proc.seqSongRow() : -1;
+        s.seqOff = m_proc.apvts.getRawParameterValue(seqId())->load() < 0.5f;
         m_seqBar.setState(s);
     }
     MdTrackKeys::Grid g;
@@ -1725,7 +1734,7 @@ void MdEditor::timerCallback()
         m_keys.setMachine(t, idx);
         m_keys.setActive(t, m_proc.trackActivity(t) > 0.012f);
         if (t == 0) {
-            const bool seq = m_proc.apvts.getRawParameterValue(seqId())->load() >= 0.5f && m_proc.seqPattern() >= 0 && m_proc.bankHasPattern(m_proc.seqPattern());
+            const bool seq = m_proc.apvts.getRawParameterValue(seqId())->load() >= 0.5f && m_proc.seqPattern() >= 0;   // an empty pattern runs too
             m_keys.setSeq(m_proc.seqStep(), seq ? m_proc.seqLength() : 0, m_proc.seqTrigs(m_track));
             refreshGrid();
             {   // a finished recording run: one undo step

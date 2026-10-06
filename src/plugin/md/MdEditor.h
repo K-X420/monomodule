@@ -74,6 +74,8 @@ public:
     std::function<void(int step)> onStep, onHold;
     std::function<void(int step)> onStepMenu;
     std::function<void(int track)> onSelect, onMuteKey;   // Ctrl / Cmd + click: select; Alt + click: mute (as FUNC + trig)
+    int devSeqStep() const { return m_seqStep; }   // dev/tests
+    int devSeqLength() const { return m_seqLen; }
     void setSeq(int step, int length, uint64_t trigs)
     {
         if (m_seqStep != step || m_seqLen != length || m_seqTrigs != trigs) { m_seqStep = step; m_seqLen = length; m_seqTrigs = trigs; repaint(); }
@@ -163,6 +165,7 @@ public:
     one::KnobPage& devSynPage() { return m_syn; }
     MdSongEditor& devSongEditor() { return m_songEd; }
     void devOpenMidi() { openMidiPanel(); }
+    const MdTrackKeys& devKeys() const { return m_keys; }
     void devOpenSong(int slot) { m_songEd.setBounds(m_syn.getX(), m_syn.getY(), m_routing.getRight() - m_syn.getX(), m_out.getBottom() - m_syn.getY()); m_songEd.open(slot); }
     void showGrid(int held)   // dev/snapshot: the PATTERN tab, GRID on, a step held (-1 none)
     {
@@ -208,6 +211,7 @@ private:
         int slot = 0; std::shared_ptr<const mnm::mddump::Pattern> before, after; juce::String label;
         int song = -1; std::shared_ptr<const mnm::mddump::Song> songBefore, songAfter;   // a song edit (song >= 0)
     };
+    void seqOn();   // SEQ ON, when the user sequences (a step placed, REC armed)
     void doEditSong(int slot, const juce::String& label, const std::function<void(mnm::mddump::Song&)>& fn, int coalesce = -1);
     MdSongEditor m_songEd;
     MdMidiPanel m_midiPanel;

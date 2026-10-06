@@ -45,10 +45,10 @@ public:
     enum Part { None = -1, Play, Rec, Grid, TrkPrev, Trk, TrkNext, Mute, PtnPrev, Ptn, PtnNext, Pages, Edit, Step, kParts };
     static constexpr int kS = 2, kLcdH = 15;
     struct State {
-        bool playing = false, hostPlaying = false, grid = false, empty = true, muted = false, rec = false, recording = false;
+        bool playing = false, hostPlaying = false, grid = false, empty = true, muted = false, rec = false, recording = false, seqOff = false;
         int track = 0, pattern = 0, length = 16, page = 0, step = -1, row = -1;
         juce::String machine;
-        bool operator==(const State& o) const { return playing == o.playing && rec == o.rec && recording == o.recording && muted == o.muted && hostPlaying == o.hostPlaying && grid == o.grid && empty == o.empty && track == o.track && pattern == o.pattern && length == o.length && page == o.page && step == o.step && row == o.row && machine == o.machine; }
+        bool operator==(const State& o) const { return playing == o.playing && seqOff == o.seqOff && rec == o.rec && recording == o.recording && muted == o.muted && hostPlaying == o.hostPlaying && grid == o.grid && empty == o.empty && track == o.track && pattern == o.pattern && length == o.length && page == o.page && step == o.step && row == o.row && machine == o.machine; }
     };
     std::function<void(Part)> onPart;
     std::function<void(int)> onPage;
