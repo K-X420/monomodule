@@ -37,6 +37,7 @@ public:
     bool loadKit(const std::string& id);
     bool loadPatternKit(const std::string& patternId);
     void step(int dir);                                        // previous / next preset of this machine
+    void stepKit(int dir);                                     // previous / next kit (the kit list's order)
     void preview(const juce::String& kind, const std::string& id);   // a second click stops
     bool looping() const { return m_proc.previewLoop(); }
     void toggleLoop() { m_proc.previewSetLoop(!m_proc.previewLoop()); }

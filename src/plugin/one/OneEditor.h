@@ -75,6 +75,8 @@ public:
     ~OneEditor() override;
     void paint(juce::Graphics&) override;
     void paintOverChildren(juce::Graphics&) override;   // the drop-target frame
+    // Up / Down: the previous / next patch of the selector last used (presets, or kits on Six), as its arrows step
+    bool keyPressed(const juce::KeyPress& k) override;
     void resized() override;
     // Library drag and drop: a .mnmtrack lands on the selected track (or, on Six, the track key it is dropped
     // on); a .mnmkit fills a Six. Returns false with a message when the file cannot be applied.
@@ -111,6 +113,7 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> m_bpmSyncAttach;
     juce::Label m_status, m_fwPath;
     LcdButton m_menuButton{"MENU"};
+    bool m_browseKits = false;   // the arrow keys step kits (the KIT selector was used last), else presets
     // Six, on the face (also in MENU): POLY (spread the notes over tracks 1-6) and the selected track's sound copied to all
     LcdToggle m_poly{"POLY"};
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> m_polyAttach;

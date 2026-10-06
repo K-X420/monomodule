@@ -763,6 +763,29 @@ int main(int argc, char** argv)
         set(machineId(2), float(machineIndexOf(16)));
         std::printf("RAM test: RAM-R1 records the kicks of bar 1, RAM-P1 plays them in bar 2\n");
     }
+    if (const char* syx = std::getenv("MD_ARROW_TEST")) {   // Up / Down step the kit or sound selector used last (a scratch MNM_LIBRARY_DIR)
+        int fails = 0;
+        auto check = [&](bool ok, const juce::String& what) { std::printf("  %s %s\n", ok ? "ok  " : "FAIL", what.toRawUTF8()); fails += ok ? 0 : 1; };
+        if (!std::getenv("MNM_LIBRARY_DIR")) { std::printf("set MNM_LIBRARY_DIR to a scratch folder\n"); return 1; }
+        juce::SharedResourcePointer<MdLibrary> lib;
+        juce::String id;
+        lib->importSyx(juce::File(juce::String(syx)), &id);
+        std::unique_ptr<juce::AudioProcessorEditor> ed(proc.createEditor());
+        auto* med = dynamic_cast<MdEditor*>(ed.get());
+        med->devStripPart(MdKitStrip::KitNext);
+        const auto k1 = proc.loadedKitKey();
+        med->keyPressed(juce::KeyPress(juce::KeyPress::downKey));
+        const auto k2 = proc.loadedKitKey();
+        med->keyPressed(juce::KeyPress(juce::KeyPress::upKey));
+        check(k1.isNotEmpty() && k2.isNotEmpty() && k2 != k1 && proc.loadedKitKey() == k1, "after the kit arrow: Down loads the next kit, Up the one before");
+        med->devStripPart(MdKitStrip::SoundNext);
+        const auto s1 = proc.loadedSoundKey(0);
+        med->keyPressed(juce::KeyPress(juce::KeyPress::downKey));
+        check(s1.isNotEmpty() && proc.loadedSoundKey(0) != s1 && proc.loadedKitKey() == k1, "after the sound arrow: Down steps T1's sound, not the kit");
+        check(!med->keyPressed(juce::KeyPress(juce::KeyPress::downKey, juce::ModifierKeys::shiftModifier, 0)), "Shift+Down is left alone");
+        std::printf(fails ? "ARROW TEST FAILED (%d)\n" : "ARROW TEST OK\n", fails);
+        return fails ? 1 : 0;
+    }
     if (const char* syx = std::getenv("MD_LIB_IMPORT")) {   // the shared library: import, load a kit, a sound, save both
         juce::SharedResourcePointer<MdLibrary> lib;
         juce::String id;

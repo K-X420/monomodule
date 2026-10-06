@@ -160,6 +160,7 @@ public:
     void devStep(int s) { if (m_keys.onStep) m_keys.onStep(s); }
     void devHold(int s) { holdStep(s); }
     void devMuteKey(int t) { if (m_keys.onMuteKey) m_keys.onMuteKey(t); }
+    void devStripPart(MdKitStrip::Part p) { if (m_strip.onPart) m_strip.onPart(p); }
     void devUndo() { undo(); }
     void devRedo() { redo(); }
     one::KnobPage& devSynPage() { return m_syn; }
@@ -294,7 +295,8 @@ private:
     MdSeqBar m_seqBar;
     bool m_gridOn = false;
     int m_gridPage = 0, m_heldStep = -1, m_outTab = 0, m_ptnPoll = 0;
-    bool m_pagePinned = false;   // a page dot clicked while playing: GRID stays there (else it follows the playing page)
+    bool m_pagePinned = false;
+    bool m_browseKits = false;   // Up / Down step kits (the KIT selector was used last), else the track's sounds   // a page dot clicked while playing: GRID stays there (else it follows the playing page)
     std::array<std::string, 128> m_ptnNames;      // "A01", or "A01 --" for an empty slot
     std::array<const char*, 128> m_ptnNamePtrs{};
     juce::String m_bankBadge;

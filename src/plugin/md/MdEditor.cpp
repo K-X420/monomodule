@@ -620,6 +620,9 @@ MdEditor::MdEditor(MdProcessor& p)
                                static_cast<juce::Component*>(&m_strip)})
         addAndMakeVisible(c);
     m_strip.onPart = [this](MdKitStrip::Part part) {
+        if (part == MdKitStrip::KitPrev || part == MdKitStrip::KitNext || part == MdKitStrip::Kit) m_browseKits = true;
+        if (part == MdKitStrip::SoundPrev || part == MdKitStrip::SoundNext || part == MdKitStrip::Sound) m_browseKits = false;
+        grabKeyboardFocus();
         const bool wasKits = m_drop.isVisible() && m_drop.showingKits(), wasSounds = m_drop.isVisible() && !m_drop.showingKits();
         m_drop.setVisible(false);
         m_strip.setOpen(MdKitStrip::None);
@@ -672,12 +675,12 @@ MdEditor::MdEditor(MdProcessor& p)
         if (t >= 0) { loadSoundKey(t, key); if (t != m_track) selectTrack(t); }
     };
     m_panel.onOpenChanged = [this](bool open) { m_strip.setLibraryOpen(open); };
-    m_drop.onLoadKit = [this](const KitEntry& e) { loadKit(e); };
-    m_drop.onLoadSound = [this](const SoundEntry& e) { loadSound(e); };
+    m_drop.onLoadKit = [this](const KitEntry& e) { m_browseKits = true; loadKit(e); };
+    m_drop.onLoadSound = [this](const SoundEntry& e) { m_browseKits = false; loadSound(e); };
     m_drop.onImport = [this] { importSyx(); };
     m_drop.onAudition = [this](const juce::String& key, bool kit) { audition(key, kit ? int(MdLibraryPanel::Kits) : int(MdLibraryPanel::Sounds)); };
     m_drop.isPlaying = [this](const juce::String& key) { return m_proc.previewKey() == key; };
-    m_drop.onClosed = [this] { m_strip.setOpen(MdKitStrip::None); };
+    m_drop.onClosed = [this] { m_strip.setOpen(MdKitStrip::None); if (isShowing()) grabKeyboardFocus(); };
     m_drop.looping = [this] { return m_proc.previewLoop(); };
     m_drop.toggleLoop = [this] { m_proc.previewSetLoop(!m_proc.previewLoop()); };
     m_drop.onLibrary = [this](bool kits) {
@@ -1118,6 +1121,13 @@ void MdEditor::redo()
 bool MdEditor::keyPressed(const juce::KeyPress& k)
 {
     const auto mods = k.getModifiers();
+    if ((k.getKeyCode() == juce::KeyPress::upKey || k.getKeyCode() == juce::KeyPress::downKey) && !mods.isAnyModifierKeyDown()) {
+        // the previous / next kit or sound, as the strip's arrows step (the selector used last)
+        if (m_drop.isVisible()) m_drop.close();
+        const int dir = k.getKeyCode() == juce::KeyPress::upKey ? -1 : 1;
+        if (m_browseKits) stepKit(dir); else stepSound(dir);
+        return true;
+    }
     const int page = juce::jlimit(0, 3, m_gridPage);
     if ((k.getKeyCode() == juce::KeyPress::deleteKey || k.getKeyCode() == juce::KeyPress::backspaceKey) && m_gridOn) { pageOp(2, page); return true; }
     if (!mods.isCommandDown() && !mods.isCtrlDown()) return false;

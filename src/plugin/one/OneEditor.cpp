@@ -247,7 +247,10 @@ OneEditor::OneEditor(MnmOneProcessor& p)
 
     // the library: strip in the header, its list, the panel over the pages, the save dialog over everything
     addAndMakeVisible(m_strip);
+    setWantsKeyboardFocus(true);
     m_strip.onPart = [this](PresetStrip::Part part) {
+        if (part == PresetStrip::Kit) m_browseKits = true;
+        if (part == PresetStrip::Preset || part == PresetStrip::Prev || part == PresetStrip::Next) m_browseKits = false;
         switch (part) {
             case PresetStrip::Kit:     if (m_drop.isVisible() && m_drop.kits()) m_drop.close(); else openMenu(true); break;
             case PresetStrip::Preset:  if (m_drop.isVisible() && !m_drop.kits()) m_drop.close(); else openMenu(false); break;
@@ -259,8 +262,9 @@ OneEditor::OneEditor(MnmOneProcessor& p)
             case PresetStrip::None:    break;
         }
         updateStrip();
+        if (!m_drop.isVisible()) grabKeyboardFocus();   // the arrow keys step from here
     };
-    m_drop.onClosed = [this] { updateStrip(); };
+    m_drop.onClosed = [this] { updateStrip(); if (isShowing()) grabKeyboardFocus(); };
     m_drop.onLibrary = [this] { m_libPanel.setTab(m_drop.kits() ? LibraryPanel::Kits : LibraryPanel::Presets); openLibrary(); };
     m_libPanel.onOpenChanged = [this](bool) { updateStrip(); };
     m_libPanel.onPresetDragging = [this](juce::Point<int> screen) {
@@ -343,6 +347,19 @@ void OneEditor::selectTrack(int t)
     updateStrip();
     if (m_libPanel.isOpen()) m_libPanel.rebuild();   // "loaded" follows the track
     repaint();
+}
+
+bool OneEditor::keyPressed(const juce::KeyPress& k)
+{
+    const int code = k.getKeyCode();
+    if (code != juce::KeyPress::upKey && code != juce::KeyPress::downKey) return false;
+    if (k.getModifiers().isAnyModifierKeyDown()) return false;
+    if (m_drop.isVisible()) m_drop.setVisible(false);
+    const int dir = code == juce::KeyPress::upKey ? -1 : 1;
+    if (m_browseKits && m_lib.six()) m_lib.stepKit(dir);
+    else m_lib.step(dir);
+    updateStrip();
+    return true;
 }
 
 void OneEditor::openMenu(bool kits)

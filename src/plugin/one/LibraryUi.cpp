@@ -133,6 +133,19 @@ void LibraryBridge::step(int dir)
     loadPreset(list[size_t(i)]->id);
 }
 
+void LibraryBridge::stepKit(int dir)
+{
+    refresh();
+    const auto list = kits({}, false, {});
+    if (list.empty()) return;
+    const auto cur = m_proc.loadedKit().id.toStdString();
+    int i = -1;
+    for (int n = 0; n < int(list.size()); ++n) if (list[size_t(n)]->id == cur) i = n;
+    const int n = int(list.size());
+    i = i < 0 ? (dir > 0 ? 0 : n - 1) : (i + dir + n) % n;
+    loadKit(list[size_t(i)]->id);
+}
+
 void LibraryBridge::preview(const juce::String& kind, const std::string& id)
 {
     if (previewing(kind, id)) { m_proc.previewStop(); return; }
