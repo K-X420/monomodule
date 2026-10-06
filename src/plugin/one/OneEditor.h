@@ -111,6 +111,11 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> m_bpmSyncAttach;
     juce::Label m_status, m_fwPath;
     LcdButton m_menuButton{"MENU"};
+    // Six, on the face (also in MENU): POLY (spread the notes over tracks 1-6) and the selected track's sound copied to all
+    LcdToggle m_poly{"POLY"};
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> m_polyAttach;
+    LcdButton m_copyAll{"COPY T1 TO ALL"};
+    void copySoundToAll();
     MachineBar m_machineBar;
     BpmReadout m_bpm;
     LevelColumn m_level;

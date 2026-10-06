@@ -234,6 +234,14 @@ OneEditor::OneEditor(MnmOneProcessor& p)
     m_bpmAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(m_proc.apvts, bpmId(), m_bpm);
     addAndMakeVisible(m_bpmSync);
     m_bpmSyncAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(m_proc.apvts, bpmSyncId(), m_bpmSync);
+    if (m_proc.numTracks() > 1) {   // Six: POLY and copy-to-all on the face
+        addAndMakeVisible(m_poly);
+        m_polyAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(m_proc.apvts, polyId(), m_poly);
+        m_poly.setTooltip("POLY: notes on any channel spread over tracks 1-6 (a free track each), so one MIDI track plays chords");
+        addAndMakeVisible(m_copyAll);
+        m_copyAll.setTooltip("Copy the selected track's sound to the other tracks (locked tracks keep theirs): the same sound on all six, for POLY");
+        m_copyAll.onClick = [this] { copySoundToAll(); };
+    }
     m_bpmSync.onStateChange = [this] { m_bpm.setSynced(m_bpmSync.getToggleState()); };
     m_bpm.setSynced(m_bpmSync.getToggleState());
 
@@ -313,6 +321,14 @@ void OneEditor::bindTrackPages()
     m_levelAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(m_proc.apvts, levelId(t), m_level);
 }
 
+void OneEditor::copySoundToAll()
+{
+    juce::String error;
+    if (!m_proc.copySoundToAllTracks(m_track, error))
+        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Copy Sound", error);
+    repaint();
+}
+
 void OneEditor::selectTrack(int t)
 {
     t = juce::jlimit(0, m_proc.numTracks() - 1, t);
@@ -320,6 +336,7 @@ void OneEditor::selectTrack(int t)
     if (m_picker.isOpen()) m_picker.close(false);
     m_drop.setVisible(false);
     m_track = t;
+    m_copyAll.setButtonText("COPY T" + juce::String(t + 1) + " TO ALL");
     if (m_trackColumn) m_trackColumn->setSelected(t);
     bindTrackPages();
     resized();   // the machine block's width follows the track's machine
@@ -478,13 +495,7 @@ void OneEditor::showConfigMenu()
         case 60:
             if (auto* p = m_proc.apvts.getParameter(polyId())) p->setValueNotifyingHost(p->getValue() >= 0.5f ? 0.0f : 1.0f);
             break;
-        case 61: {
-            juce::String error;
-            if (!m_proc.copySoundToAllTracks(m_track, error))
-                juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Copy Sound", error);
-            repaint();
-            break;
-        }
+        case 61: copySoundToAll(); break;
         case 3:
             m_showStatus = !m_showStatus;
             m_status.setVisible(m_showStatus);
@@ -657,6 +668,13 @@ void OneEditor::resized()
         const int x0 = m_machineBar.getRight() + 12, x1 = m_bpmLabel.getX() - 4;
         const int w = m_strip.preferredWidth(juce::jmax(0, x1 - x0));
         m_strip.setBounds(x0 + (x1 - x0 - w) / 2, top, w, PresetStrip::kLcdH * PresetStrip::kS);
+    }
+    if (m_proc.numTracks() > 1) {   // Six: POLY and COPY TO ALL under the library strip, at its left
+        const int y = m_strip.getBottom() + 6, h = m_bpmSync.getHeight();
+        const int x = m_machineBar.getRight() + 12;
+        auto widthOf = [](const juce::String& s) { return (LcdCanvas::textWidth(spec::kFontBold8, s.toRawUTF8()) + 10) * kScale; };
+        m_poly.setBounds(x, y, widthOf("POLY"), h);
+        m_copyAll.setBounds(m_poly.getRight() + 10, y, widthOf("COPY T6 TO ALL"), h);
     }
     if (m_showStatus) {   // beside the machine block
         const int statusX = m_machineBar.getRight() + 10;
