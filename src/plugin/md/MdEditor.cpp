@@ -729,11 +729,8 @@ MdEditor::MdEditor(MdProcessor& p)
                 m_proc.setInternalPlay(on);
                 break;
             }
-            case MdSeqBar::Grid:
-                m_gridOn = !m_gridOn;
-                if (!m_gridOn) holdStep(-1);
-                if (m_outTab == 1) m_out.pull();
-                break;
+            case MdSeqBar::Grid: toggleGrid(); break;
+            case MdSeqBar::Mix: toggleMixer(); break;
             case MdSeqBar::Edit: doublePattern(); return;
             case MdSeqBar::Rec: m_proc.setRecord(!m_proc.recordArmed()); if (m_proc.recordArmed()) seqOn(); break;
             case MdSeqBar::Mute: toggleMute(m_track); break;
@@ -751,6 +748,36 @@ MdEditor::MdEditor(MdProcessor& p)
         refreshGrid();
     };
     addChildComponent(m_songEd);
+    addChildComponent(m_mixer);
+    m_mixer.setWantsKeyboardFocus(true);
+    m_mixer.strip = [this](int t) {
+        MdMixer::Strip s;
+        const int mi = juce::jlimit(0, kNumMachines - 1, int(std::lround(m_proc.apvts.getRawParameterValue(machineId(t))->load())));
+        s.family = familyOf(mi);
+        s.machine = shortOf(mi);
+        s.level = int(std::lround(m_proc.apvts.getRawParameterValue(levelId(t))->load()));
+        s.pan = int(std::lround(m_proc.apvts.getRawParameterValue(panId(t))->load()));
+        s.mute = m_proc.apvts.getRawParameterValue(muteId(t))->load() >= 0.5f;
+        s.solo = m_proc.soloed(t);
+        s.active = m_proc.trackActivity(t) > 0.012f;
+        s.selected = t == m_track;
+        s.peak = m_proc.trackPeak(t);
+        return s;
+    };
+    m_mixer.set = [this](int t, MdMixer::What what, int v) {
+        if (what == MdMixer::Select) { selectTrack(t); return; }
+        if (what == MdMixer::Solo) { m_proc.setSolo(t, v != 0); return; }
+        auto* p = m_proc.apvts.getParameter(what == MdMixer::Level ? levelId(t) : what == MdMixer::Pan ? panId(t) : muteId(t));
+        if (!p) return;
+        const float to = what == MdMixer::Mute ? (v != 0 ? 1.0f : 0.0f) : p->convertTo0to1(float(v));
+        if (what == MdMixer::Mute) p->beginChangeGesture();
+        p->setValueNotifyingHost(to);
+        if (what == MdMixer::Mute) { p->endChangeGesture(); refreshGrid(); }
+    };
+    m_mixer.gesture = [this](int t, MdMixer::What what, bool begin) {
+        if (auto* p = m_proc.apvts.getParameter(what == MdMixer::Level ? levelId(t) : panId(t))) { if (begin) p->beginChangeGesture(); else p->endChangeGesture(); }
+    };
+    m_mixer.onClose = [this] { grabKeyboardFocus(); };
     addChildComponent(m_midiPanel);
     m_midiPanel.get = [this] {
         const auto s = m_proc.midiSettings();
@@ -1022,8 +1049,28 @@ void MdEditor::stepMenu(int s)
     });
 }
 
+void MdEditor::toggleGrid()
+{
+    m_gridOn = !m_gridOn;
+    if (!m_gridOn) holdStep(-1);
+    if (m_outTab == 1) m_out.pull();
+    refreshGrid();
+}
+
+void MdEditor::toggleMixer()
+{
+    if (m_mixer.isVisible()) { m_mixer.close(); return; }
+    m_midiPanel.setVisible(false);
+    m_songEd.setVisible(false);
+    m_mixer.setBounds(m_syn.getX(), m_syn.getY(), m_routing.getRight() - m_syn.getX(), m_out.getBottom() - m_syn.getY());
+    m_mixer.setVisible(true);
+    m_mixer.toFront(true);
+    m_mixer.grabKeyboardFocus();
+}
+
 void MdEditor::openMidiPanel()
 {
+    m_mixer.setVisible(false);
     m_midiPanel.setBounds(m_syn.getX(), m_syn.getY(), m_routing.getRight() - m_syn.getX(), m_out.getBottom() - m_syn.getY());
     m_midiPanel.setVisible(true);
     m_midiPanel.toFront(true);
@@ -1128,6 +1175,8 @@ bool MdEditor::keyPressed(const juce::KeyPress& k)
         if (m_browseKits) stepKit(dir); else stepSound(dir);
         return true;
     }
+    if (!mods.isAnyModifierKeyDown() && (k.getKeyCode() == 'G' || k.getKeyCode() == 'g')) { toggleGrid(); return true; }   // GRID on / off
+    if (!mods.isAnyModifierKeyDown() && (k.getKeyCode() == 'M' || k.getKeyCode() == 'm')) { toggleMixer(); return true; }   // the mixer
     const int page = juce::jlimit(0, 3, m_gridPage);
     if ((k.getKeyCode() == juce::KeyPress::deleteKey || k.getKeyCode() == juce::KeyPress::backspaceKey) && m_gridOn) { pageOp(2, page); return true; }
     if (!mods.isCommandDown() && !mods.isCtrlDown()) return false;
@@ -1237,6 +1286,7 @@ void MdEditor::doublePattern()
 
 void MdEditor::openSongEditor()
 {
+    m_mixer.setVisible(false);
     m_songEd.setBounds(m_syn.getX(), m_syn.getY(), m_routing.getRight() - m_syn.getX(), m_out.getBottom() - m_syn.getY());
     m_songEd.open(juce::jlimit(0, 31, int(std::lround(m_proc.apvts.getRawParameterValue(songId())->load()))));
     m_songEd.grabKeyboardFocus();
@@ -1337,6 +1387,7 @@ void MdEditor::refreshGrid()
         s.playing = m_proc.seqPlaying() || m_proc.internalPlay();
         s.hostPlaying = m_proc.hostPlaying();
         s.grid = m_gridOn;
+        s.mix = m_mixer.isVisible();
         s.track = m_track;
         s.muted = m_proc.apvts.getRawParameterValue(muteId(m_track))->load() >= 0.5f;
         s.rec = m_proc.recordArmed();
@@ -1470,6 +1521,7 @@ void MdEditor::showMenu()
     outputs.addItem(40, "HARDWARE (MAIN A/B, OUT C/D, OUT E/F)", true, outMode == int(OutputMode::Hardware));
     outputs.addItem(41, "PER TRACK (TRACK 1-16, WHERE ENABLED)", true, outMode == int(OutputMode::Tracks));
     m.addSubMenu("PLUGIN OUTPUTS", outputs);
+    m.addItem(16, "MIXER  (M)", true, m_mixer.isVisible());
     m.addItem(11, "MIDI SETTINGS...");
     m.addSeparator();
     {
@@ -1488,6 +1540,7 @@ void MdEditor::showMenu()
     m.addItem(8, "PLUGIN INFO...");
     m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&m_menuButton), [this](int r) {
         if (r == 11) { openMidiPanel(); return; }
+        if (r == 16) { toggleMixer(); return; }
         if (r == 12) { openSongEditor(); return; }
         if (r == 13) { saveBankToLibrary(); return; }
         if (r == 14) { undo(); return; }
@@ -1876,6 +1929,7 @@ void MdEditor::timerCallback()
                 while (m_proc.takeRecordedEdit(re)) { m_undo.push_back({re.slot, re.before, re.after, "recording"}); m_redo.clear(); m_lastCoalesce = -1; }
                 if (m_proc.recording()) m_seqBar.repaint();   // the blinking dot
                 if (m_songEd.isVisible()) m_songEd.repaint();
+                if (m_mixer.isVisible()) m_mixer.repaint();   // the meters
             }
             if (m_outTab == 1) m_out.pull();
             if (m_heldStep >= 0) for (auto* pg : {&m_syn, &m_fx, &m_routing, &m_lfo}) pg->pull();

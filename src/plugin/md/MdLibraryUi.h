@@ -42,14 +42,14 @@ private:
 // page GRID shows; a click shows that page) and the playing step (SONG: the row as well).
 class MdSeqBar : public juce::Component, public juce::SettableTooltipClient {
 public:
-    enum Part { None = -1, Play, Rec, Grid, TrkPrev, Trk, TrkNext, Mute, PtnPrev, Ptn, PtnNext, Pages, Edit, Step, kParts };
+    enum Part { None = -1, Play, Rec, Grid, TrkPrev, Trk, TrkNext, Mute, PtnPrev, Ptn, PtnNext, Pages, Edit, Mix, Step, kParts };
     static constexpr int kS = 2, kLcdH = 15;
     struct State {
-        bool playing = false, hostPlaying = false, grid = false, empty = true, muted = false, rec = false, recording = false, seqOff = false;
+        bool playing = false, hostPlaying = false, grid = false, mix = false, empty = true, muted = false, rec = false, recording = false, seqOff = false;
         juce::String flash;   // a short confirmation in the STEP box ("COPIED PAGE 1")
         int track = 0, pattern = 0, length = 16, page = 0, step = -1, row = -1;
         juce::String machine;
-        bool operator==(const State& o) const { return playing == o.playing && flash == o.flash && seqOff == o.seqOff && rec == o.rec && recording == o.recording && muted == o.muted && hostPlaying == o.hostPlaying && grid == o.grid && empty == o.empty && track == o.track && pattern == o.pattern && length == o.length && page == o.page && step == o.step && row == o.row && machine == o.machine; }
+        bool operator==(const State& o) const { return playing == o.playing && mix == o.mix && flash == o.flash && seqOff == o.seqOff && rec == o.rec && recording == o.recording && muted == o.muted && hostPlaying == o.hostPlaying && grid == o.grid && empty == o.empty && track == o.track && pattern == o.pattern && length == o.length && page == o.page && step == o.step && row == o.row && machine == o.machine; }
     };
     std::function<void(Part)> onPart;
     std::function<void(int)> onPage;
@@ -127,6 +127,39 @@ private:
     void change(int cell, int to);
     int cellValue(const Values& v, int c) const;
     int m_drag = -1, m_dragY = 0, m_dragV = 0;
+};
+
+// The mixer, over the pages: the 16 tracks side by side, each with its machine, PAN, LEVEL (with its meter), MUTE and
+// SOLO. Drag (or wheel) a fader or a pan, double-click one for its default; click a track's name to select it.
+// Shift + click MUTE / SOLO: that track alone (the others unmuted / unsoloed).
+class MdMixer : public juce::Component {
+public:
+    static constexpr int kS = 3;
+    enum What { Level, Pan, Mute, Solo, Select };
+    struct Strip { juce::String family, machine; int level = 100, pan = 64; bool mute = false, solo = false, active = false, selected = false; float peak = 0; };
+    std::function<Strip(int)> strip;
+    std::function<void(int track, What, int value)> set;   // Mute / Solo: value 1 on, 0 off; Select: value unused
+    std::function<void(int track, What, bool begin)> gesture;
+    std::function<void()> onClose;
+    void paint(juce::Graphics&) override;
+    void mouseDown(const juce::MouseEvent&) override;
+    void mouseDrag(const juce::MouseEvent&) override;
+    void mouseUp(const juce::MouseEvent&) override;
+    void mouseDoubleClick(const juce::MouseEvent&) override;
+    void mouseWheelMove(const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
+    bool keyPressed(const juce::KeyPress& k) override;
+    void close() { setVisible(false); if (onClose) onClose(); }
+private:
+    struct Hit { int track = -1; What what = Select; };
+    Hit hitAt(juce::Point<int> lcd) const;
+    int colW() const { return (getWidth() / kS - 6) / 16; }
+    int colX(int t) const { return 3 + t * colW(); }
+    juce::Rectangle<int> panRect(int t) const;
+    juce::Rectangle<int> faderRect(int t) const;
+    juce::Rectangle<int> buttonRect(int t, bool solo) const;
+    int levelAt(int t, int y) const;
+    int panAt(int t, int x) const;
+    Hit m_drag;
 };
 
 class MdLibraryDrop : public juce::Component {

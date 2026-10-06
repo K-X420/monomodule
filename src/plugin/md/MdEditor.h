@@ -166,6 +166,9 @@ public:
     one::KnobPage& devSynPage() { return m_syn; }
     MdSongEditor& devSongEditor() { return m_songEd; }
     void devOpenMidi() { openMidiPanel(); }
+    void devToggleMixer() { toggleMixer(); }
+    MdMixer& devMixer() { return m_mixer; }
+    bool devGridOn() const { return m_gridOn; }
     const MdTrackKeys& devKeys() const { return m_keys; }
     void devBarClick(MdSeqBar::Part p, int page, const juce::ModifierKeys& mods) { if (m_seqBar.onEditClick) m_seqBar.onEditClick(p, page, mods); }
     void devBarPart(MdSeqBar::Part p) { if (m_seqBar.onPart) m_seqBar.onPart(p); }
@@ -230,6 +233,9 @@ private:
     MdSongEditor m_songEd;
     MdMidiPanel m_midiPanel;
     void openMidiPanel();
+    MdMixer m_mixer;
+    void toggleMixer();
+    void toggleGrid();
     std::vector<UndoStep> m_undo, m_redo;
     int m_lastCoalesce = -1;
     juce::int64 m_lastEditMs = 0;

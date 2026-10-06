@@ -600,7 +600,7 @@ void MdProcessor::seqGenerate(const Segment& seg, double from, double to, double
     for (size_t i = first; i < m_seqTrigs.size(); ++i) {
         auto& s = m_seqTrigs[i];
         s.clock += seg.origin;
-        if (m_tracks[size_t(s.track)].mute->load() >= 0.5f || ((seg.mutes >> s.track) & 1)) continue;   // muted: no trig
+        if (silenced(s.track) || ((seg.mutes >> s.track) & 1)) continue;   // muted: no trig
         if (&seg == &m_seg && m_recSkip[size_t(s.track)] == s.stepIndex) { m_recSkip[size_t(s.track)] = -1; continue; }   // played live already
         const double host = (s.clock - m_seqClock0) / m_seqCps;
         m_pending.push_back({s.track, juce::jmax(0.0, host * ratio), s.accent ? seg.accentOn : -128, int(i)});
@@ -1146,7 +1146,7 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
         } else if (m.isNoteOn()) {   // a trig: the note map, on the base channel
             if (base < 0 || m.getChannel() != base + 1) continue;
             const int t = m_noteTrack[size_t(m.getNoteNumber() & 127)].load();
-            if (t >= 0 && t < kTracks && m_tracks[size_t(t)].mute->load() < 0.5f) {
+            if (t >= 0 && t < kTracks && !silenced(t)) {
                 m_pending.push_back({t, meta.samplePosition * ratio, int(m.getVelocity()), -1, false});
                 recordTrig(t, m_seqClock0 + meta.samplePosition * m_seqCps, int(m.getVelocity()));
             }
@@ -1214,7 +1214,7 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
                     recordPush({1, int8_t(pt.track), int8_t(q), int8_t(s->step), int16_t(kitParam(pt.track, q)), int16_t(m_seg.slot)});
         const auto* ok = m_kitOverride.load();
         const int g = (ok ? *ok : m_baseKit).trigGroups[pt.track];
-        if (g < kTracks && g != pt.track && m_tracks[size_t(g)].mute->load() < 0.5f) fireOne(g, pt.enginePos, accent, nullptr);
+        if (g < kTracks && g != pt.track && !silenced(g)) fireOne(g, pt.enginePos, accent, nullptr);
     };
     while (m_fifoLen < needed) {
         const double passEnd = double(m_fifoLen + kBlock);

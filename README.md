@@ -52,7 +52,7 @@ patterns along.
 
 | Do | How |
 |---|---|
-| Place steps | **GRID** on, then click the keys (they are the selected track's steps). **TRK < >** picks the track |
+| Place steps | **GRID** (or the **G** key) on, then click the keys (they are the selected track's steps). **TRK < >** picks the track |
 | Lock parameters on a step | **Shift+click** the step, turn knobs (they are that step's locks); double-click a knob to clear its lock; Shift+click again to release |
 | Step menu (accent, slide, swing, clear locks) | Right-click a step |
 | Select / mute a track in GRID | **Ctrl+click** / **Alt+click** a key (key n = track n), or **M** on the bar |
@@ -65,6 +65,8 @@ patterns along.
 | Songs | MODE = SONG on the OUT tab; MENU > EDIT SONG to edit its rows |
 | Keep your edits | Saved with the Ableton set; MENU > SAVE PATTERNS + SONGS TO LIBRARY puts them in the Library project |
 | MIDI channel, note map, program change, MIDI out | MENU > MIDI SETTINGS |
+| Mixer (all 16 levels, pans, mutes, solos) | **MIX** on the bar or the **M** key; Shift+click M / S = only that track |
+| Browse kits / sounds | Click the KIT or sound selector, then **Up / Down** (on One / Six: presets, or kits after the KIT selector) |
 
 ## Installing on macOS (pre-release builds)
 

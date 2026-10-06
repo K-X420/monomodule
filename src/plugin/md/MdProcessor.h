@@ -119,6 +119,11 @@ public:
     // The track's output level for the LEV fader's meter, as Monomodule's: linear peak at the plugin's output scale,
     // falling off x0.8 per host block so it stays readable between UI polls
     float trackPeak(int t) const { return m_peak[size_t(t)].load(); }
+    // SOLO (the mixer's; not saved): while any track is soloed, the others ignore their trigs, as a mute
+    void setSolo(int t, bool on) { if (on) m_solo.fetch_or(1u << t); else m_solo.fetch_and(~(1u << t)); }
+    bool soloed(int t) const { return (m_solo.load() >> t) & 1u; }
+    void clearSolo() { m_solo.store(0); }
+    bool silenced(int t) const { const auto s = m_solo.load(); return m_tracks[size_t(t)].mute->load() >= 0.5f || (s != 0 && !((s >> t) & 1u)); }
     mnm::md::Engine* engineForTests() { return m_engine.get(); }   // dev: md-plugintest probes
 
     // Pattern playback (message thread): the pattern bank is a project's patterns and kits (kept in the plugin state).
@@ -270,6 +275,7 @@ private:
     void mixPreview(juce::AudioBuffer<float>& buffer);
     std::array<std::atomic<float>, kTracks> m_activity{};
     std::array<std::atomic<float>, kTracks> m_peak{};
+    std::atomic<uint32_t> m_solo{0};
     std::array<std::atomic<bool>, kTracks> m_machineChanged{};   // message thread: load that machine's defaults
     // per-machine knob memory (state, not parameters): the eight values of every machine a track has visited, as
     // Monomodule keeps its SYN values; a machine change brings back that machine's values (else its defaults)

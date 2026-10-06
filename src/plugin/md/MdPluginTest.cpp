@@ -763,6 +763,53 @@ int main(int argc, char** argv)
         set(machineId(2), float(machineIndexOf(16)));
         std::printf("RAM test: RAM-R1 records the kicks of bar 1, RAM-P1 plays them in bar 2\n");
     }
+    if (std::getenv("MD_MIXER_TEST")) {   // G = GRID, M = the mixer; its faders, mutes and solos
+        int fails = 0;
+        auto check = [&](bool ok, const juce::String& what) { std::printf("  %s %s\n", ok ? "ok  " : "FAIL", what.toRawUTF8()); fails += ok ? 0 : 1; };
+        proc.prepareToPlay(48000.0, 480);
+        std::unique_ptr<juce::AudioProcessorEditor> ed(proc.createEditor());
+        auto* med = dynamic_cast<MdEditor*>(ed.get());
+        const bool g0 = med->devGridOn();
+        med->keyPressed(juce::KeyPress('g'));
+        const bool g1 = med->devGridOn();
+        med->keyPressed(juce::KeyPress('g'));
+        check(!g0 && g1 && !med->devGridOn(), "G turns GRID on, and off again");
+        med->keyPressed(juce::KeyPress('m'));
+        auto& mx = med->devMixer();
+        check(mx.isVisible() && mx.getWidth() > 0, "M opens the mixer");
+        mx.set(2, MdMixer::Level, 64);
+        mx.set(2, MdMixer::Pan, 10);
+        check(std::lround(proc.apvts.getRawParameterValue(levelId(2))->load()) == 64 && std::lround(proc.apvts.getRawParameterValue(panId(2))->load()) == 10
+              && mx.strip(2).level == 64 && mx.strip(2).pan == 10, "T3's fader and pan set its LEVEL and PAN");
+        mx.set(4, MdMixer::Mute, 1);
+        check(proc.apvts.getRawParameterValue(muteId(4))->load() >= 0.5f && mx.strip(4).mute, "MUTE mutes T5");
+        mx.set(4, MdMixer::Mute, 0);
+        auto trigs = [&](int note) {
+            proc.setTrigLogging(true);
+            juce::MidiBuffer in; in.addEvent(juce::MidiMessage::noteOn(1, note, uint8_t(100)), 0);
+            juce::AudioBuffer<float> buf(2, 480);
+            proc.processBlock(buf, in);
+            return proc.trigLog().size();
+        };
+        mx.set(1, MdMixer::Solo, 1);
+        const auto other = trigs(36), soloed = trigs(38);   // the note map: T1 36, T2 38
+        check(proc.soloed(1) && other == 0 && soloed == 1, "SOLO T2: T1's trig is silenced, T2's plays");
+        mx.set(1, MdMixer::Solo, 0);
+        check(trigs(36) == 1, "unsoloed: T1 plays again");
+        mx.set(6, MdMixer::Select, 0);
+        check(mx.strip(6).selected, "a click on T7's name selects it");
+        if (argc > 3) {
+            mx.set(1, MdMixer::Solo, 1); mx.set(4, MdMixer::Mute, 1);
+            auto img = ed->createComponentSnapshot(ed->getLocalBounds(), true, 1.0f);
+            juce::File png{juce::String(argv[3])}; png.deleteFile();
+            if (auto s = png.createOutputStream()) { juce::PNGImageFormat().writeImageToStream(img, *s); std::printf("wrote %s\n", argv[3]); }
+        }
+        med->keyPressed(juce::KeyPress(juce::KeyPress::escapeKey));
+        mx.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey));
+        check(!mx.isVisible(), "Escape closes it");
+        std::printf(fails ? "MIXER TEST FAILED (%d)\n" : "MIXER TEST OK\n", fails);
+        return fails ? 1 : 0;
+    }
     if (const char* syx = std::getenv("MD_ARROW_TEST")) {   // Up / Down step the kit or sound selector used last (a scratch MNM_LIBRARY_DIR)
         int fails = 0;
         auto check = [&](bool ok, const juce::String& what) { std::printf("  %s %s\n", ok ? "ok  " : "FAIL", what.toRawUTF8()); fails += ok ? 0 : 1; };
