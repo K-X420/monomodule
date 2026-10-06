@@ -39,6 +39,33 @@ you put it: Monomodule reads it each time it starts and never copies it or redis
 Monomodule MD needs the **Machinedrum UW OS 1.63** (`Elektron_SPS1-1UW_OS1.63.syx`), also a free download from
 Elektron's Machinedrum support page. The first time you open Monomodule MD it asks for it the same way.
 
+## Using Monomodule MD
+
+**Sounds.** Pick a machine with the logo block (top left); the four pages are the track's SYNTHESIS, EFFECTS, ROUTING
+and LFO. The 16 keys at the bottom select tracks (L = keep the sound when a kit loads, M = mute). MIDI notes on the base
+channel (default 1, notes C1-D3) play the tracks. Load kits from the **KIT** list or drop `.syx` files on the window.
+
+**Sequencer.** The bar under the kit strip runs the Machinedrum's own sequencer (patterns of up to 64 steps, parameter
+locks, slides, accents, swing, the four speeds, song mode). SEQ is on by default, so **Ableton's play runs the pattern**;
+**PLAY** runs it on the plugin's own clock when Ableton is stopped. A kit loaded from a project brings that project's
+patterns along.
+
+| Do | How |
+|---|---|
+| Place steps | **GRID** on, then click the keys (they are the selected track's steps). **TRK < >** picks the track |
+| Lock parameters on a step | **Shift+click** the step, turn knobs (they are that step's locks); double-click a knob to clear its lock; Shift+click again to release |
+| Step menu (accent, slide, swing, clear locks) | Right-click a step |
+| Select / mute a track in GRID | **Ctrl+click** / **Alt+click** a key (key n = track n), or **M** on the bar |
+| Pages (17-64) | The page dots: click to show a page |
+| Copy / paste / clear | **Shift / Ctrl / Alt + click** on a page dot (that page), **TRK** (the track) or **PTN** (the pattern). Keys: Ctrl+C / Ctrl+V / Delete on the shown page |
+| Double the pattern | **X2** or Ctrl+D |
+| Undo / redo | Ctrl+Z / Ctrl+Shift+Z (also in MENU) |
+| Live recording | **REC**, then play: notes and track keys go onto the nearest step, knob turns become locks |
+| Length, speed, swing, accent, kit | The OUTPUT panel's **PATTERN** tab |
+| Songs | MODE = SONG on the OUT tab; MENU > EDIT SONG to edit its rows |
+| Keep your edits | Saved with the Ableton set; MENU > SAVE PATTERNS + SONGS TO LIBRARY puts them in the Library project |
+| MIDI channel, note map, program change, MIDI out | MENU > MIDI SETTINGS |
+
 ## Installing on macOS (pre-release builds)
 
 The macOS zip (`Monomodule-<version>-macos-universal.zip`) runs on Apple Silicon and Intel Macs, macOS 12 or later.
