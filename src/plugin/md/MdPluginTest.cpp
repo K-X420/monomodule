@@ -8,6 +8,7 @@
 #include "MdProcessor.h"
 #include "MdEditor.h"
 #include "MdPreview.h"
+#include "MdMachineText.h"
 
 int main(int argc, char** argv)
 {
@@ -22,6 +23,29 @@ int main(int argc, char** argv)
             std::printf("%s %dx%d (lit %dx%d)\n", gname, b->w, b->h, lb.w, lb.h);
             for (int y = lb.y; y < lb.y + lb.h; ++y) { std::printf("    "); for (int x = lb.x; x < lb.x + lb.w; ++x) std::printf("%s", b->lit(x, y) ? "#" : "."); std::printf("\n"); }
         }
+        return 0;
+    }
+    if (const char* mdos = std::getenv("MD_SCAN_ICONS")) {   // dev: every icon descriptor in the MD OS (the Monomachine's format), as text
+        const auto fw = mnm::md::loadFirmware(std::filesystem::path(mdos));
+        const auto& os = fw.mainOs;
+        const uint32_t base = mnm::md::kMainOsBase, end = base + uint32_t(os.size());
+        auto u32 = [&](uint32_t a) -> uint32_t { const size_t o = a - base; return (uint32_t(os[o]) << 24) | (uint32_t(os[o + 1]) << 16) | (uint32_t(os[o + 2]) << 8) | os[o + 3]; };
+        const int minW = std::getenv("MD_SCAN_MINW") ? std::atoi(std::getenv("MD_SCAN_MINW")) : 12;
+        int found = 0;
+        for (uint32_t a = base; a + 20 <= end; a += 2) {
+            const uint32_t w = u32(a), h = u32(a + 4), n = u32(a + 8), px = u32(a + 12), mask = u32(a + 16);
+            if (w < 1 || w > 128 || h < 1 || h > 32 || n < 1 || n > 64 || (mask != px + 4 * w && mask != 0) || px < base || px + 4 * w > end || (mask && mask + 4 * w > end)) continue;
+            ++found;
+            if (int(w) < minW) continue;
+            std::printf("@%06X w=%u h=%u n=%u\n", a, w, h, n);
+            for (uint32_t r = 0; r < h; ++r) {
+                std::printf("    ");
+                for (uint32_t c = 0; c < w; ++c) std::printf("%s", (u32(px + 4 * c) >> (32 - h + r)) & 1 ? "#" : ".");
+                std::printf("\n");
+            }
+        }
+        if (const char* out = std::getenv("MD_SCAN_DUMP")) { if (FILE* f = std::fopen(out, "wb")) { std::fwrite(os.data(), 1, os.size(), f); std::fclose(f); } }   // the decoded MainOS
+        std::printf("%d descriptors\n", found);
         return 0;
     }
     if (std::getenv("MD_PRINT_SIZE")) { std::printf("sizeof(MdProcessor) = %zu\n", sizeof(mnm::plugin::md::MdProcessor)); return 0; }
@@ -1246,6 +1270,7 @@ int main(int argc, char** argv)
             std::printf(fails ? "DROP TEST FAILED (%d)\n" : "DROP TEST OK\n", fails);
             return fails ? 1 : 0;
         }
+        if (const char* st = std::getenv("MD_UI_BADGES")) mnm::plugin::md::text::romBadges().style.store(std::atoi(st));   // 0 framed, 1 bare, -1 the drawn logos
         if (const char* m = std::getenv("MD_UI_MACHINE"))   // track 1's machine for the snapshot (an MD machine ID)
             if (auto* pp = proc.apvts.getParameter(machineId(0))) { pp->setValueNotifyingHost(pp->convertTo0to1(float(machineIndexOf(std::atoi(m))))); proc.syncMachineSideEffects(); }
         std::unique_ptr<juce::AudioProcessorEditor> ed(proc.createEditor());

@@ -4,6 +4,7 @@
 #include <juce_audio_formats/juce_audio_formats.h>
 #include "MdEditor.h"
 #include "SharedSettings.h"
+#include "MdMachineText.h"
 
 namespace mnm::plugin::md {
 
@@ -107,6 +108,7 @@ void MdProcessor::loadEngine()
     try {
         auto fw = std::make_unique<mnm::md::Firmware>(mnm::md::loadFirmware(m_firmwarePath.toStdString()));
         auto engine = std::make_unique<mnm::md::Engine>(*fw);
+        text::readRomBadges(fw->mainOs, mnm::md::kMainOsBase);   // the family badges, for the logos
         m_fw = std::move(fw); m_engine = std::move(engine);
         m_snap = true;
         m_status = "OS loaded: " + juce::File(m_firmwarePath).getFileName();

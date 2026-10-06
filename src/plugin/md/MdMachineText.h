@@ -1,5 +1,4 @@
-// Monomodule MD: the machine picker's words and logos. Each family has a logo (an original wordmark in the LCD's style:
-// the Machinedrum's OS has no family artwork to read, unlike the Monomachine's boot-splash logos), shown in the machine
+// Monomodule MD: the machine picker's words and logos. Each family has a logo, shown in the machine
 // block and the picker's column header, and a blurb; a hovered machine shows its own description there. ASCII caps (the LCD faces have no lowercase), words of at
 // most 8 characters (a column line holds about 8 at the picker's text size). Names follow the Machinedrum manual's
 // machine reference (rev J, OS 1.53: E12-BC "BONGO CONGO", P-I-ML "METALLICA", INP-EA/EB play the input as a drum with
@@ -10,6 +9,8 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <atomic>
+#include <vector>
 #include "MdLogos.h"
 
 namespace mnm::plugin::md::text {
@@ -62,10 +63,63 @@ inline const char* machineText(int id)
     return nullptr;
 }
 
-// A family's logo (MdLogos.h, made by make_logos.py): 1-bit art at the LCD's resolution, each family in a type of its
-// own as the Monomachine's are, all in one box. GND has none, as on the Monomachine: its name is printed.
+// The Machinedrum's own family badges: five boxed 23x13 icons in the OS (E-12, EFM, P-I, TRX, UW), read from the
+// user's OS file when it loads (nothing of Elektron's is in this source). Icon descriptors as the Monomachine's
+// (20 bytes of big-endian u32: w, h, n, ->pixels, ->mask; pixels = w columns of u32, row r = bit 32-h+r), found as
+// five such descriptors back to back. ROM and RAM (the UW machines) show UW.
+struct RomBadges {
+    std::array<LogoArt, 7> framed{}, bare{};   // E12 EFM P-I TRX ROM RAM, and UW
+    std::atomic<bool> ready{false};
+    std::atomic<int> style{1};                 // 1 bare (the frame cropped, as shown), 0 framed, -1 off (the drawn logos)
+};
+inline RomBadges& romBadges() { static RomBadges b; return b; }
+inline void readRomBadges(const std::vector<uint8_t>& os, uint32_t base)
+{
+    auto& rb = romBadges();
+    if (rb.ready.load()) return;
+    const uint32_t end = base + uint32_t(os.size());
+    auto u32 = [&](uint32_t a) -> uint32_t { const size_t o = a - base; return (uint32_t(os[o]) << 24) | (uint32_t(os[o + 1]) << 16) | (uint32_t(os[o + 2]) << 8) | os[o + 3]; };
+    auto badge = [&](uint32_t a) {
+        if (a + 20 > end) return false;
+        const uint32_t w = u32(a), h = u32(a + 4), px = u32(a + 12), mask = u32(a + 16);
+        return w == 23 && h == 13 && mask == px + 4 * w && px >= base && mask + 4 * w <= end;
+    };
+    for (uint32_t a = base; a + 100 <= end; a += 2) {
+        bool all = true;
+        for (uint32_t i = 0; i < 5 && all; ++i) all = badge(a + 20 * i);
+        if (!all) continue;
+        static const char* const names[5] = {"E12", "EFM", "P-I", "TRX", "UW"};
+        for (int i = 0; i < 5; ++i) {
+            const uint32_t d = a + 20 * uint32_t(i), px = u32(d + 12);
+            LogoArt f{names[i], 23, 13, {}}, b{names[i], 17, 9, {}};
+            for (int r = 0; r < 13; ++r)
+                for (int c = 0; c < 23; ++c)
+                    if ((u32(px + 4 * uint32_t(c)) >> (32 - 13 + r)) & 1u) {
+                        f.rows[r] |= uint64_t(1) << (63 - c);
+                        if (r >= 2 && r < 11 && c >= 3 && c < 20) b.rows[r - 2] |= uint64_t(1) << (63 - (c - 3));
+                    }
+            const int slot = i < 4 ? i : 6;
+            rb.framed[size_t(slot)] = f; rb.bare[size_t(slot)] = b;
+        }
+        for (int s : {4, 5}) {   // ROM, RAM: the UW badge
+            rb.framed[size_t(s)] = rb.framed[6]; rb.bare[size_t(s)] = rb.bare[6];
+            rb.framed[size_t(s)].family = rb.bare[size_t(s)].family = s == 4 ? "ROM" : "RAM";
+        }
+        rb.ready.store(true);
+        return;
+    }
+}
+
+// A family's logo: the OS's badge when there is one, else MdLogos.h (made by make_logos.py: 1-bit art at the LCD's
+// resolution, each family in a type of its own as the Monomachine's are, all in one box). GND has none, as on the
+// Monomachine: its name is printed.
 inline const LogoArt* logoArt(const char* family)
 {
+    auto& rb = romBadges();
+    if (rb.ready.load() && rb.style.load() >= 0) {
+        const auto& set = rb.style.load() == 0 ? rb.framed : rb.bare;
+        for (int i = 0; i < 6; ++i) if (std::strcmp(set[size_t(i)].family, family) == 0) return &set[size_t(i)];
+    }
     for (const auto& l : kLogoArt) if (std::strcmp(l.family, family) == 0) return &l;
     return nullptr;
 }
