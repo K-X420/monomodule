@@ -161,15 +161,20 @@ void MdSeqBar::paint(juce::Graphics& g)
             if (m_s.grid && i == m_s.page) cv.fillRect(x, y + 9, 7, 1, true);
         }
     }
-    {   // EDIT: the copy / paste / clear menu
+    {   // X2: the pattern doubled
         const auto r = box(Edit, false);
-        cv.text(spec::kFontBold8, "EDIT", r.getX() + 4, r.getY() + 4, true);
+        cv.text(spec::kFontBold8, "X2", r.getX() + 8, r.getY() + 4, true);
     }
     {
-        juce::String s = m_s.seqOff ? juce::String("SEQ OFF")
+        juce::String s = m_s.flash.isNotEmpty() ? m_s.flash : m_s.seqOff ? juce::String("SEQ OFF")
                        : m_s.step >= 0 ? juce::String(m_s.step + 1).paddedLeft('0', 2) + "/" + juce::String(m_s.length) : "--/" + juce::String(m_s.length);
-        if (m_s.row >= 0) s << "  ROW " << (m_s.row + 1);
-        labelled(Step, "STEP", s);
+        if (m_s.row >= 0 && m_s.flash.isEmpty()) s << "  ROW " << (m_s.row + 1);
+        if (m_s.flash.isNotEmpty()) {   // a confirmation: the whole box, no label
+            const auto r = box(Step, true);
+            cv.text(spec::kFontBold8, fit(spec::kFontBold8, s, r.getWidth() - 6).toRawUTF8(), r.getX() + 4, r.getY() + 4, false);
+        } else {
+            labelled(Step, "STEP", s);
+        }
     }
     cv.draw(g, 0, 0, kS);
 }
@@ -184,12 +189,17 @@ void MdSeqBar::mouseDown(const juce::MouseEvent& e)
 {
     const auto lcd = e.getPosition() / kS;
     const auto p = partAt(lcd);
-    if (p == Pages && e.mods.isPopupMenu()) { if (onPart) onPart(Edit); return; }
+    const bool edit = e.mods.isShiftDown() || e.mods.isCommandDown() || e.mods.isCtrlDown() || e.mods.isAltDown();
     if (p == Pages) {
         for (int i = 0; i < 4; ++i)
-            if (lcd.x >= dotX(i) - 2 && lcd.x <= dotX(i) + 8) { if (onPage) onPage(i); return; }
+            if (lcd.x >= dotX(i) - 2 && lcd.x <= dotX(i) + 8) {
+                if (edit) { if (onEditClick) onEditClick(Pages, i, e.mods); }
+                else if (onPage) onPage(i);
+                return;
+            }
         return;
     }
+    if (edit && (p == Trk || p == Ptn)) { if (onEditClick) onEditClick(p, -1, e.mods); return; }
     if (p != None && onPart) onPart(p);
 }
 
@@ -205,11 +215,14 @@ void MdSeqBar::mouseMove(const juce::MouseEvent& e)
                                        : "GRID: click to place steps with the keys (the selected track's steps; TRK < > picks the track)"); break;
         case Mute: setTooltip(m_s.muted ? "The track is muted: its trigs don't play. Click to unmute (Alt+click a key in GRID: that key's track)"
                                          : "Mute the track (Alt+click a key in GRID: that key's track)"); break;
-        case TrkPrev: case TrkNext: case Trk: setTooltip("The track whose steps GRID shows and edits"); break;
-        case PtnPrev: case PtnNext: case Ptn: setTooltip("The pattern (PTN): played by SEQ, edited by GRID (\"-\" = an empty slot)"); break;
-        case Pages: setTooltip("Pages of 16 steps: solid = playing, underlined = shown by GRID. Click one to show it; right-click: EDIT"); break;
+        case TrkPrev: case TrkNext: setTooltip("The track whose steps GRID shows and edits"); break;
+        case Trk: setTooltip("The track GRID edits. Shift+click: copy it. Ctrl+click: paste onto it. Alt+click: clear it"); break;
+        case Ptn: setTooltip("The pattern. Shift+click: copy it. Ctrl+click: paste onto it. Alt+click: clear its steps"); break;
+        case PtnPrev: case PtnNext: setTooltip("The pattern (PTN): played by SEQ, edited by GRID (\"-\" = an empty slot)"); break;
+        case Pages: setTooltip("Pages of 16 steps: solid = playing, underlined = shown by GRID. Click: show it. Shift+click: copy it (all tracks). "
+                               "Ctrl+click: paste onto it. Alt+click: clear it. Keys: Ctrl+C / Ctrl+V / Delete on the shown page"); break;
         case Step: setTooltip(m_s.seqOff ? "SEQ is OFF (OUT tab): the pattern does not play. PLAY, a placed step or REC turns it on" : "The playing step / the pattern's length"); break;
-        case Edit: setTooltip("Copy / paste / clear the shown page, the track or the pattern; double the pattern"); break;
+        case Edit: setTooltip("X2: the pattern doubled (its steps again after themselves, twice the length). Ctrl+D"); break;
         default: setTooltip({}); break;
     }
 }

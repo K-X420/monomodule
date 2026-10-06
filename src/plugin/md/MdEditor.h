@@ -166,6 +166,9 @@ public:
     MdSongEditor& devSongEditor() { return m_songEd; }
     void devOpenMidi() { openMidiPanel(); }
     const MdTrackKeys& devKeys() const { return m_keys; }
+    void devBarClick(MdSeqBar::Part p, int page, const juce::ModifierKeys& mods) { if (m_seqBar.onEditClick) m_seqBar.onEditClick(p, page, mods); }
+    void devBarPart(MdSeqBar::Part p) { if (m_seqBar.onPart) m_seqBar.onPart(p); }
+    void devShowPage(int page) { m_gridPage = page; }
     void devOpenSong(int slot) { m_songEd.setBounds(m_syn.getX(), m_syn.getY(), m_routing.getRight() - m_syn.getX(), m_out.getBottom() - m_syn.getY()); m_songEd.open(slot); }
     void showGrid(int held)   // dev/snapshot: the PATTERN tab, GRID on, a step held (-1 none)
     {
@@ -199,7 +202,17 @@ private:
     int editSlot() const;        // PTN: the pattern GRID and the PATTERN tab edit
     void holdStep(int step);     // -1 releases
     void stepMenu(int step);
-    void editMenu();   // copy / paste / clear: the page GRID shows, the selected track, the pattern; double
+    // Copy / paste / clear at face level (the bar's modifier clicks, the keys): a page (all tracks), the track, the
+    // pattern; double. Each says what it did in the bar for a moment.
+    void editMenu();   // the former EDIT menu (every operation in one list; kept for reference, not on the bar)
+    void pageOp(int op, int page);   // op 0 copy, 1 paste, 2 clear
+    void trackOp(int op);
+    void patternOp(int op);
+    void doublePattern();
+    void flash(const juce::String& s) { m_flash = s; m_flashUntil = juce::Time::getMillisecondCounter() + 1500; refreshGrid(); }
+    juce::String m_flash;
+    juce::uint32 m_flashUntil = 0;
+    void openSongEditor();
     void saveBankToLibrary();   // the patterns and songs into their project (a new version), or a new project
     // Every pattern edit of the editor, with undo: `coalesce` >= 0 merges a run of edits of the same kind (a knob drag)
     // into one undo step

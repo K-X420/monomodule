@@ -258,7 +258,7 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     layout.add(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{accentId(), 1}, "ACCENT", 0, 127, 64));
     layout.add(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{outputModeId(), 1}, "OUTPUTS", juce::StringArray{"Hardware", "Per Track"}, 0));
     layout.add(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{bpmSyncId(), 1}, "BPM sync to host", true));
-    layout.add(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{seqId(), 1}, "SEQ", juce::StringArray{"OFF", "ON"}, 0));
+    layout.add(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{seqId(), 1}, "SEQ", juce::StringArray{"OFF", "ON"}, 1));   // on: the host's play runs the pattern
     layout.add(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{seqModeId(), 1}, "MODE", juce::StringArray{"PATTERN", "SONG"}, 0));
     layout.add(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{songId(), 1}, "SONG", 0, 31, 0, juce::AudioParameterIntAttributes().withStringFromValueFunction([](int v, int) { return juce::String(kSongNames[juce::jlimit(0, 31, v)]); })));
     layout.add(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{patternId(), 1}, "PATTERN", 0, 127, 0, juce::AudioParameterIntAttributes().withStringFromValueFunction([](int v, int) { return juce::String(kPatternNames[juce::jlimit(0, 127, v)]); })));

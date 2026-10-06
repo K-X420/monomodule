@@ -287,10 +287,45 @@ int main(int argc, char** argv)
         check(lockAt(4) == -1 && ((trigs() >> 4) & 1), "double-click: that lock goes, the trig stays");
         med->devUndo();
         check(lockAt(4) == 100, "undo brings the cleared lock back");
+        {   // copy / paste / clear at face level: modifier clicks on the bar, the keys
+            const juce::ModifierKeys shift(juce::ModifierKeys::shiftModifier), ctrl(juce::ModifierKeys::ctrlModifier), alt(juce::ModifierKeys::altModifier);
+            const auto pat = [&] { return proc.bankPattern(0); };
+            med->devBarClick(MdSeqBar::Pages, 0, shift);   // copy page 1
+            med->devBarClick(MdSeqBar::Pages, 1, ctrl);    // paste onto page 2
+            check(pat()->length == 32 && ((pat()->trigs[0] >> 16) & 1) && ((pat()->trigs[0] >> 20) & 1) && pat()->locks[pat()->lockRow(0, 0)][20] == 100,
+                  "Shift+click page 1, Ctrl+click page 2: page 1 (with its lock) pasted onto page 2, 32 steps");
+            med->devBarClick(MdSeqBar::Pages, 1, alt);
+            check(pat()->length == 32 && !((pat()->trigs[0] >> 16) & 1) && ((pat()->trigs[0] >> 4) & 1), "Alt+click page 2: cleared, page 1 stays");
+            med->devUndo();
+            check(((pat()->trigs[0] >> 16) & 1), "and Ctrl+Z brings it back");
+            med->keyPressed(juce::KeyPress('d', juce::ModifierKeys::ctrlModifier, 0));
+            check(pat()->length == 64 && ((pat()->trigs[0] >> 48) & 1), "Ctrl+D: doubled to 64 steps");
+            med->devShowPage(0);
+            med->keyPressed(juce::KeyPress('c', juce::ModifierKeys::ctrlModifier, 0));
+            med->devShowPage(3);
+            med->keyPressed(juce::KeyPress(juce::KeyPress::deleteKey, juce::ModifierKeys(), 0));
+            check(!((pat()->trigs[0] >> 48) & 1) && !((pat()->trigs[0] >> 52) & 1), "Delete: the shown page (4) cleared");
+            med->keyPressed(juce::KeyPress('v', juce::ModifierKeys::ctrlModifier, 0));
+            check(((pat()->trigs[0] >> 48) & 1) && ((pat()->trigs[0] >> 52) & 1), "Ctrl+C on page 1, Ctrl+V on page 4: pasted");
+            med->devBarClick(MdSeqBar::Trk, -1, shift);   // copy T1
+            med->selectTrack(5);
+            med->devBarClick(MdSeqBar::Trk, -1, ctrl);    // paste onto T6
+            check(pat()->trigs[5] == pat()->trigs[0] && pat()->lockRow(5, 0) >= 0, "Shift+click TRK (T1), select T6, Ctrl+click TRK: T1 pasted onto T6 with its locks");
+            med->devBarClick(MdSeqBar::Trk, -1, alt);
+            check(pat()->trigs[5] == 0, "Alt+click TRK: T6 cleared");
+            med->selectTrack(0);
+            med->devBarClick(MdSeqBar::Ptn, -1, shift);   // copy A01
+            if (auto* a = proc.apvts.getParameter(patternId())) a->setValueNotifyingHost(a->convertTo0to1(1.0f));
+            med->devBarClick(MdSeqBar::Ptn, -1, ctrl);    // paste onto A02
+            const auto a02 = proc.bankPattern(1);
+            check(a02 && a02->trigs[0] == pat()->trigs[0] && a02->length == 64, "Shift+click PTN (A01), PTN to A02, Ctrl+click PTN: A01 pasted into A02");
+            if (auto* a = proc.apvts.getParameter(patternId())) a->setValueNotifyingHost(0.0f);
+        }
         med->devMuteKey(2);
         check(proc.apvts.getRawParameterValue(muteId(2))->load() >= 0.5f, "Alt+click key 3: T3 muted");
         med->devMuteKey(2);
         check(proc.apvts.getRawParameterValue(muteId(2))->load() < 0.5f, "again: unmuted");
+        med->devBarClick(MdSeqBar::Pages, 0, juce::ModifierKeys(juce::ModifierKeys::shiftModifier));   // the bar says "COPIED PAGE 1"
         if (argc > 3) {
             med->devHold(4); med->refresh();
             auto img = ed->createComponentSnapshot(ed->getLocalBounds(), true, 1.0f);
@@ -393,7 +428,7 @@ int main(int argc, char** argv)
             Head h3; h3.playing = true;
             hq.setPlayHead(&h3);
             hq.prepareToPlay(rate, block);
-            if (auto* a = hq.apvts.getParameter(seqId())) a->setValueNotifyingHost(1.0f);
+            check(hq.apvts.getRawParameterValue(seqId())->load() >= 0.5f, "SEQ is on by default: the host's play runs the pattern");
             std::vector<int> seen2;
             for (int i = 0; i < 100; ++i) { juce::MidiBuffer mm; b2.clear(); hq.processBlock(b2, mm); h3.ppq += block / 1000.0 / 24.0; if (seen2.empty() || seen2.back() != hq.seqStep()) seen2.push_back(hq.seqStep()); }
             check(hq.seqPlaying() && seen2.size() >= 6 && hq.seqLength() == 16, "the host's play on an empty pattern (no bank): the step moves (" + juce::String(int(seen2.size())) + " steps seen)");

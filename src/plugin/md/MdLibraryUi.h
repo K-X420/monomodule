@@ -46,12 +46,15 @@ public:
     static constexpr int kS = 2, kLcdH = 15;
     struct State {
         bool playing = false, hostPlaying = false, grid = false, empty = true, muted = false, rec = false, recording = false, seqOff = false;
+        juce::String flash;   // a short confirmation in the STEP box ("COPIED PAGE 1")
         int track = 0, pattern = 0, length = 16, page = 0, step = -1, row = -1;
         juce::String machine;
-        bool operator==(const State& o) const { return playing == o.playing && seqOff == o.seqOff && rec == o.rec && recording == o.recording && muted == o.muted && hostPlaying == o.hostPlaying && grid == o.grid && empty == o.empty && track == o.track && pattern == o.pattern && length == o.length && page == o.page && step == o.step && row == o.row && machine == o.machine; }
+        bool operator==(const State& o) const { return playing == o.playing && flash == o.flash && seqOff == o.seqOff && rec == o.rec && recording == o.recording && muted == o.muted && hostPlaying == o.hostPlaying && grid == o.grid && empty == o.empty && track == o.track && pattern == o.pattern && length == o.length && page == o.page && step == o.step && row == o.row && machine == o.machine; }
     };
     std::function<void(Part)> onPart;
     std::function<void(int)> onPage;
+    // Shift / Ctrl (Cmd) / Alt + click on TRK, PTN or a page dot: copy / paste / clear (page: the dot's page)
+    std::function<void(Part, int page, const juce::ModifierKeys&)> onEditClick;
     void setState(const State& s) { if (!(s == m_s)) { m_s = s; repaint(); } }
     void paint(juce::Graphics&) override;
     void resized() override;

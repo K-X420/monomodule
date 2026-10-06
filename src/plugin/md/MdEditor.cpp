@@ -724,7 +724,7 @@ MdEditor::MdEditor(MdProcessor& p)
                 if (!m_gridOn) holdStep(-1);
                 if (m_outTab == 1) m_out.pull();
                 break;
-            case MdSeqBar::Edit: editMenu(); return;
+            case MdSeqBar::Edit: doublePattern(); return;
             case MdSeqBar::Rec: m_proc.setRecord(!m_proc.recordArmed()); if (m_proc.recordArmed()) seqOn(); break;
             case MdSeqBar::Mute: toggleMute(m_track); break;
             case MdSeqBar::TrkPrev: selectTrack((m_track + kTracks - 1) % kTracks); break;
@@ -789,6 +789,12 @@ MdEditor::MdEditor(MdProcessor& p)
     };
     m_songEd.defaultPattern = [this] { return editSlot(); };
     m_songEd.patternLength = [this](int p) { const auto pat = m_proc.bankPattern(p); return pat ? juce::jlimit(1, 64, int(pat->length)) : 16; };
+    m_seqBar.onEditClick = [this](MdSeqBar::Part p, int page, const juce::ModifierKeys& mods) {
+        const int op = mods.isAltDown() ? 2 : (mods.isCommandDown() || mods.isCtrlDown()) ? 1 : 0;   // Alt clear, Ctrl paste, Shift copy
+        if (p == MdSeqBar::Pages) pageOp(op, page);
+        else if (p == MdSeqBar::Trk) trackOp(op);
+        else if (p == MdSeqBar::Ptn) patternOp(op);
+    };
     m_seqBar.onPage = [this](int page) { m_gridPage = page; m_pagePinned = m_proc.seqPlaying(); refreshGrid(); };
     bindMasterFx(0);
 
@@ -1105,8 +1111,13 @@ void MdEditor::redo()
 bool MdEditor::keyPressed(const juce::KeyPress& k)
 {
     const auto mods = k.getModifiers();
+    const int page = juce::jlimit(0, 3, m_gridPage);
+    if ((k.getKeyCode() == juce::KeyPress::deleteKey || k.getKeyCode() == juce::KeyPress::backspaceKey) && m_gridOn) { pageOp(2, page); return true; }
     if (!mods.isCommandDown() && !mods.isCtrlDown()) return false;
     const int code = k.getKeyCode();
+    if (code == 'C' || code == 'c') { pageOp(0, page); return true; }
+    if (code == 'V' || code == 'v') { pageOp(1, page); return true; }
+    if (code == 'D' || code == 'd') { doublePattern(); return true; }
     if ((code == 'Z' || code == 'z') && mods.isShiftDown()) { redo(); return true; }
     if (code == 'Z' || code == 'z') { undo(); return true; }
     if (code == 'Y' || code == 'y') { redo(); return true; }
@@ -1121,6 +1132,97 @@ void MdEditor::toggleMute(int t)
         p->endChangeGesture();
     }
     refreshGrid();
+}
+
+void MdEditor::pageOp(int op, int page)
+{
+    const int slot = editSlot();
+    const auto p = m_proc.bankPattern(slot);
+    const juce::String pg = "P" + juce::String(page + 1);
+    if (op == 0) {
+        if (!p) { flash("EMPTY"); return; }
+        m_clip = {1, true, m_track, page, *p};
+        flash("COPY " + pg);
+        return;
+    }
+    if (op == 1 && m_clip.kind != 1) { flash("NO PAGE"); return; }
+    const auto clip = m_clip;
+    doEdit(slot, op == 1 ? "paste page" : "clear page", [&](mnm::mddump::Pattern& x) {
+        if (op == 1) {
+            x.copySteps(clip.pat, clip.page * 16, page * 16, 16, clip.all ? -1 : clip.track, m_track);
+            if (x.length < (page + 1) * 16) { x.length = uint8_t((page + 1) * 16); x.scale = uint8_t(page); }
+        } else {
+            x.clearSteps(page * 16, 16, -1);
+        }
+    });
+    if (op == 1) m_gridPage = page;
+    holdStep(-1);
+    flash(op == 1 ? "PASTE " + pg : "CLEAR " + pg);
+}
+
+void MdEditor::trackOp(int op)
+{
+    const int slot = editSlot(), t = m_track;
+    const auto p = m_proc.bankPattern(slot);
+    const juce::String tr = "T" + juce::String(t + 1);
+    if (op == 0) {
+        if (!p) { flash("EMPTY"); return; }
+        m_clip = {2, false, t, 0, *p};
+        flash("COPY " + tr);
+        return;
+    }
+    if (op == 1 && m_clip.kind != 2) { flash("NO TRACK"); return; }
+    const auto clip = m_clip;
+    doEdit(slot, op == 1 ? "paste track" : "clear track", [&](mnm::mddump::Pattern& x) {
+        if (op == 1) x.copySteps(clip.pat, 0, 0, 64, clip.track, t);
+        else x.clearSteps(0, 64, t);
+    });
+    holdStep(-1);
+    flash(op == 1 ? "PASTE " + tr : "CLEAR " + tr);
+}
+
+void MdEditor::patternOp(int op)
+{
+    const int slot = editSlot();
+    const auto p = m_proc.bankPattern(slot);
+    const juce::String pn = kPatternNames[slot];
+    if (op == 0) {
+        if (!p) { flash("EMPTY"); return; }
+        m_clip = {3, true, 0, 0, *p};
+        flash("COPY " + pn);
+        return;
+    }
+    if (op == 1 && m_clip.kind != 3) { flash("NO PTN"); return; }
+    const auto clip = m_clip;
+    doEdit(slot, op == 1 ? "paste pattern" : "clear pattern", [&](mnm::mddump::Pattern& x) {
+        if (op == 1) { const int pos = x.position; x = clip.pat; x.position = pos; }
+        else x.clearSteps(0, 64, -1);
+    });
+    holdStep(-1);
+    flash(op == 1 ? "PASTE " + pn : "CLEAR " + pn);
+}
+
+void MdEditor::doublePattern()
+{
+    const int slot = editSlot();
+    const auto p = m_proc.bankPattern(slot);
+    const int len = p ? juce::jlimit(1, 64, int(p->length)) : 16;
+    if (!p) { flash("EMPTY"); return; }
+    if (len > 32) { flash("64 = FULL"); return; }
+    doEdit(slot, "double", [&](mnm::mddump::Pattern& x) {
+        const auto copy = x;
+        x.copySteps(copy, 0, len, len, -1, 0);
+        x.length = uint8_t(juce::jmin(64, 2 * len));
+        x.scale = uint8_t((x.length - 1) / 16);
+    });
+    flash("X2 = " + juce::String(2 * len));
+}
+
+void MdEditor::openSongEditor()
+{
+    m_songEd.setBounds(m_syn.getX(), m_syn.getY(), m_routing.getRight() - m_syn.getX(), m_out.getBottom() - m_syn.getY());
+    m_songEd.open(juce::jlimit(0, 31, int(std::lround(m_proc.apvts.getRawParameterValue(songId())->load()))));
+    m_songEd.grabKeyboardFocus();
 }
 
 void MdEditor::editMenu()
@@ -1231,6 +1333,8 @@ void MdEditor::refreshGrid()
         s.step = m_proc.seqPlaying() && m_proc.seqPattern() == slot ? m_proc.seqStep() : -1;
         s.row = m_proc.seqPlaying() ? m_proc.seqSongRow() : -1;
         s.seqOff = m_proc.apvts.getRawParameterValue(seqId())->load() < 0.5f;
+        if (m_flash.isNotEmpty() && juce::Time::getMillisecondCounter() > m_flashUntil) m_flash.clear();
+        s.flash = m_flash;
         m_seqBar.setState(s);
     }
     MdTrackKeys::Grid g;
@@ -1350,6 +1454,15 @@ void MdEditor::showMenu()
     outputs.addItem(41, "PER TRACK (TRACK 1-16, WHERE ENABLED)", true, outMode == int(OutputMode::Tracks));
     m.addSubMenu("PLUGIN OUTPUTS", outputs);
     m.addItem(11, "MIDI SETTINGS...");
+    m.addSeparator();
+    {
+        const int sl = juce::jlimit(0, 31, int(std::lround(m_proc.apvts.getRawParameterValue(songId())->load())));
+        m.addItem(12, "EDIT SONG " + juce::String(sl + 1).paddedLeft('0', 2) + "...");
+    }
+    m.addItem(13, m_proc.bankProjectId().isNotEmpty() ? "SAVE PATTERNS + SONGS TO LIBRARY (" + m_proc.bankName().toUpperCase() + ")"
+                                                      : juce::String("SAVE PATTERNS + SONGS TO LIBRARY (NEW PROJECT)"));
+    m.addItem(14, m_undo.empty() ? juce::String("UNDO") : "UNDO " + m_undo.back().label.toUpperCase() + "  (CTRL+Z)", !m_undo.empty());
+    m.addItem(15, m_redo.empty() ? juce::String("REDO") : "REDO " + m_redo.back().label.toUpperCase() + "  (CTRL+SHIFT+Z)", !m_redo.empty());
     m.addItem(10, "SYNC BPM TO HOST", true, m_bpmSync.getToggleState());
     m.addSubMenu("SKIN", skins);
     m.addItem(7, "SHOW ENGINE STATUS", true, m_showStatus);
@@ -1358,6 +1471,10 @@ void MdEditor::showMenu()
     m.addItem(8, "PLUGIN INFO...");
     m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&m_menuButton), [this](int r) {
         if (r == 11) { openMidiPanel(); return; }
+        if (r == 12) { openSongEditor(); return; }
+        if (r == 13) { saveBankToLibrary(); return; }
+        if (r == 14) { undo(); return; }
+        if (r == 15) { redo(); return; }
         if (r == 1) chooseOsFile();
         else if (r == 2) importSyx();
         else if (r == 5) { m_proc.initKit(); selectTrack(m_track); timerCallback(); }
