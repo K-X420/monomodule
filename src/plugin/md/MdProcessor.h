@@ -127,6 +127,8 @@ public:
     void setPatternBank(const juce::String& projectId, const juce::String& name, const mnm::mddump::Dump& dump, int kitSlot);
     juce::String bankName() const { return m_bankName; }
     juce::String bankProjectId() const { return m_bankProjectId; }
+    mnm::mddump::Dump bankDump() const;   // the bank as a dump: its kits, patterns and songs (for the library)
+    void setBankProject(const juce::String& projectId, const juce::String& name) { m_bankProjectId = projectId; m_bankName = name; }
     bool bankHasPattern(int slot) const;
     // Pattern editing (message thread): the pattern of a slot (null: none), and an edit of it: fn changes a copy (an
     // empty slot starts as a fresh 16-step pattern on the loaded bank kit), which replaces it in the bank; the playing
@@ -134,6 +136,11 @@ public:
     std::shared_ptr<const mnm::mddump::Pattern> bankPattern(int slot) const;
     void editPattern(int slot, const std::function<void(mnm::mddump::Pattern&)>& fn);
     void setBankPattern(int slot, std::shared_ptr<const mnm::mddump::Pattern> p);   // undo / redo: that pattern (null: the slot empty)
+    // Songs (message thread), as the patterns: a copy (null: none), an edit of a copy (an empty slot starts with no
+    // rows), and putting one back (undo / redo). A playing song takes an edit from its next row on.
+    std::shared_ptr<const mnm::mddump::Song> bankSong(int slot) const;
+    void editSong(int slot, const std::function<void(mnm::mddump::Song&)>& fn);
+    void setBankSong(int slot, std::shared_ptr<const mnm::mddump::Song> s);
     int seqStep() const { return m_seqStepUi.load(); }        // the playing step, -1 when not playing
     int seqLength() const { return m_seqLenUi.load(); }       // the pattern's length (steps)
     int seqPattern() const { return m_seqPatternUi.load(); }  // the playing (or next, when stopped) pattern slot, -1 = none
@@ -334,7 +341,8 @@ private:
     double m_intPpq = 0;
     const mnm::mddump::Kit* m_kitSwitch = nullptr;   // the kit a pending switch event (PendingTrig track -2) brings in
     std::atomic<bool> m_bankFresh{false};
-    std::atomic<int> m_patternEdited{-1};
+    std::atomic<int> m_patternEdited{-1};   // a slot whose pattern an edit replaced (-1 none; -2 several)
+    std::atomic<bool> m_songEdited{false};  // a song changed: one that had ended (or had no rows) is placed again
     // live recording
     std::atomic<bool> m_recArmed{false}, m_recordingUi{false};
     bool m_recWas = false;

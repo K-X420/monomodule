@@ -161,6 +161,8 @@ public:
     void devUndo() { undo(); }
     void devRedo() { redo(); }
     one::KnobPage& devSynPage() { return m_syn; }
+    MdSongEditor& devSongEditor() { return m_songEd; }
+    void devOpenSong(int slot) { m_songEd.setBounds(m_syn.getX(), m_syn.getY(), m_routing.getRight() - m_syn.getX(), m_out.getBottom() - m_syn.getY()); m_songEd.open(slot); }
     void showGrid(int held)   // dev/snapshot: the PATTERN tab, GRID on, a step held (-1 none)
     {
         m_out.setTabs({"OUT", "PATTERN"}, 1, [this](int tab) { bindOutPage(tab); });
@@ -194,13 +196,19 @@ private:
     void holdStep(int step);     // -1 releases
     void stepMenu(int step);
     void editMenu();   // copy / paste / clear: the page GRID shows, the selected track, the pattern; double
+    void saveBankToLibrary();   // the patterns and songs into their project (a new version), or a new project
     // Every pattern edit of the editor, with undo: `coalesce` >= 0 merges a run of edits of the same kind (a knob drag)
     // into one undo step
     void doEdit(int slot, const juce::String& label, const std::function<void(mnm::mddump::Pattern&)>& fn, int coalesce = -1);
     void undo();
     void redo();
     void toggleMute(int t);
-    struct UndoStep { int slot = 0; std::shared_ptr<const mnm::mddump::Pattern> before, after; juce::String label; };
+    struct UndoStep {
+        int slot = 0; std::shared_ptr<const mnm::mddump::Pattern> before, after; juce::String label;
+        int song = -1; std::shared_ptr<const mnm::mddump::Song> songBefore, songAfter;   // a song edit (song >= 0)
+    };
+    void doEditSong(int slot, const juce::String& label, const std::function<void(mnm::mddump::Song&)>& fn, int coalesce = -1);
+    MdSongEditor m_songEd;
     std::vector<UndoStep> m_undo, m_redo;
     int m_lastCoalesce = -1;
     juce::int64 m_lastEditMs = 0;
@@ -266,6 +274,7 @@ private:
     MdSeqBar m_seqBar;
     bool m_gridOn = false;
     int m_gridPage = 0, m_heldStep = -1, m_outTab = 0, m_ptnPoll = 0;
+    bool m_pagePinned = false;   // a page dot clicked while playing: GRID stays there (else it follows the playing page)
     std::array<std::string, 128> m_ptnNames;      // "A01", or "A01 --" for an empty slot
     std::array<const char*, 128> m_ptnNamePtrs{};
     juce::String m_bankBadge;

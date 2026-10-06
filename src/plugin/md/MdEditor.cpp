@@ -740,7 +740,17 @@ MdEditor::MdEditor(MdProcessor& p)
         }
         refreshGrid();
     };
-    m_seqBar.onPage = [this](int page) { m_gridPage = page; refreshGrid(); };
+    addChildComponent(m_songEd);
+    m_songEd.getSong = [this] { return m_proc.bankSong(m_songEd.slot()); };
+    m_songEd.edit = [this](const juce::String& label, const std::function<void(mnm::mddump::Song&)>& fn, int coalesce) { doEditSong(m_songEd.slot(), label, fn, coalesce); };
+    m_songEd.playingRow = [this] {
+        const bool song = m_proc.apvts.getRawParameterValue(seqModeId())->load() >= 0.5f;
+        const int sl = juce::jlimit(0, 31, int(std::lround(m_proc.apvts.getRawParameterValue(songId())->load())));
+        return song && m_proc.seqPlaying() && sl == m_songEd.slot() ? m_proc.seqSongRow() : -1;
+    };
+    m_songEd.defaultPattern = [this] { return editSlot(); };
+    m_songEd.patternLength = [this](int p) { const auto pat = m_proc.bankPattern(p); return pat ? juce::jlimit(1, 64, int(pat->length)) : 16; };
+    m_seqBar.onPage = [this](int page) { m_gridPage = page; m_pagePinned = m_proc.seqPlaying(); refreshGrid(); };
     bindMasterFx(0);
 
     m_sample.onClick = [this] { sampleMenu(); };
@@ -957,6 +967,26 @@ void MdEditor::stepMenu(int s)
     });
 }
 
+void MdEditor::saveBankToLibrary()
+{
+    const auto bank = m_proc.bankDump();
+    const bool fresh = m_proc.bankProjectId().isEmpty();
+    const juce::String name = fresh ? "MD PATTERNS " + juce::Time::getCurrentTime().formatted("%Y-%m-%d %H%M") : m_proc.bankName();
+    juce::String id;
+    juce::StringArray changes;
+    const auto r = m_lib->model().saveMdPatterns(m_proc.bankProjectId(), bank, name, "Monomodule MD", &id, &changes);
+    if (r.failed()) { juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Save Patterns", r.getErrorMessage()); return; }
+    if (fresh) {
+        m_proc.setBankProject(id, name);
+        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon, "Save Patterns", "Saved as the new project " + name + " in the library.");
+    } else if (changes.isEmpty()) {
+        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon, "Save Patterns", "Nothing differs from " + name + " in the library: no new version.");
+    } else {
+        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon, "Save Patterns",
+                                               "Saved as a new version of " + name + ":\n" + changes.joinIntoString("\n"));
+    }
+}
+
 void MdEditor::doEdit(int slot, const juce::String& label, const std::function<void(mnm::mddump::Pattern&)>& fn, int coalesce)
 {
     const auto now = juce::Time::currentTimeMillis();
@@ -972,11 +1002,30 @@ void MdEditor::doEdit(int slot, const juce::String& label, const std::function<v
     m_undo.back().after = m_proc.bankPattern(slot);
 }
 
+void MdEditor::doEditSong(int slot, const juce::String& label, const std::function<void(mnm::mddump::Song&)>& fn, int coalesce)
+{
+    const auto now = juce::Time::currentTimeMillis();
+    const bool merge = coalesce >= 0 && !m_undo.empty() && m_undo.back().song == slot && m_lastCoalesce == coalesce && now - m_lastEditMs < 1000;
+    if (!merge) {
+        UndoStep u;
+        u.song = slot; u.songBefore = m_proc.bankSong(slot); u.label = label;
+        m_undo.push_back(u);
+        if (m_undo.size() > 200) m_undo.erase(m_undo.begin());
+    }
+    m_redo.clear();
+    m_lastCoalesce = coalesce;
+    m_lastEditMs = now;
+    m_proc.editSong(slot, fn);
+    m_undo.back().songAfter = m_proc.bankSong(slot);
+    m_songEd.repaint();
+}
+
 void MdEditor::undo()
 {
     if (m_undo.empty()) return;
     auto s = m_undo.back();
     m_undo.pop_back();
+    if (s.song >= 0) { m_proc.setBankSong(s.song, s.songBefore); m_redo.push_back(s); m_lastCoalesce = -1; m_songEd.repaint(); return; }
     m_proc.setBankPattern(s.slot, s.before);
     m_redo.push_back(s);
     m_lastCoalesce = -1;
@@ -989,6 +1038,7 @@ void MdEditor::redo()
     if (m_redo.empty()) return;
     auto s = m_redo.back();
     m_redo.pop_back();
+    if (s.song >= 0) { m_proc.setBankSong(s.song, s.songAfter); m_undo.push_back(s); m_lastCoalesce = -1; m_songEd.repaint(); return; }
     m_proc.setBankPattern(s.slot, s.after);
     m_undo.push_back(s);
     m_lastCoalesce = -1;
@@ -1045,10 +1095,25 @@ void MdEditor::editMenu()
     m.addItem(10, "Paste pattern onto " + pn, m_clip.kind == 3);
     m.addItem(11, "Clear pattern " + pn + " (its steps; the settings stay)", p != nullptr);
     m.addSeparator();
+    {
+        const int sl = juce::jlimit(0, 31, int(std::lround(m_proc.apvts.getRawParameterValue(songId())->load())));
+        m.addItem(31, "Edit song " + juce::String(sl + 1).paddedLeft('0', 2) + " (the SONG knob's)...");
+    }
+    m.addItem(30, m_proc.bankProjectId().isNotEmpty() ? "Save patterns and songs to the library (" + m_proc.bankName() + ": a new version)"
+                                                      : juce::String("Save patterns and songs to the library (a new project)"),
+              m_proc.bankHasPattern(slot) || m_proc.bankName().isNotEmpty());
+    m.addSeparator();
     m.addItem(12, "Double: steps 1-" + juce::String(len) + " again after themselves (length " + juce::String(juce::jmin(64, 2 * len)) + ")", p != nullptr && len <= 32);
     m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&m_seqBar), [this, slot, t, page, p, len](int r) {
         if (r <= 0) return;
         if (r == 20) { undo(); return; }
+        if (r == 30) { saveBankToLibrary(); return; }
+        if (r == 31) {
+            m_songEd.setBounds(m_syn.getX(), m_syn.getY(), m_routing.getRight() - m_syn.getX(), m_out.getBottom() - m_syn.getY());
+            m_songEd.open(juce::jlimit(0, 31, int(std::lround(m_proc.apvts.getRawParameterValue(songId())->load()))));
+            m_songEd.grabKeyboardFocus();
+            return;
+        }
         if (r == 21) { redo(); return; }
         if (r == 1 || r == 2) { m_clip = {1, r == 1, t, page, *p}; return; }
         if (r == 6) { m_clip = {2, false, t, 0, *p}; return; }
@@ -1085,6 +1150,11 @@ void MdEditor::editMenu()
 
 void MdEditor::refreshGrid()
 {
+    {   // GRID follows the playing page of the pattern it shows (unless a page was picked while playing)
+        const bool playingHere = m_proc.seqPlaying() && m_proc.seqPattern() == editSlot();
+        if (!m_proc.seqPlaying()) m_pagePinned = false;
+        else if (playingHere && !m_pagePinned && m_heldStep < 0 && m_proc.seqStep() >= 0) m_gridPage = m_proc.seqStep() / 16;
+    }
     {   // the bar
         MdSeqBar::State s;
         const int slot = editSlot();
@@ -1612,6 +1682,7 @@ void MdEditor::timerCallback()
                 MdProcessor::RecordedEdit re;
                 while (m_proc.takeRecordedEdit(re)) { m_undo.push_back({re.slot, re.before, re.after, "recording"}); m_redo.clear(); m_lastCoalesce = -1; }
                 if (m_proc.recording()) m_seqBar.repaint();   // the blinking dot
+                if (m_songEd.isVisible()) m_songEd.repaint();
             }
             if (m_outTab == 1) m_out.pull();
             if (m_heldStep >= 0) for (auto* pg : {&m_syn, &m_fx, &m_routing, &m_lfo}) pg->pull();

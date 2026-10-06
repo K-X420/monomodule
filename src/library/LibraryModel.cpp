@@ -166,6 +166,44 @@ juce::Result LibraryModel::saveMdSound(const mnm::mdcatalog::Sound& sound, const
     return r;
 }
 
+juce::Result LibraryModel::saveMdPatterns(const juce::String& projectId, const mnm::mddump::Dump& bank, const juce::String& name,
+                                          const juce::String& savedFrom, juce::String* projectIdOut, juce::StringArray* changesOut)
+{
+    juce::StringArray changes;
+    if (projectId.isEmpty()) {   // a new project of the bank as it is
+        const auto bytes = mnm::mddump::encodeDump(bank);
+        ProjectInfo out;
+        auto r = m_store.importSysexData(bytes.data(), bytes.size(), name, "Monomodule MD", ImportMode::NewProject, {}, &out);
+        if (r.wasOk() && projectIdOut) *projectIdOut = out.id;
+        refresh(true);
+        return r;
+    }
+    ProjectInfo p; mnm::mddump::Dump d;
+    if (!m_store.loadProject(projectId, p) || !p.current() || !p.isMd() || !m_store.loadMdVersion(p.id, p.current()->n, d))
+        return juce::Result::fail("The project is no longer in the library.");
+    for (const auto& pat : bank.patterns) {
+        const auto* old = d.patternAt(pat.position);
+        if (old && mnm::mddump::encodePattern(*old) == mnm::mddump::encodePattern(pat)) continue;
+        if (!old && pat.empty()) continue;
+        mnm::mdproject::putPattern(d, pat.position, pat);
+        changes.add("Pattern " + juce::String(mnm::mddump::patternSlotName(pat.position)) + (old ? " edited" : " added") + " in the plugin");
+    }
+    for (const auto& s : bank.songs) {
+        const mnm::mddump::Song* old = nullptr;
+        for (const auto& o : d.songs) if (o.position == s.position) old = &o;
+        if (old && mnm::mddump::encodeSong(*old) == mnm::mddump::encodeSong(s)) continue;
+        if (!old && s.rows.empty()) continue;
+        mnm::mdproject::putSong(d, s.position, s);
+        changes.add("Song " + juce::String(s.position + 1).paddedLeft('0', 2) + (old ? " edited" : " added") + " in the plugin");
+    }
+    if (changesOut) *changesOut = changes;
+    if (projectIdOut) *projectIdOut = projectId;
+    if (changes.isEmpty()) return juce::Result::ok();   // nothing differs: no new version
+    auto r = m_store.addMdVersion(p.id, d, "saved", "Patterns saved from " + savedFrom, changes, {}, p.current()->n);
+    refresh(true);
+    return r;
+}
+
 juce::Result LibraryModel::saveMdKit(const mnm::mddump::Kit& kit, const juce::String& name, const juce::String& parentId,
                                      const juce::String& savedFrom, const Slot& into, juce::String* kitIdOut)
 {

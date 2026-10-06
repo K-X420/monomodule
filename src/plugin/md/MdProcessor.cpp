@@ -318,6 +318,57 @@ bool MdProcessor::bankHasPattern(int slot) const
     return m_bank && slot >= 0 && slot < 128 && m_bank->hasPattern[size_t(slot)];
 }
 
+std::shared_ptr<const mnm::mddump::Song> MdProcessor::bankSong(int slot) const
+{
+    const juce::SpinLock::ScopedLockType l(m_bankLock);
+    if (!m_bank || slot < 0 || slot >= 32 || !m_bank->hasSong[size_t(slot)]) return nullptr;
+    return std::make_shared<const mnm::mddump::Song>(m_bank->songs[size_t(slot)]);
+}
+
+void MdProcessor::setBankSong(int slot, std::shared_ptr<const mnm::mddump::Song> s)
+{
+    if (slot < 0 || slot >= 32) return;
+    std::shared_ptr<const SeqBank> cur;
+    { const juce::SpinLock::ScopedLockType l(m_bankLock); cur = m_bank; }
+    if (!cur && !s) return;
+    auto bank = cur ? std::make_shared<SeqBank>(*cur) : std::make_shared<SeqBank>();
+    if (!cur) { bank->patterns.resize(128); bank->kits.resize(64); bank->songs.resize(32); m_bankName = "PLUGIN"; }
+    if (s) { bank->songs[size_t(slot)] = *s; bank->songs[size_t(slot)].position = slot; }
+    else bank->songs[size_t(slot)] = {};
+    bank->hasSong[size_t(slot)] = s && !s->rows.empty();
+    m_songEdited.store(true);
+    {
+        const juce::SpinLock::ScopedLockType l(m_bankLock);
+        m_bankOld = std::move(m_bank);
+        m_bank = std::move(bank);
+    }
+    if (!cur) m_bankFresh.store(true);
+}
+
+void MdProcessor::editSong(int slot, const std::function<void(mnm::mddump::Song&)>& fn)
+{
+    if (slot < 0 || slot >= 32) return;
+    mnm::mddump::Song s;
+    if (const auto cur = bankSong(slot)) s = *cur;
+    s.position = slot;
+    fn(s);
+    setBankSong(slot, std::make_shared<const mnm::mddump::Song>(s));
+}
+
+mnm::mddump::Dump MdProcessor::bankDump() const
+{
+    std::shared_ptr<const SeqBank> bank;
+    { const juce::SpinLock::ScopedLockType l(m_bankLock); bank = m_bank; }
+    std::vector<uint8_t> bytes;
+    if (bank) {
+        auto add = [&](const std::vector<uint8_t>& m) { bytes.insert(bytes.end(), m.begin(), m.end()); };
+        for (int s = 0; s < 64; ++s) if (bank->hasKit[size_t(s)]) add(mnm::mddump::encodeKit(bank->kits[size_t(s)]));
+        for (int s = 0; s < 128; ++s) if (bank->hasPattern[size_t(s)]) add(mnm::mddump::encodePattern(*bank->patterns[size_t(s)]));
+        for (int s = 0; s < 32; ++s) if (bank->hasSong[size_t(s)]) add(mnm::mddump::encodeSong(bank->songs[size_t(s)]));
+    }
+    return mnm::mddump::parseDump(bytes.data(), bytes.size(), "bank");
+}
+
 std::shared_ptr<const mnm::mddump::Pattern> MdProcessor::bankPattern(int slot) const
 {
     const juce::SpinLock::ScopedLockType l(m_bankLock);
@@ -581,6 +632,7 @@ void MdProcessor::scheduleSequencer(int n, double ratio)
     }
     if (m_bankFresh.exchange(false)) { m_patternSeen = -1; m_seg.slot = -1; relocate = true; }
     if (int(song) != m_modeSeen || songSlot != m_songSeen) { m_modeSeen = int(song); m_songSeen = songSlot; relocate = true; }
+    if (m_songEdited.exchange(false) && song && !m_seg.valid) relocate = true;   // a song that had ended: rows added
     const int want = juce::jlimit(0, 127, int(std::lround(m_patternParam->load())));
     if (want != m_patternSeen) { m_patternSeen = want; m_seqQueued = want == m_seg.slot ? -1 : want; }
     const bool on = m_seqOn->load() >= 0.5f;   // with no bank, the pattern is empty: the steps still run

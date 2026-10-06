@@ -23,6 +23,7 @@ int firstFreeKitSlot(const mddump::Dump& d);      // -1 when all 64 are in use
 // Slot operations. A slot the dump does not carry gets a message of its own, appended.
 void putKit(mddump::Dump& d, int pos, const mddump::Kit& kit);
 void putPattern(mddump::Dump& d, int pos, const mddump::Pattern& pattern, int kitSlot = -1);
+void putSong(mddump::Dump& d, int pos, const mddump::Song& song);
 void clearKit(mddump::Dump& d, int pos);
 void clearPattern(mddump::Dump& d, int pos);
 void swapKits(mddump::Dump& d, int a, int b);     // patterns follow their kit

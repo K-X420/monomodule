@@ -84,6 +84,19 @@ void putPattern(Dump& d, int pos, const Pattern& pattern, int kitSlotPos)
     if (kitSlotPos >= 0) p.kit = uint8_t(kitSlotPos);
 }
 
+void putSong(Dump& d, int pos, const Song& song)
+{
+    for (auto& s : d.songs)
+        if (s.position == pos) { const auto v = s.version, r = s.revision; s = song; s.position = pos; s.version = v; s.revision = r; return; }
+    Song s = song;
+    s.position = pos;
+    Message m;
+    m.id = kSongId; m.version = s.version; m.revision = s.revision; m.position = pos;
+    m.songIndex = int(d.songs.size());
+    d.songs.push_back(s);
+    d.messages.push_back(m);
+}
+
 void clearKit(Dump& d, int pos)
 {
     if (auto* k = kitSlot(d, pos)) {

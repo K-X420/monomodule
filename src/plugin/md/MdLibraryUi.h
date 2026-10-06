@@ -66,6 +66,41 @@ private:
     std::array<juce::Rectangle<int>, kParts> m_rects{};   // LCD px
 };
 
+// The song editor, over the pages: a song's rows as the unit's song mode keeps them. A row plays a pattern's steps
+// START..END (END exclusive, -- = the whole pattern) REP times with its MUTES; a LOOP row jumps back TO a row TIMES times
+// (INF = forever); END ends the song; TEMPO (-- = unchanged) goes with the song to the unit. Drag a value (or wheel it),
+// click a mute, double-click a tempo for --; right-click a row or use the buttons below for rows.
+class MdSongEditor : public juce::Component {
+public:
+    static constexpr int kS = 3;   // LCD scale (one::kScale)
+    std::function<std::shared_ptr<const mnm::mddump::Song>()> getSong;
+    std::function<void(const juce::String& label, const std::function<void(mnm::mddump::Song&)>& fn, int coalesce)> edit;
+    std::function<int()> playingRow;      // -1 none
+    std::function<int()> defaultPattern;  // the pattern a new row plays
+    std::function<int(int)> patternLength;
+    std::function<void()> onClose;
+    void open(int slot) { m_slot = slot; m_sel = -1; m_scroll = 0; setVisible(true); toFront(true); repaint(); }
+    int slot() const { return m_slot; }
+    void paint(juce::Graphics&) override;
+    void mouseDown(const juce::MouseEvent&) override;
+    void mouseDrag(const juce::MouseEvent&) override;
+    void mouseUp(const juce::MouseEvent&) override { m_drag = -1; }
+    void mouseDoubleClick(const juce::MouseEvent&) override;
+    void mouseWheelMove(const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
+    bool keyPressed(const juce::KeyPress& k) override;
+    enum Col { Num, Ptn, Rep, Start, End, Tempo, Mutes, kCols };
+private:
+    struct Hit { int row = -1, col = -1, mute = -1, button = -1; bool close = false; };
+    Hit hitAt(juce::Point<int> lcd) const;
+    int rowsVisible() const;
+    int value(const mnm::mddump::SongRow& r, int col) const;
+    void setValue(int row, int col, int v, int coalesce);
+    void rowMenu(int row);
+    void rowOp(int op, int row);   // 0 +pattern after, 1 +LOOP after, 2 +END after, 3 delete, 4 up, 5 down, 6 duplicate, 7 +pattern before
+    int m_slot = 0, m_sel = -1, m_scroll = 0;
+    int m_drag = -1, m_dragCol = -1, m_dragY = 0, m_dragV = 0;
+};
+
 class MdLibraryDrop : public juce::Component {
 public:
     static constexpr int kS = 2, kRowH = 12, kHeadH = 15, kFootH = 15, kLcdW = 220;

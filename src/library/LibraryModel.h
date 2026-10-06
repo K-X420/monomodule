@@ -44,6 +44,11 @@ public:
                              const juce::String& savedFrom, const Slot& into, juce::String* soundIdOut = nullptr);
     juce::Result saveMdKit(const mnm::mddump::Kit& kit, const juce::String& name, const juce::String& parentId,
                            const juce::String& savedFrom, const Slot& into, juce::String* kitIdOut = nullptr);
+    // A plugin's patterns and songs into an MD project as a new version (each slot of `bank` that differs from the
+    // project's replaces it). projectId empty: the bank (kits, patterns, songs) becomes a new project named `name`.
+    // projectIdOut: the project it went into.
+    juce::Result saveMdPatterns(const juce::String& projectId, const mnm::mddump::Dump& bank, const juce::String& name,
+                                const juce::String& savedFrom, juce::String* projectIdOut = nullptr, juce::StringArray* changesOut = nullptr);
 
 private:
     Store m_store;

@@ -11,9 +11,11 @@
 int main(int argc, char** argv)
 {
     juce::ScopedJuceInitialiser_GUI gui;
+    if (std::getenv("MD_PRINT_SIZE")) { std::printf("sizeof(MdProcessor) = %zu\n", sizeof(mnm::plugin::md::MdProcessor)); return 0; }
     if (argc < 3) { std::printf("usage: md-plugintest <os.syx> <out.wav> [ui.png]\n"); return 2; }
     using namespace mnm::plugin::md;
-    MdProcessor proc;
+    auto procHeap = std::make_unique<MdProcessor>();   // on the heap: main's many test blocks would overflow the stack
+    auto& proc = *procHeap;
     proc.setFirmwarePath(juce::String(argv[1]), false);
     std::printf("%s\n", proc.statusText().toRawUTF8());
     if (!proc.engineReady()) {   // without an OS: the editor's first-run screen (md-plugintest <bad path> x.wav ui.png)
@@ -33,6 +35,69 @@ int main(int argc, char** argv)
     const int block = 480;
     proc.setPlayConfigDetails(0, 2, rate, block);
     proc.prepareToPlay(rate, block);
+    if (std::getenv("MD_SONGED_TEST")) {
+        // Song editing through the editor's own edit path (undo included), the song playing, and the library save
+        // (only into a library under MNM_LIBRARY_DIR: the user's own is never touched)
+        int fails = 0;
+        auto check = [&](bool ok, const juce::String& what) { std::printf("  %s %s\n", ok ? "ok  " : "FAIL", what.toRawUTF8()); fails += ok ? 0 : 1; };
+        struct Head : juce::AudioPlayHead {
+            double ppq = 0; bool playing = false;
+            juce::Optional<PositionInfo> getPosition() const override { PositionInfo p; p.setPpqPosition(ppq); p.setBpm(120); p.setIsPlaying(playing); return p; }
+        } head;
+        auto pHeap = std::make_unique<MdProcessor>();   // on the heap: main's many test blocks would overflow the stack
+        auto& p = *pHeap;
+        p.setFirmwarePath(juce::String(argv[1]), false);
+        p.setPlayHead(&head);
+        p.prepareToPlay(rate, block);
+        p.editPattern(0, [](mnm::mddump::Pattern& x) { x.trigs[0] = 1u; });   // A01: T1 on step 1
+        std::unique_ptr<juce::AudioProcessorEditor> ed(p.createEditor());
+        auto* med = dynamic_cast<MdEditor*>(ed.get());
+        med->devOpenSong(0);
+        auto& se = med->devSongEditor();
+        auto row = [](int b0, int b2, int b3, int b8, int b9) { mnm::mddump::SongRow r; r.bytes[0] = uint8_t(b0); r.bytes[2] = uint8_t(b2); r.bytes[3] = uint8_t(b3); r.bytes[6] = r.bytes[7] = 0xFF; r.bytes[8] = uint8_t(b8); r.bytes[9] = uint8_t(b9); return r; };
+        se.edit("row", [&](mnm::mddump::Song& s) { s.rows.push_back(row(0, 1, 0, 0, 16)); }, -1);      // A01 x2
+        se.edit("loop", [&](mnm::mddump::Song& s) { s.rows.push_back(row(0xFE, 1, 0, 0, 0)); }, -1);  // LOOP to row 1, once
+        se.edit("end", [&](mnm::mddump::Song& s) { s.rows.push_back(row(0xFF, 0, 0, 0, 0)); }, -1);
+        auto song = p.bankSong(0);
+        check(song && song->rows.size() == 3, "three rows made in the editor");
+        med->devUndo();
+        check(p.bankSong(0) && p.bankSong(0)->rows.size() == 2, "undo: the END row goes");
+        med->devRedo();
+        check(p.bankSong(0) && p.bankSong(0)->rows.size() == 3, "redo: back");
+        if (auto* a = p.apvts.getParameter(seqId())) a->setValueNotifyingHost(1.0f);
+        if (auto* a = p.apvts.getParameter(seqModeId())) a->setValueNotifyingHost(1.0f);
+        head.playing = true;
+        p.setTrigLogging(true);
+        juce::AudioBuffer<float> buf(2, block);
+        for (int i = 0; i < int(96 * 6 * 1000.0 / block); ++i) { juce::MidiBuffer mm; buf.clear(); p.processBlock(buf, mm); head.ppq += block / 1000.0 / 24.0; }
+        int t1 = 0;
+        for (const auto& e : p.trigLog()) if (e.track == 0 && e.step == 0) ++t1;
+        check(t1 == 4, "the song plays A01 four times (x2, looped once), then ends (" + juce::String(t1) + ")");
+        if (std::getenv("MNM_LIBRARY_DIR")) {
+            MdLibrary lib;
+            juce::String id; juce::StringArray changes;
+            auto r = lib.model().saveMdPatterns({}, p.bankDump(), "SAVE TEST", "test", &id, &changes);
+            check(r.wasOk() && id.isNotEmpty() && lib.model().mdState(id) && lib.model().mdState(id)->patternAt(0), "a new project from the plugin's bank");
+            p.editPattern(0, [](mnm::mddump::Pattern& x) { x.trigs[1] = 1u << 3; });
+            r = lib.model().saveMdPatterns(id, p.bankDump(), "SAVE TEST", "test", nullptr, &changes);
+            const auto* st = lib.model().mdState(id);
+            check(r.wasOk() && changes.size() == 1 && st && st->patternAt(0) && st->patternAt(0)->trigs[1] == (1u << 3), "an edit saved: a new version with that pattern (" + changes.joinIntoString("; ") + ")");
+            r = lib.model().saveMdPatterns(id, p.bankDump(), "SAVE TEST", "test", nullptr, &changes);
+            check(r.wasOk() && changes.isEmpty(), "saved again unchanged: no new version");
+        } else {
+            std::printf("  skip the library save (set MNM_LIBRARY_DIR to a scratch folder)\n");
+        }
+        if (argc > 3) {
+            se.edit("tempo", [&](mnm::mddump::Song& s) { s.rows[0].bytes[6] = uint8_t((128 * 24) >> 8); s.rows[0].bytes[7] = uint8_t(128 * 24); s.rows[0].bytes[5] = 0x05; }, -1);
+            med->refresh();
+            auto img = ed->createComponentSnapshot(ed->getLocalBounds(), true, 1.0f);
+            juce::File png{juce::String(argv[3])}; png.deleteFile();
+            juce::PNGImageFormat pf;
+            if (auto st = std::unique_ptr<juce::FileOutputStream>(png.createOutputStream())) pf.writeImageToStream(img, *st);
+        }
+        std::printf(fails ? "SONGED TEST FAILED (%d)\n" : "SONGED TEST OK\n", fails);
+        return fails ? 1 : 0;
+    }
     if (std::getenv("MD_REC_TEST")) {
         // Live recording against a simulated transport (120 BPM, 48 kHz: 1000 samples a clock, a step = 6 clocks)
         int fails = 0;
@@ -41,7 +106,8 @@ int main(int argc, char** argv)
             double ppq = 0; bool playing = true;
             juce::Optional<PositionInfo> getPosition() const override { PositionInfo p; p.setPpqPosition(ppq); p.setBpm(120); p.setIsPlaying(playing); return p; }
         } head;
-        MdProcessor p;
+        auto pHeap = std::make_unique<MdProcessor>();   // on the heap: main's many test blocks would overflow the stack
+        auto& p = *pHeap;
         p.setFirmwarePath(juce::String(argv[1]), false);
         p.setPlayHead(&head);
         p.prepareToPlay(rate, block);
@@ -164,7 +230,8 @@ int main(int argc, char** argv)
             double ppq = 0; bool playing = true;
             juce::Optional<PositionInfo> getPosition() const override { PositionInfo p; p.setPpqPosition(ppq); p.setBpm(120); p.setIsPlaying(playing); return p; }
         } head;
-        MdProcessor p;
+        auto pHeap = std::make_unique<MdProcessor>();   // on the heap: main's many test blocks would overflow the stack
+        auto& p = *pHeap;
         p.setFirmwarePath(juce::String(argv[1]), false);
         p.setPlayHead(&head);
         p.prepareToPlay(rate, block);
@@ -207,7 +274,8 @@ int main(int argc, char** argv)
             check(!p.internalPlay(), "the host's transport takes over");
         }
         {   // PLAY with no pattern at all (a fresh instance, no bank): the steps run all the same
-            MdProcessor q;
+            auto qHeap = std::make_unique<MdProcessor>();   // on the heap: main's many test blocks would overflow the stack
+            auto& q = *qHeap;
             q.setFirmwarePath(juce::String(argv[1]), false);
             Head h2; h2.playing = false;
             q.setPlayHead(&h2);
@@ -254,7 +322,8 @@ int main(int argc, char** argv)
             // the edits are kept: state round trip
             juce::MemoryBlock state;
             p.getStateInformation(state);
-            MdProcessor r;
+            auto rHeap = std::make_unique<MdProcessor>();   // on the heap: main's many test blocks would overflow the stack
+            auto& r = *rHeap;
             r.setStateInformation(state.getData(), int(state.getSize()));
             const auto back = r.bankPattern(0);
             check(back && back->length == 32 && back->trigs[0] == doubled->trigs[0] && back->locks[back->lockRow(0, 0)][20] == 100, "the edited pattern comes back with the plugin state");
@@ -311,7 +380,9 @@ int main(int argc, char** argv)
         b.trigs[2] = 1;
         d.patterns.push_back(a); d.patterns.push_back(b);
 
-        MdProcessor p;
+        auto pHeap = std::make_unique<MdProcessor>();   // on the heap: main's many test blocks would overflow the stack
+
+        auto& p = *pHeap;
         p.setFirmwarePath(juce::String(argv[1]), false);
         p.setPlayHead(&head);
         p.prepareToPlay(rate, block);
@@ -431,7 +502,8 @@ int main(int argc, char** argv)
         // Trig group: only T1 is trigged, with TRIG GROUP T3: T3 must sound (vs silent without it).
         int fails = 0;
         auto run = [&](int trigGroup, int muteGroup, bool trigT2, double& t2After, double& t3) {
-            MdProcessor p;
+            auto pHeap = std::make_unique<MdProcessor>();   // on the heap: main's many test blocks would overflow the stack
+            auto& p = *pHeap;
             p.setFirmwarePath(juce::String(argv[1]), false);
             p.enableAllBuses();
             if (auto* q = p.apvts.getParameter(outputModeId())) q->setValueNotifyingHost(1.0f);
@@ -509,7 +581,8 @@ int main(int argc, char** argv)
                     proc.sampleSeconds(0), proc.sampleMemoryUsed() * 100.0);
         juce::MemoryBlock state;
         proc.getStateInformation(state);
-        MdProcessor other;
+        auto otherHeap = std::make_unique<MdProcessor>();   // on the heap: main's many test blocks would overflow the stack
+        auto& other = *otherHeap;
         other.setFirmwarePath(juce::String(argv[1]), false);
         other.setStateInformation(state.getData(), int(state.getSize()));
         std::printf("state %zu bytes; restored instance has '%s' (%.2f s) in slot 0\n", state.getSize(), other.sampleName(0).toRawUTF8(), other.sampleSeconds(0));
@@ -738,7 +811,8 @@ int main(int argc, char** argv)
         {   // the memory survives the plugin state
             juce::MemoryBlock state;
             proc.getStateInformation(state);
-            MdProcessor other;
+            auto otherHeap = std::make_unique<MdProcessor>();   // on the heap: main's many test blocks would overflow the stack
+            auto& other = *otherHeap;
             other.setFirmwarePath(juce::String(argv[1]), false);
             other.setStateInformation(state.getData(), int(state.getSize()));
             if (auto* pp = other.apvts.getParameter(machineId(0))) pp->setValueNotifyingHost(pp->convertTo0to1(float(machineIndexOf(16))));
