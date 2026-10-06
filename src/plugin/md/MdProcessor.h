@@ -197,7 +197,12 @@ private:
         std::atomic<float>* lfo[8] = {};             // TRK PARAM SHP1 SHP2 TYPE SPD DEP MIX
         std::atomic<float>* route = nullptr;
         std::atomic<float>* mute = nullptr;
+        std::atomic<float>* trigGroup = nullptr;   // 0 none, n = track n (the kit's groups, editable)
+        std::atomic<float>* muteGroup = nullptr;
     };
+    int trigGroupOf(int t) const;   // the track a trig of t also trigs, -1 none (a pattern's kit switch: its kit's)
+    int muteGroupOf(int t) const;
+    void setGroupsFromKit(const mnm::mddump::Kit& kit);
 
     void loadEngine();
     bool pushSamples();   // every slot into DSP2 (under the engine lock)

@@ -688,7 +688,7 @@ int main(int argc, char** argv)
         // Mute group: T2 rings, T1 is trigged at 0.25 s with MUTE GROUP T2: T2 must go silent (vs the same run without it).
         // Trig group: only T1 is trigged, with TRIG GROUP T3: T3 must sound (vs silent without it).
         int fails = 0;
-        auto run = [&](int trigGroup, int muteGroup, bool trigT2, double& t2After, double& t3) {
+        auto run = [&](int trigGroup, int muteGroup, bool trigT2, double& t2After, double& t3, bool viaParams = false) {
             auto pHeap = std::make_unique<MdProcessor>();   // on the heap: main's many test blocks would overflow the stack
             auto& p = *pHeap;
             p.setFirmwarePath(juce::String(argv[1]), false);
@@ -701,8 +701,12 @@ int main(int argc, char** argv)
                 kit.params[tr][0] = uint8_t(40 + 12 * tr); kit.params[tr][1] = 127; kit.params[tr][2] = 0; kit.params[tr][3] = 0;
                 kit.levels[tr] = 100;
             }
-            kit.trigGroups[0] = uint8_t(trigGroup); kit.muteGroups[0] = uint8_t(muteGroup);
+            if (!viaParams) { kit.trigGroups[0] = uint8_t(trigGroup); kit.muteGroups[0] = uint8_t(muteGroup); }
             p.loadMdKit("grouptest", kit, "GROUPS");
+            if (viaParams) {   // edited on the ROUTING page after the load
+                if (auto* q = p.apvts.getParameter(trigGroupId(0))) q->setValueNotifyingHost(q->convertTo0to1(float(groupParam(uint8_t(trigGroup)))));
+                if (auto* q = p.apvts.getParameter(muteGroupId(0))) q->setValueNotifyingHost(q->convertTo0to1(float(groupParam(uint8_t(muteGroup)))));
+            }
             p.syncMachineSideEffects();
             juce::AudioBuffer<float> buf(p.getTotalNumOutputChannels(), block);
             t2After = t3 = 0;
@@ -730,6 +734,34 @@ int main(int argc, char** argv)
         check(plainT3 < 1e-6, "no trig group: T3 stays silent", plainT3, 0.0);
         run(2, 127, false, y, groupT3);
         check(groupT3 > 1.0, "TRIG GROUP T3: T1's trig plays T3", groupT3, plainT3);
+        double editedMuteT2, editedT3, z;
+        run(127, 1, true, editedMuteT2, z, true);
+        run(2, 127, false, z, editedT3, true);
+        check(editedMuteT2 < plainT2 * 1e-4 && editedT3 > 1.0, "the same groups set on the ROUTING page (MUTG / TRGG) work", editedMuteT2, editedT3);
+        {   // the kit loads into the parameters, a save of the kit carries the edits, the state keeps them, old sessions take the base kit's
+            auto pHeap = std::make_unique<MdProcessor>();
+            auto& p = *pHeap;
+            auto kit = p.captureMdKit();
+            kit.trigGroups[4] = 6; kit.muteGroups[8] = 9;
+            p.loadMdKit("g", kit, "G");
+            const bool loaded = std::lround(p.apvts.getRawParameterValue(trigGroupId(4))->load()) == 7 && std::lround(p.apvts.getRawParameterValue(muteGroupId(8))->load()) == 10;
+            if (auto* q = p.apvts.getParameter(muteGroupId(2))) q->setValueNotifyingHost(q->convertTo0to1(16.0f));
+            const auto cap = p.captureMdKit();
+            check(loaded && cap.trigGroups[4] == 6 && cap.muteGroups[8] == 9 && cap.muteGroups[2] == 15 && cap.trigGroups[0] == 127 && p.kitModified(),
+                  "a kit's groups load as T5 TRGG T7 / T9 MUTG T10; an edit (T3 MUTG T16) goes into the saved kit and marks it modified", 0, 0);
+            juce::MemoryBlock st; p.getStateInformation(st);
+            auto rHeap = std::make_unique<MdProcessor>();
+            rHeap->setStateInformation(st.getData(), int(st.getSize()));
+            const bool kept = std::lround(rHeap->apvts.getRawParameterValue(muteGroupId(2))->load()) == 16 && std::lround(rHeap->apvts.getRawParameterValue(trigGroupId(4))->load()) == 7;
+            auto xml = juce::AudioProcessor::getXmlFromBinary(st.getData(), int(st.getSize()));
+            for (int i = xml->getNumChildElements(); --i >= 0;)   // a session saved before the group parameters existed
+                if (xml->getChildElement(i)->getStringAttribute("id").endsWith("grp")) xml->removeChildElement(xml->getChildElement(i), true);
+            juce::MemoryBlock old; juce::AudioProcessor::copyXmlToBinary(*xml, old);
+            auto oHeap = std::make_unique<MdProcessor>();
+            oHeap->setStateInformation(old.getData(), int(old.getSize()));
+            const bool migrated = std::lround(oHeap->apvts.getRawParameterValue(trigGroupId(4))->load()) == 7 && std::lround(oHeap->apvts.getRawParameterValue(muteGroupId(8))->load()) == 10;
+            check(kept && migrated, "the groups come back with the state; an older session takes them from its saved kit", 0, 0);
+        }
         std::printf(fails ? "GROUP TEST FAILED (%d)\n" : "GROUP TEST OK\n", fails);
         return fails ? 1 : 0;
     }

@@ -167,6 +167,13 @@ inline juce::String revId(int t) { return tp(t) + "rev"; }
 inline juce::String levelId(int t) { return tp(t) + "lev"; }
 inline juce::String routeId(int t) { return tp(t) + "out"; }
 inline juce::String muteId(int t) { return tp(t) + "mute"; }   // a muted track ignores its trigs
+// The kit's TRIG GROUP (a trig of this track trigs that one too) and MUTE GROUP (a trig of this track silences that one
+// until its own next trig): 0 = none, n = track n
+inline juce::String trigGroupId(int t) { return tp(t) + "tgrp"; }
+inline juce::String muteGroupId(int t) { return tp(t) + "mgrp"; }
+constexpr const char* kGroupNames[17] = {"--", "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11", "T12", "T13", "T14", "T15", "T16"};
+inline int groupParam(uint8_t kitByte) { return kitByte < 16 ? kitByte + 1 : 0; }      // the kit's byte (127 = none) -> the parameter
+inline uint8_t groupByte(int param) { return param >= 1 && param <= 16 ? uint8_t(param - 1) : uint8_t(127); }
 // LFO page: destination, shapes, type (the kit's LFO struct) and SPD DEP MIX (routing bytes 21-23)
 constexpr const char* kLfoLabels[8] = {"TRK", "PARAM", "SHP1", "SHP2", "TYPE", "SPD", "DEP", "MIX"};
 constexpr const char* kLfoTypes[3] = {"FREE", "TRIG", "HOLD"};
@@ -245,6 +252,10 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
         g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{lfoId(t, 6), 1}, pre + "LFO DEP", 0, 127, 0));
         g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{lfoId(t, 7), 1}, pre + "LFO MIX", 0, 127, 0));
         g->addChild(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{muteId(t), 1}, pre + "MUTE", false));
+        juce::StringArray groups;
+        for (auto* n : kGroupNames) groups.add(n);
+        g->addChild(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{trigGroupId(t), 1}, pre + "TRIG GROUP", groups, 0));
+        g->addChild(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{muteGroupId(t), 1}, pre + "MUTE GROUP", groups, 0));
         layout.add(std::move(g));
     }
     for (int fx = 0; fx < 4; ++fx) {

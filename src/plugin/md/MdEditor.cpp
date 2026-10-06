@@ -56,7 +56,7 @@ constexpr const char* kVelNames[2] = {"VOLUME", "ACCENT"};
 const spec::Param kFxParams[8] = {numeric("AMD", 0), numeric("AMF", 0), numeric("EQF", 64), bipolar("EQG"),
                                   numeric("FLTF", 0), numeric("FLTW", 127), numeric("FLTQ", 0), numeric("SRR", 0)};
 const spec::Param kRoutingParams[8] = {numeric("DIST", 0), numeric("VOL", 100), bipolar("PAN"), numeric("DEL", 0),
-                                       numeric("REV", 0), readout("OUT", kRouteNames, kNumRoutes, kNumRoutes - 1), blank(), blank()};
+                                       numeric("REV", 0), readout("OUT", kRouteNames, kNumRoutes, kNumRoutes - 1), readout("TRGG", kGroupNames, 17), readout("MUTG", kGroupNames, 17)};
 const spec::Param kLfoParams[8] = {readout("TRK", kTrackNames, kTracks), readout("PARAM", kLfoParamNames, 24), readout("SHP1", kShapeNames, 8),
                                    readout("SHP2", kShapeNames, 8), readout("TYPE", kLfoTypes, 3), numeric("SPD", 64), numeric("DEP", 0), numeric("MIX", 0)};
 constexpr const char* kSeqNames[2] = {"OFF", "ON"};
@@ -91,13 +91,14 @@ spec::Param named(const char* label, int kind, int def = 0) { return readout(lab
 const spec::Param kMidFx[8] = {named("CC1D", 1), numeric("CC1V", 0), named("CC2D", 1), numeric("CC2V", 0),
                                named("CC3D", 1), numeric("CC3V", 0), named("CC4D", 1), numeric("CC4V", 0)};
 const spec::Param kMidRouting[8] = {named("CC5D", 1), numeric("CC5V", 0), named("CC6D", 1), numeric("CC6V", 0),
-                                    named("PCHG", 2), blank(), blank(), blank()};
+                                    named("PCHG", 2), blank(), readout("TRGG", kGroupNames, 17), readout("MUTG", kGroupNames, 17)};
 const spec::Param kCtr8pFx[8] = {named("P1T", 3), named("P1P", 4), named("P2T", 3), named("P2P", 4),
                                  named("P3T", 3), named("P3P", 4), named("P4T", 3), named("P4P", 4)};
-const spec::Param kCtr8pRouting[8] = {named("P5T", 3), named("P5P", 4), named("P6T", 3), named("P6P", 4), named("P7T", 3), blank(), blank(), blank()};
+const spec::Param kCtr8pRouting[8] = {named("P5T", 3), named("P5P", 4), named("P6T", 3), named("P6P", 4), named("P7T", 3), blank(), readout("TRGG", kGroupNames, 17), readout("MUTG", kGroupNames, 17)};
 const spec::Param kCtr8pLfo[8] = {blank(), blank(), blank(), blank(), blank(), named("P7P", 4), named("P8T", 3), named("P8P", 4)};
 const spec::Param kCtrAllRouting[8] = {numeric("DIST", 0), numeric("VOL", 100), bipolar("PAN"), numeric("DEL", 0),
-                                       numeric("REV", 0), blank(), blank(), blank()};
+                                       numeric("REV", 0), blank(), readout("TRGG", kGroupNames, 17), readout("MUTG", kGroupNames, 17)};
+const spec::Param kGroupsOnly[8] = {blank(), blank(), blank(), blank(), blank(), blank(), readout("TRGG", kGroupNames, 17), readout("MUTG", kGroupNames, 17)};
 const spec::Param kCtrAllLfo[8] = {blank(), blank(), blank(), blank(), blank(), numeric("SPD", 64), numeric("DEP", 0), numeric("MIX", 0)};
 const spec::Param kBlankPage[8] = {blank(), blank(), blank(), blank(), blank(), blank(), blank(), blank()};
 
@@ -1477,9 +1478,9 @@ void MdEditor::rebuildSynPage()
     m_pagesMachineId = id;
     const bool mid = isMidMachine(id), master = ctrMasterFx(id) >= 0;
     bindTrackPage(m_fx, mid ? kMidFx : id == kCtr8p ? kCtr8pFx : master ? kBlankPage : kFxParams, [t](int k) { return fxId(t, k); }, [](int k) { return 8 + k; });
-    bindTrackPage(m_routing, mid ? kMidRouting : id == kCtr8p ? kCtr8pRouting : master ? kBlankPage : id == kCtrAll ? kCtrAllRouting : kRoutingParams, [t](int k) {
-        static juce::String (* const ids[6])(int) = {distId, volId, panId, delId, revId, routeId};
-        return k < 6 ? ids[k](t) : juce::String();
+    bindTrackPage(m_routing, mid ? kMidRouting : id == kCtr8p ? kCtr8pRouting : master ? kGroupsOnly : id == kCtrAll ? kCtrAllRouting : kRoutingParams, [t](int k) {
+        static juce::String (* const ids[8])(int) = {distId, volId, panId, delId, revId, routeId, trigGroupId, muteGroupId};
+        return ids[k](t);
     }, [](int k) { return k < 5 ? 16 + k : -1; });
     bindTrackPage(m_lfo, id == kCtr8p ? kCtr8pLfo : id == kCtrAll ? kCtrAllLfo : kLfoParams, [t](int k) { return lfoId(t, k); }, [](int k) { return k >= 5 ? 21 + (k - 5) : -1; });
 }

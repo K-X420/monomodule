@@ -56,6 +56,8 @@ MdProcessor::MdProcessor()
         tr.route = apvts.getRawParameterValue(routeId(t));
         for (int k = 0; k < 8; ++k) tr.lfo[k] = apvts.getRawParameterValue(lfoId(t, k));
         tr.mute = apvts.getRawParameterValue(muteId(t));
+        tr.trigGroup = apvts.getRawParameterValue(trigGroupId(t));
+        tr.muteGroup = apvts.getRawParameterValue(muteGroupId(t));
         apvts.addParameterListener(machineId(t), this);
     }
     for (int fx = 0; fx < 4; ++fx)
@@ -184,7 +186,6 @@ void MdProcessor::refreshParameters()
             if (now == w || m_clock > m_ctlWriteUntil[size_t(target)]) w = -1;
         }
     const auto* ok = m_kitOverride.load();
-    const auto& groups = ok ? *ok : m_baseKit;
     for (int t = 0; t < kTracks; ++t) {
         auto& tr = m_tracks[size_t(t)];
         mnm::md::Engine::Track e;
@@ -195,7 +196,7 @@ void MdProcessor::refreshParameters()
         static const int lfoMax[5] = {15, 23, 7, 7, 2};
         for (int k = 0; k < 5; ++k) e.lfoConfig[size_t(k)] = ok ? uint8_t(juce::jlimit(0, lfoMax[k], int(ok->lfos[t][k]))) : val(tr.lfo[k]);
         e.route = juce::jlimit(0, kNumRoutes - 1, int(std::lround(tr.route->load())));
-        e.muteGroup = groups.muteGroups[t] < kTracks ? groups.muteGroups[t] : -1;
+        e.muteGroup = muteGroupOf(t);
         if (isMidMachine(e.machine)) {   // no voice; the parameters stay (the OS's LFOs move them: midStream)
             e.machine = 0; e.level = 0;
         } else if (isCtrMachine(e.machine)) {   // no voice; CTR-RE..DX keep SYNTHESIS (an LFO moves the master effect from it)
@@ -1214,9 +1215,8 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
             for (int q = 0; q < 24; ++q)
                 if (m_clock + int64_t(pt.enginePos / ratio) - m_recTouched[size_t(pt.track)][size_t(q)] < int64_t(0.3 * m_hostRate))
                     recordPush({1, int8_t(pt.track), int8_t(q), int8_t(s->step), int16_t(kitParam(pt.track, q)), int16_t(m_seg.slot)});
-        const auto* ok = m_kitOverride.load();
-        const int g = (ok ? *ok : m_baseKit).trigGroups[pt.track];
-        if (g < kTracks && g != pt.track && !silenced(g)) fireOne(g, pt.enginePos, accent, nullptr);
+        const int g = trigGroupOf(pt.track);
+        if (g >= 0 && g != pt.track && !silenced(g)) fireOne(g, pt.enginePos, accent, nullptr);
     };
     while (m_fifoLen < needed) {
         const double passEnd = double(m_fifoLen + kBlock);
@@ -1492,6 +1492,27 @@ mnm::mddump::Kit freshKit()   // what an empty kit slot holds: no groups, every 
 }
 } // namespace
 
+int MdProcessor::trigGroupOf(int t) const
+{
+    if (const auto* ok = m_kitOverride.load()) return ok->trigGroups[t] < kTracks ? ok->trigGroups[t] : -1;
+    return int(std::lround(m_tracks[size_t(t)].trigGroup->load())) - 1;
+}
+
+int MdProcessor::muteGroupOf(int t) const
+{
+    if (const auto* ok = m_kitOverride.load()) return ok->muteGroups[t] < kTracks ? ok->muteGroups[t] : -1;
+    return int(std::lround(m_tracks[size_t(t)].muteGroup->load())) - 1;
+}
+
+void MdProcessor::setGroupsFromKit(const mnm::mddump::Kit& kit)
+{
+    for (int t = 0; t < kTracks; ++t) {
+        if (m_locked[size_t(t)].load()) continue;   // LOCK: the track keeps its own
+        if (auto* p = apvts.getParameter(trigGroupId(t))) p->setValueNotifyingHost(p->convertTo0to1(float(groupParam(kit.trigGroups[t]))));
+        if (auto* p = apvts.getParameter(muteGroupId(t))) p->setValueNotifyingHost(p->convertTo0to1(float(groupParam(kit.muteGroups[t]))));
+    }
+}
+
 mnm::mddump::Kit MdProcessor::captureMdKit() const
 {
     auto k = m_baseKit;
@@ -1513,6 +1534,8 @@ mnm::mddump::Kit MdProcessor::captureMdKit() const
         k.levels[t] = u8(levelId(t));
         std::memcpy(k.lfos[t], m_kitLfos[size_t(t)].data(), 36);   // bytes 5.. are the OS's own LFO state, as the last kit had it
         for (int i = 0; i < 5; ++i) k.lfos[t][i] = uint8_t(val(lfoId(t, i)));
+        k.trigGroups[t] = groupByte(val(trigGroupId(t)));
+        k.muteGroups[t] = groupByte(val(muteGroupId(t)));
     }
     uint8_t* fx[4] = {k.reverb, k.delay, k.eq, k.dynamics};
     for (int f = 0; f < 4; ++f)
@@ -1524,6 +1547,7 @@ int MdProcessor::loadMdKit(const juce::String& key, const mnm::mddump::Kit& kit,
 {
     m_baseKit = kit;
     const int emptied = applyKit(engineKit(kit));
+    setGroupsFromKit(kit);
     setLoadedKit(key, name);
     for (int t = 0; t < kTracks; ++t)   // each track's sound is now the kit's
         if (!m_locked[size_t(t)].load()) setLoadedSound(t, juce::String(mnm::mdcatalog::Catalog::soundHash(mnm::mdcatalog::Sound::fromKit(kit, t))), {});
@@ -1703,6 +1727,7 @@ void MdProcessor::initKit()
         m_kitLfoPending[size_t(t)].store(true);
         m_sounds[size_t(t)] = {};
         m_baseKit.trigGroups[t] = 127; m_baseKit.muteGroups[t] = 127;
+        for (const auto& id : {trigGroupId(t), muteGroupId(t)}) if (auto* p = apvts.getParameter(id)) p->setValueNotifyingHost(0.0f);
     }
     for (auto& f : m_machineChanged) f.store(false);
     for (auto& v : m_visited) v.fill(false);
@@ -1791,6 +1816,11 @@ void MdProcessor::setStateInformation(const void* data, int sizeInBytes)
     m_kitSnapshot = hexBytes("kitSnapshot");
     const auto base = hexBytes("baseKit");
     if (base.empty() || !mnm::mddump::decodeKit(base.data(), base.size(), m_baseKit)) m_baseKit = freshKit();
+    if (!xml->toString().contains(trigGroupId(0).toRawUTF8()))   // a session from before the group parameters: the groups were the base kit's
+        for (int t = 0; t < kTracks; ++t) {
+            if (auto* p = apvts.getParameter(trigGroupId(t))) p->setValueNotifyingHost(p->convertTo0to1(float(groupParam(m_baseKit.trigGroups[t]))));
+            if (auto* p = apvts.getParameter(muteGroupId(t))) p->setValueNotifyingHost(p->convertTo0to1(float(groupParam(m_baseKit.muteGroups[t]))));
+        }
     juce::StringArray soundKeys, soundNames, soundHashes;
     soundKeys.addTokens(apvts.state.getProperty("soundKeys", "").toString(), "|", "");
     soundNames.addTokens(apvts.state.getProperty("soundNames", "").toString(), "|", "");
