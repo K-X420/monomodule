@@ -214,6 +214,27 @@ void Pattern::clearSteps(int from, int count, int track)
     }
 }
 
+bool decodeGlobal(const uint8_t* msg, size_t n, Global& g)
+{
+    if (n < 10 + 16 + 147 + 19 + 5 || msg[6] != kGlobalId || !checksumOk(msg, n)) return false;
+    g.position = msg[9];
+    for (int t = 0; t < kTracks; ++t) g.routing[t] = msg[10 + t];
+    size_t i = 26;
+    int got = 0;
+    while (got < 128 && i < n) {   // 7-bit packed: a byte of top bits, then up to 7
+        const uint8_t hi = msg[i++];
+        for (int j = 0; j < 7 && got < 128 && i < n; ++j) g.keyMap[got++] = uint8_t(msg[i++] | ((hi & (0x40 >> j)) ? 0x80 : 0));
+    }
+    if (got < 128 || i + 19 > n - 5) return false;
+    const uint8_t* r = msg + i;
+    g.baseChannel = r[0];
+    g.tempo = (r[2] << 7) | r[3];
+    g.flags = r[5];
+    g.programChange = r[17];
+    g.trigMode = r[18];
+    return true;
+}
+
 std::string patternSlotName(int position)
 {
     if (position < 0 || position > 127) return "?";
@@ -431,6 +452,8 @@ Dump parseDump(const uint8_t* data, size_t size, const std::string& filename)
                 else { m.damaged = true; ++d.numDamaged; }
             } else if (m.id == kGlobalId) {
                 ++d.numGlobals;
+                Global g;
+                if (decodeGlobal(r, n, g)) d.globals.push_back(g);
             } else {
                 ++d.numUnknown;
             }

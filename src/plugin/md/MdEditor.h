@@ -162,6 +162,7 @@ public:
     void devRedo() { redo(); }
     one::KnobPage& devSynPage() { return m_syn; }
     MdSongEditor& devSongEditor() { return m_songEd; }
+    void devOpenMidi() { openMidiPanel(); }
     void devOpenSong(int slot) { m_songEd.setBounds(m_syn.getX(), m_syn.getY(), m_routing.getRight() - m_syn.getX(), m_out.getBottom() - m_syn.getY()); m_songEd.open(slot); }
     void showGrid(int held)   // dev/snapshot: the PATTERN tab, GRID on, a step held (-1 none)
     {
@@ -209,6 +210,8 @@ private:
     };
     void doEditSong(int slot, const juce::String& label, const std::function<void(mnm::mddump::Song&)>& fn, int coalesce = -1);
     MdSongEditor m_songEd;
+    MdMidiPanel m_midiPanel;
+    void openMidiPanel();
     std::vector<UndoStep> m_undo, m_redo;
     int m_lastCoalesce = -1;
     juce::int64 m_lastEditMs = 0;

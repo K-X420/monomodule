@@ -72,6 +72,8 @@ MdProcessor::MdProcessor()
     for (auto& a : m_lockVal) a.fill(-1);
     for (auto& a : m_ctlWrite) a.fill(-1);
     m_recSkip.fill(-1);
+    setMidiSettings(defaultMidiSettings());
+    for (auto& a : m_outSeen) a.fill(-1);
     for (auto& a : m_recSeen) a.fill(-1);
     m_firmwarePath = loadOsPath();
     loadEngine();
@@ -455,6 +457,7 @@ void MdProcessor::setPatternBank(const juce::String& projectId, const juce::Stri
     }
     m_bankProjectId = projectId;
     m_bankName = name;
+    m_bankGlobals = dump.globals;
     m_bankFresh.store(true);
 }
 
@@ -462,8 +465,9 @@ void MdProcessor::setPatternBank(const juce::String& projectId, const juce::Stri
 // one its last trig locked and this one does not jumps back to the kit value; every glide of the track ends, and the
 // step's slides start. A MIDI / UI trig (s = null) releases the locks as a trig without any. MID and CTR tracks have
 // no voice to jump: their values move (midStream / controlMachines read seqParam).
-void MdProcessor::trigLocks(int t, const mnm::md::SeqTrig* s)
+void MdProcessor::trigLocks(int t, const mnm::md::SeqTrig* s, int pos)
 {
+    const bool ccOut = m_midiOutMode.load() >= 2;
     const auto* ok = m_kitOverride.load();
     const int id = ok ? overrideMachine(*ok, t) : machineIdOf(t);
     const bool voice = !isMidMachine(id) && !isCtrMachine(id);
@@ -472,11 +476,13 @@ void MdProcessor::trigLocks(int t, const mnm::md::SeqTrig* s)
         m_glide[size_t(t)][size_t(q)].active = false;
         const int v = s ? s->locks[size_t(q)] : -1;
         if (v >= 0) {
+            if (ccOut && locks[size_t(q)] != v) sendCc(t, q, v, pos);
             locks[size_t(q)] = int16_t(v);
             if (voice) m_engine->jumpParam(t, q, uint8_t(v));
         } else if (locks[size_t(q)] >= 0) {
             locks[size_t(q)] = -1;
             if (voice) m_engine->jumpParam(t, q, uint8_t(kitParam(t, q)));
+            if (ccOut) sendCc(t, q, kitParam(t, q), pos);
         }
     }
     if (s && s->slideMask)
@@ -499,6 +505,8 @@ void MdProcessor::seqStop()
 void MdProcessor::seqStart(Segment& seg, int slot, int start, int end, int64_t steps, uint16_t mutes, double origin,
                            const SeqBank* bank, const std::shared_ptr<const SeqBank>& hold, double atEnginePos)
 {
+    if ((m_pcMode.load() & 2) && m_seqRunning && slot >= 0 && slot < 128 && slot != seg.slot && m_baseCh.load() >= 0 && &seg == &m_seg)   // PRG CHANGE OUT
+        midSend(atEnginePos >= 0 ? juce::jlimit(0, juce::jmax(0, m_blockLen - 1), int(atEnginePos / juce::jmax(1e-9, m_lastRatio))) : 0, uint8_t(0xC0 | m_baseCh.load()), uint8_t(slot));
     seg.slot = slot;
     seg.origin = origin;
     seg.steps = steps;
@@ -700,6 +708,77 @@ void MdProcessor::scheduleSequencer(int n, double ratio)
         m_seqStepUi.store(m_seg.player.stepOf(k));
     } else {
         m_seqStepUi.store(-1);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------- MIDI settings
+
+MdProcessor::MidiSettings MdProcessor::defaultMidiSettings()
+{
+    MidiSettings s;
+    s.noteTrack.fill(-1);
+    for (int t = 0; t < kTracks; ++t) s.noteTrack[size_t(kTrackNotes[t])] = int8_t(t);
+    return s;
+}
+
+MdProcessor::MidiSettings MdProcessor::midiSettings() const
+{
+    MidiSettings s;
+    s.baseChannel = m_baseCh.load();
+    for (int i = 0; i < 128; ++i) s.noteTrack[size_t(i)] = m_noteTrack[size_t(i)].load();
+    s.programChange = m_pcMode.load();
+    s.midiOut = m_midiOutMode.load();
+    return s;
+}
+
+void MdProcessor::setMidiSettings(const MidiSettings& s)
+{
+    m_baseCh.store(juce::jlimit(-1, 15, s.baseChannel));
+    for (int i = 0; i < 128; ++i) m_noteTrack[size_t(i)].store(s.noteTrack[size_t(i)] >= 0 && s.noteTrack[size_t(i)] < kTracks ? s.noteTrack[size_t(i)] : int8_t(-1));
+    for (int t = 0; t < kTracks; ++t) {   // the note a track sends: its first in the map
+        int note = -1;
+        for (int i = 0; i < 128 && note < 0; ++i) if (s.noteTrack[size_t(i)] == t) note = i;
+        m_trackNote[size_t(t)].store(int8_t(note));
+    }
+    m_pcMode.store(juce::jlimit(0, 3, s.programChange));
+    m_midiOutMode.store(juce::jlimit(0, 2, s.midiOut));
+}
+
+MdProcessor::MidiSettings MdProcessor::fromGlobal(const mnm::mddump::Global& g, const MidiSettings& keep)
+{
+    MidiSettings s = keep;
+    s.baseChannel = g.baseChannel < 16 ? g.baseChannel : -1;
+    for (int i = 0; i < 128; ++i) s.noteTrack[size_t(i)] = int8_t(g.trackOfNote(i));
+    s.programChange = juce::jlimit(0, 3, int(g.programChange));
+    return s;
+}
+
+// The CC map (relative to the base channel): channel + t / 4, CC [16, 40, 72, 96][t % 4] + p; level CC 8 + t % 4
+void MdProcessor::sendCc(int t, int p, int value, int pos)
+{
+    const int base = m_baseCh.load();
+    if (base < 0) return;
+    const int ch = base + t / 4;
+    if (ch > 15) return;
+    static const int bases[4] = {16, 40, 72, 96};
+    const int cc = p == 24 ? 8 + t % 4 : bases[t % 4] + p;
+    midSend(pos, uint8_t(0xB0 | ch), uint8_t(cc), juce::jlimit(0, 127, value));
+    m_outSeen[size_t(t)][size_t(p)] = int16_t(value);
+}
+
+// Knob turns (and automation) out as CCs; a value that came in as a CC is not sent back
+void MdProcessor::scanKnobsOut(int pos)
+{
+    const bool quiet = m_clock < m_ctlQuietUntil;   // a kit load: not turns
+    for (int t = 0; t < kTracks; ++t) {
+        if (isMidMachine(machineIdOf(t))) continue;   // a MID track's values are its own MIDI
+        for (int p = 0; p <= 24; ++p) {
+            const int v = p == 24 ? juce::jlimit(0, 127, int(std::lround(m_tracks[size_t(t)].mix[13]->load()))) : trackParam(t, p);
+            auto& seen = m_outSeen[size_t(t)][size_t(p)];
+            if (v == seen) continue;
+            if (seen < 0 || quiet) { seen = int16_t(v); continue; }
+            sendCc(t, p, v, pos);
+        }
     }
 }
 
@@ -964,12 +1043,13 @@ void MdProcessor::handleCc(int channel, int cc, int value)
     auto set = [&](const juce::String& id, float v) {
         if (auto* p = apvts.getParameter(id)) p->setValueNotifyingHost(p->convertTo0to1(v));
     };
-    if (cc >= 8 && cc <= 11) { set(levelId((channel - 1) * 4 + cc - 8), float(value)); return; }
+    if (cc >= 8 && cc <= 11) { const int t = (channel - 1) * 4 + cc - 8; set(levelId(t), float(value)); m_outSeen[size_t(t)][24] = int16_t(value); return; }
     static const int bases[4] = {16, 40, 72, 96};
     for (int i = 0; i < 4; ++i) {
         const int k = cc - bases[i];
         if (k < 0 || k > 23) continue;
         const int t = (channel - 1) * 4 + i;
+        m_outSeen[size_t(t)][size_t(k)] = int16_t(value);
         if (k < 8) set(knobId(t, k), float(value));
         else if (k < 16) set(fxId(t, k - 8), float(value));
         else if (k < 21) {
@@ -1041,6 +1121,7 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
         m_directMask.store(mask);
     }
 
+    m_lastRatio = ratio;
     scheduleSequencer(n, ratio);   // the pattern's trigs of this block
     {   // live recording: on while armed and the pattern plays (PATTERN mode)
         const bool rec = m_recArmed.load() && m_seqRunning && m_seqMode->load() < 0.5f;
@@ -1054,26 +1135,28 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
     }
     for (const auto meta : midi) {
         const auto m = meta.getMessage();
-        if (m.isProgramChange()) {   // as on the unit: the next pattern
+        const int base = m_baseCh.load();
+        if (m.isProgramChange()) {   // as on the unit (PRG CHANGE IN, base channel): the next pattern
+            if (!(m_pcMode.load() & 1) || base < 0 || m.getChannel() != base + 1) continue;
             const int pc = m.getProgramChangeNumber();
             m_seqQueued = pc == m_seg.slot ? -1 : pc;
             m_patternSeen = pc;
             m_programChange.store(pc);
             triggerAsyncUpdate();
-        } else if (m.isNoteOn()) {
-            for (int t = 0; t < kTracks; ++t)
-                if (kTrackNotes[t] == m.getNoteNumber() && m_tracks[size_t(t)].mute->load() < 0.5f)
-                {
-                    m_pending.push_back({t, meta.samplePosition * ratio, int(m.getVelocity())});
-                    recordTrig(t, m_seqClock0 + meta.samplePosition * m_seqCps, int(m.getVelocity()));
-                }
+        } else if (m.isNoteOn()) {   // a trig: the note map, on the base channel
+            if (base < 0 || m.getChannel() != base + 1) continue;
+            const int t = m_noteTrack[size_t(m.getNoteNumber() & 127)].load();
+            if (t >= 0 && t < kTracks && m_tracks[size_t(t)].mute->load() < 0.5f) {
+                m_pending.push_back({t, meta.samplePosition * ratio, int(m.getVelocity()), -1, false});
+                recordTrig(t, m_seqClock0 + meta.samplePosition * m_seqCps, int(m.getVelocity()));
+            }
         } else if (m.isAllNotesOff() || m.isAllSoundOff()) {   // the host stopping: the MID machines' notes end
             for (auto& notes : m_midNotes) {
                 for (const auto& nt : notes) midSend(meta.samplePosition, uint8_t(nt.status & 0xEF), nt.note, 0);
                 notes.clear();
             }
-        } else if (m.isController()) {
-            handleCc(m.getChannel(), m.getControllerNumber(), m.getControllerValue());
+        } else if (m.isController()) {   // the CC map spans the base channel and the next three
+            if (base >= 0) handleCc(m.getChannel() - base, m.getControllerNumber(), m.getControllerValue());
         }
     }
     midi.clear();
@@ -1091,16 +1174,26 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
     // (MainOS 0x20CE20 / 0x20ADF0: once, the group's own group does not follow; it releases its locks). The mute
     // group side is the engine's (Engine::groupTrig).
     bool ctrTrig = false;
+    bool echo = true;   // the trig being fired goes out as MIDI (not a note that came in)
     auto fireOne = [&](int t, double enginePos, int accent, const mnm::md::SeqTrig* s) {
         const auto* ok = m_kitOverride.load();
         const int id = ok ? overrideMachine(*ok, t) : machineIdOf(t);
-        trigLocks(t, s);
         const int pos = juce::jlimit(0, juce::jmax(0, n - 1), int(std::lround(enginePos / ratio)));
+        trigLocks(t, s, pos);
         if (isMidMachine(id)) { midTrig(t, pos); m_engine->groupTrig(t); }
         else if (isCtrMachine(id)) { m_engine->groupTrig(t); ctrTrig = true; }
         else m_engine->trig(t, id, accent);
         m_activity[size_t(t)].store(1.0f);
         if (m_trigLogOn && m_trigLog.size() < m_trigLog.capacity()) m_trigLog.push_back({t, m_logClock + pos, s ? s->step : -1});
+        if (echo && m_midiOutMode.load() >= 1 && m_baseCh.load() >= 0 && !isMidMachine(id)) {   // MIDI OUT: the trig as its note, a step long
+            const int note = m_trackNote[size_t(t)].load(), ch = m_baseCh.load();
+            if (note >= 0) {
+                const int vel = s ? (accent > 0x80 ? 127 : 100) : 100;
+                midSend(pos, uint8_t(0x90 | ch), uint8_t(note), vel);
+                const double stepSamples = 6.0 / juce::jmax(1e-9, m_seqCps > 0 ? m_seqCps : 120.0 * 24.0 / 60.0 / m_hostRate);
+                m_outNotes.push_back({ch, note, m_clock + pos + int64_t(stepSamples)});
+            }
+        }
     };
     auto fire = [&](const PendingTrig& pt) {
         if (pt.track == -2) {   // a pattern change brings its kit in here
@@ -1108,6 +1201,7 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
             return;
         }
         const mnm::md::SeqTrig* s = pt.seq >= 0 ? &m_seqTrigs[size_t(pt.seq)] : nullptr;
+        echo = pt.echo;
         // the accent factor (MainOS 0x20CD76 / 0x20B26C): a pattern trig: 0x80 + 2 x the pattern's ACCENT when accented;
         // a note: VOLUME mode = velocity, ACCENT mode = 0x80 + 2 x ACCENT at velocity >= 112
         const int accent = s ? pt.velocity
@@ -1160,6 +1254,10 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
     m_fifoLen -= used;
     for (auto& p : m_pending) p.enginePos -= used;
     mixPreview(buffer);
+    for (auto it = m_outNotes.begin(); it != m_outNotes.end();)   // the trig notes that end in this block
+        if (it->offAt < m_clock + n) { midSend(int(juce::jmax<int64_t>(0, it->offAt - m_clock)), uint8_t(0x80 | it->channel), uint8_t(it->note), 0); it = m_outNotes.erase(it); }
+        else ++it;
+    if (m_midiOutMode.load() >= 2) scanKnobsOut(0);
     // the MID notes that end in this block, then the block's MIDI out
     for (auto& notes : m_midNotes)
         for (auto it = notes.begin(); it != notes.end();)
@@ -1655,6 +1753,18 @@ void MdProcessor::getStateInformation(juce::MemoryBlock& destData)
             state.appendChild(b, nullptr);
         }
     }
+    {   // the MIDI settings
+        const auto ms = midiSettings();
+        juce::ValueTree g("MIDI");
+        g.setProperty("base", ms.baseChannel, nullptr);
+        g.setProperty("pc", ms.programChange, nullptr);
+        g.setProperty("out", ms.midiOut, nullptr);
+        juce::String map;
+        for (int i = 0; i < 128; ++i) map << juce::String::toHexString(int(uint8_t(ms.noteTrack[size_t(i)]))).paddedLeft('0', 2);
+        g.setProperty("map", map, nullptr);
+        state.removeChild(state.getChildWithName("MIDI"), nullptr);
+        state.appendChild(g, nullptr);
+    }
     state.removeChild(state.getChildWithName("SAMPLES"), nullptr);
     state.appendChild(samplesToTree(), nullptr);
     state.removeChild(state.getChildWithName("SHADOWS"), nullptr);
@@ -1686,6 +1796,16 @@ void MdProcessor::setStateInformation(const void* data, int sizeInBytes)
     for (int t = 0; t < kTracks; ++t) m_sounds[size_t(t)] = {soundKeys[t], soundNames[t], soundHashes[t].toStdString()};
     samplesFromTree(apvts.state.getChildWithName("SAMPLES"));
     shadowsFromTree(apvts.state.getChildWithName("SHADOWS"));
+    if (const auto g = apvts.state.getChildWithName("MIDI"); g.isValid()) {
+        auto ms = defaultMidiSettings();
+        ms.baseChannel = int(g.getProperty("base", 0));
+        ms.programChange = int(g.getProperty("pc", 1));
+        ms.midiOut = int(g.getProperty("out", 0));
+        const auto map = g.getProperty("map").toString();
+        if (map.length() == 256)
+            for (int i = 0; i < 128; ++i) ms.noteTrack[size_t(i)] = int8_t(uint8_t(map.substring(2 * i, 2 * i + 2).getHexValue32()));
+        setMidiSettings(ms);
+    }
     if (const auto b = apvts.state.getChildWithName("BANK"); b.isValid()) {
         juce::MemoryBlock syx;
         if (syx.fromBase64Encoding(b.getProperty("syx").toString())) {

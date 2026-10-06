@@ -79,6 +79,21 @@ struct Song {
     std::vector<SongRow> rows;
 };
 
+// A global (message 0x50), read for its MIDI side (the message itself stays verbatim): the outputs of the tracks, the
+// trig note map (note -> track, 127 = none), the base channel (0..15, 127 = off), the tempo, the program change mode.
+// Layout (as the unit sends it): position, 16 raw routing bytes, the key map packed, then raw bytes: base channel, -,
+// tempo (BPM x 24, 7-bit high / low), extended mode, clock / transport flags, local, levels and gates (10), program
+// change, trig mode.
+struct Global {
+    int position = 0;
+    uint8_t routing[kTracks] = {};
+    uint8_t keyMap[128] = {};
+    uint8_t baseChannel = 0, programChange = 0, trigMode = 0, flags = 0;
+    int tempo = 120 * 24;
+    int trackOfNote(int note) const { return note >= 0 && note < 128 && keyMap[note] < kTracks ? keyMap[note] : -1; }
+};
+bool decodeGlobal(const uint8_t* msg, size_t n, Global& g);
+
 // One sysex message of the file, verbatim, with a link to its decoded form where there is one.
 struct Message {
     uint8_t id = 0, version = 0, revision = 0;
@@ -94,6 +109,7 @@ struct Dump {
     std::vector<Kit> kits;
     std::vector<Pattern> patterns;
     std::vector<Song> songs;
+    std::vector<Global> globals;
     int numGlobals = 0, numUnknown = 0, numDamaged = 0;
     const Kit* kitAt(int position) const { for (const auto& k : kits) if (k.position == position) return &k; return nullptr; }
     const Pattern* patternAt(int position) const { for (const auto& p : patterns) if (p.position == position) return &p; return nullptr; }

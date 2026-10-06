@@ -741,6 +741,45 @@ MdEditor::MdEditor(MdProcessor& p)
         refreshGrid();
     };
     addChildComponent(m_songEd);
+    addChildComponent(m_midiPanel);
+    m_midiPanel.get = [this] {
+        const auto s = m_proc.midiSettings();
+        MdMidiPanel::Values v;
+        v.baseChannel = s.baseChannel; v.programChange = s.programChange; v.midiOut = s.midiOut;
+        v.note.fill(-1);
+        for (int n = 0; n < 128; ++n) { const int t = s.noteTrack[size_t(n)]; if (t >= 0 && t < kTracks && v.note[size_t(t)] < 0) v.note[size_t(t)] = n; }
+        return v;
+    };
+    m_midiPanel.set = [this](const MdMidiPanel::Values& v) {
+        auto s = m_proc.midiSettings();
+        s.baseChannel = v.baseChannel; s.programChange = v.programChange; s.midiOut = v.midiOut;
+        s.noteTrack.fill(-1);
+        for (int t = 0; t < kTracks; ++t) if (v.note[size_t(t)] >= 0) s.noteTrack[size_t(v.note[size_t(t)])] = int8_t(t);
+        m_proc.setMidiSettings(s);
+    };
+    m_midiPanel.onDefault = [this] {
+        auto s = MdProcessor::defaultMidiSettings();
+        const auto cur = m_proc.midiSettings();
+        s.baseChannel = cur.baseChannel; s.programChange = cur.programChange; s.midiOut = cur.midiOut;
+        m_proc.setMidiSettings(s);
+    };
+    m_midiPanel.onFromProject = [this] {
+        const auto globals = m_proc.bankGlobals();
+        juce::PopupMenu m;
+        if (globals.empty()) m.addItem(-1, "The pattern bank's project has no globals", false);
+        for (size_t i = 0; i < globals.size(); ++i) {
+            const auto& g = globals[i];
+            juce::String what = "GLOBAL " + juce::String(g.position + 1) + ": channel " + (g.baseChannel < 16 ? juce::String(g.baseChannel + 1) : juce::String("OFF"));
+            int mapped = 0; for (int n = 0; n < 128; ++n) if (g.trackOfNote(n) >= 0) ++mapped;
+            what << ", " << mapped << " notes mapped";
+            m.addItem(int(i) + 1, what);
+        }
+        m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&m_midiPanel), [this, globals](int r) {
+            if (r <= 0 || r > int(globals.size())) return;
+            m_proc.setMidiSettings(MdProcessor::fromGlobal(globals[size_t(r - 1)], m_proc.midiSettings()));
+            m_midiPanel.repaint();
+        });
+    };
     m_songEd.getSong = [this] { return m_proc.bankSong(m_songEd.slot()); };
     m_songEd.edit = [this](const juce::String& label, const std::function<void(mnm::mddump::Song&)>& fn, int coalesce) { doEditSong(m_songEd.slot(), label, fn, coalesce); };
     m_songEd.playingRow = [this] {
@@ -965,6 +1004,15 @@ void MdEditor::stepMenu(int s)
         if (r == 1 && s == m_heldStep) holdStep(-1);
         refreshGrid();
     });
+}
+
+void MdEditor::openMidiPanel()
+{
+    m_midiPanel.setBounds(m_syn.getX(), m_syn.getY(), m_routing.getRight() - m_syn.getX(), m_out.getBottom() - m_syn.getY());
+    m_midiPanel.setVisible(true);
+    m_midiPanel.toFront(true);
+    m_midiPanel.grabKeyboardFocus();
+    m_midiPanel.repaint();
 }
 
 void MdEditor::saveBankToLibrary()
@@ -1292,6 +1340,7 @@ void MdEditor::showMenu()
     outputs.addItem(40, "HARDWARE (MAIN A/B, OUT C/D, OUT E/F)", true, outMode == int(OutputMode::Hardware));
     outputs.addItem(41, "PER TRACK (TRACK 1-16, WHERE ENABLED)", true, outMode == int(OutputMode::Tracks));
     m.addSubMenu("PLUGIN OUTPUTS", outputs);
+    m.addItem(11, "MIDI SETTINGS...");
     m.addItem(10, "SYNC BPM TO HOST", true, m_bpmSync.getToggleState());
     m.addSubMenu("SKIN", skins);
     m.addItem(7, "SHOW ENGINE STATUS", true, m_showStatus);
@@ -1299,6 +1348,7 @@ void MdEditor::showMenu()
     m.addSeparator();
     m.addItem(8, "PLUGIN INFO...");
     m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&m_menuButton), [this](int r) {
+        if (r == 11) { openMidiPanel(); return; }
         if (r == 1) chooseOsFile();
         else if (r == 2) importSyx();
         else if (r == 5) { m_proc.initKit(); selectTrack(m_track); timerCallback(); }

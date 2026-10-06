@@ -35,6 +35,106 @@ int main(int argc, char** argv)
     const int block = 480;
     proc.setPlayConfigDetails(0, 2, rate, block);
     proc.prepareToPlay(rate, block);
+    if (std::getenv("MD_MIDI_TEST")) {
+        // The MIDI settings (the unit's globals): base channel, note map, program change, MIDI out of trigs and CCs
+        int fails = 0;
+        auto check = [&](bool ok, const juce::String& what) { std::printf("  %s %s\n", ok ? "ok  " : "FAIL", what.toRawUTF8()); fails += ok ? 0 : 1; };
+        struct Head : juce::AudioPlayHead {
+            double ppq = 0; bool playing = false;
+            juce::Optional<PositionInfo> getPosition() const override { PositionInfo p; p.setPpqPosition(ppq); p.setBpm(120); p.setIsPlaying(playing); return p; }
+        } head;
+        auto pHeap = std::make_unique<MdProcessor>();
+        auto& p = *pHeap;
+        p.setFirmwarePath(juce::String(argv[1]), false);
+        p.setPlayHead(&head);
+        p.prepareToPlay(rate, block);
+        juce::AudioBuffer<float> buf(2, block);
+        auto blockWith = [&](juce::MidiBuffer in) { buf.clear(); p.processBlock(buf, in); head.ppq += head.playing ? block / 1000.0 / 24.0 : 0.0; return in; };
+        auto trigsOf = [&](const juce::MidiMessage& m) {
+            p.setTrigLogging(true);
+            juce::MidiBuffer in; in.addEvent(m, 0);
+            blockWith(in);
+            std::vector<int> ts; for (const auto& e : p.trigLog()) ts.push_back(e.track);
+            return ts;
+        };
+        auto ts = trigsOf(juce::MidiMessage::noteOn(1, 36, uint8_t(100)));
+        check(ts.size() == 1 && ts[0] == 0, "default: note 36 on channel 1 plays T1");
+        ts = trigsOf(juce::MidiMessage::noteOn(2, 36, uint8_t(100)));
+        check(ts.empty(), "on channel 2 it does not (base channel 1)");
+        auto ms = MdProcessor::defaultMidiSettings();
+        ms.baseChannel = 2; ms.noteTrack.fill(-1); ms.noteTrack[60] = 4;
+        p.setMidiSettings(ms);
+        ts = trigsOf(juce::MidiMessage::noteOn(3, 60, uint8_t(100)));
+        check(ts.size() == 1 && ts[0] == 4, "base channel 3, note 60 mapped to T5: it plays T5");
+        ts = trigsOf(juce::MidiMessage::noteOn(3, 36, uint8_t(100)));
+        check(ts.empty(), "note 36 is no longer mapped");
+        ms.programChange = 0; p.setMidiSettings(ms);
+        { juce::MidiBuffer in; in.addEvent(juce::MidiMessage::programChange(3, 5), 0); blockWith(in); }
+        p.syncMachineSideEffects();
+        const bool off = int(std::lround(p.apvts.getRawParameterValue(patternId())->load())) == 0;
+        ms.programChange = 1; p.setMidiSettings(ms);
+        { juce::MidiBuffer in; in.addEvent(juce::MidiMessage::programChange(3, 5), 0); blockWith(in); }
+        p.syncMachineSideEffects();
+        check(off && int(std::lround(p.apvts.getRawParameterValue(patternId())->load())) == 5, "PRG CHANGE OFF ignores a program change; IN takes it as the pattern (A06)");
+        if (auto* a = p.apvts.getParameter(patternId())) a->setValueNotifyingHost(0.0f);
+        ms = MdProcessor::defaultMidiSettings(); ms.midiOut = 2; p.setMidiSettings(ms);
+        p.editPattern(0, [](mnm::mddump::Pattern& x) { x.trigs[0] = (1u << 0) | (1u << 4); x.accent = 1u; x.setLock(0, 0, 4, 90); });
+        if (auto* a = p.apvts.getParameter(seqId())) a->setValueNotifyingHost(1.0f);
+        head.playing = true; head.ppq = 0;
+        std::vector<juce::MidiMessage> out;
+        for (int i = 0; i < int(48 * 1000.0 / block); ++i) { auto o = blockWith({}); for (const auto m : o) out.push_back(m.getMessage()); }
+        int on36 = 0, off36 = 0, vel127 = 0; bool lockCc = false, releaseCc = false;
+        for (const auto& m : out) {
+            if (m.isNoteOn() && m.getChannel() == 1 && m.getNoteNumber() == 36) { ++on36; if (m.getVelocity() == 127) ++vel127; }
+            if (m.isNoteOff() && m.getChannel() == 1 && m.getNoteNumber() == 36) ++off36;
+            if (m.isController() && m.getChannel() == 1 && m.getControllerNumber() == 16 && m.getControllerValue() == 90) lockCc = true;
+        }
+        check(on36 == 2 && off36 >= 1 && vel127 == 1, "TRIGS out: T1's two trigs as note 36 on channel 1, the accented one at 127, note offs a step later");
+        check(lockCc, "CCs out: step 5's lock of PTCH as CC 16 = 90 on channel 1");
+        out.clear();
+        for (int i = 0; i < int(50 * 1000.0 / block); ++i) { auto o = blockWith({}); for (const auto m : o) out.push_back(m.getMessage()); }
+        for (const auto& m : out) if (m.isController() && m.getChannel() == 1 && m.getControllerNumber() == 16 && m.getControllerValue() != 90) releaseCc = true;
+        check(releaseCc, "the lock released at the next trig: the kit value goes out");
+        head.playing = false;
+        out.clear();
+        if (auto* a = p.apvts.getParameter(knobId(1, 2))) a->setValueNotifyingHost(a->convertTo0to1(33.0f));
+        for (int i = 0; i < 2; ++i) { auto o = blockWith({}); for (const auto m : o) out.push_back(m.getMessage()); }
+        bool turned = false; for (const auto& m : out) if (m.isController() && m.getControllerNumber() == 40 + 2 && m.getControllerValue() == 33) turned = true;
+        out.clear();
+        { juce::MidiBuffer in; in.addEvent(juce::MidiMessage::controllerEvent(1, 40 + 3, 77), 0); auto o = blockWith(in); for (const auto m : o) out.push_back(m.getMessage()); }
+        for (int i = 0; i < 2; ++i) { auto o = blockWith({}); for (const auto m : o) out.push_back(m.getMessage()); }
+        bool echoed = false; for (const auto& m : out) if (m.isController() && m.getControllerNumber() == 40 + 3) echoed = true;
+        check(turned && !echoed, "a knob turn (T2 SYN3) goes out as CC 42; CC 43 that came in is not sent back");
+        if (const char* home = std::getenv("USERPROFILE")) {
+            juce::File syx(juce::String(home) + "/Documents/Elektron OS/Kits/Elektron Factory/MD_presets_1_0.syx");
+            juce::MemoryBlock mb;
+            if (syx.loadFileAsData(mb)) {
+                const auto d = mnm::mddump::parseDump(static_cast<const uint8_t*>(mb.getData()), mb.getSize(), "f");
+                const bool okG = !d.globals.empty() && d.globals[0].trackOfNote(36) == 0 && d.globals[0].trackOfNote(62) == 15 && d.globals[0].baseChannel == 0 && d.globals[0].tempo == 2400;
+                const auto fromG = d.globals.empty() ? ms : MdProcessor::fromGlobal(d.globals[0], ms);
+                check(okG && fromG.noteTrack[36] == 0 && fromG.baseChannel == 0, "the factory pack global: notes 36..62 = T1..T16, channel 1, 100 BPM; loaded as settings");
+            }
+        }
+        ms = MdProcessor::defaultMidiSettings(); ms.baseChannel = 9; ms.midiOut = 1; ms.programChange = 3; ms.noteTrack[70] = 7;
+        p.setMidiSettings(ms);
+        juce::MemoryBlock state; p.getStateInformation(state);
+        auto rHeap = std::make_unique<MdProcessor>();
+        rHeap->setStateInformation(state.getData(), int(state.getSize()));
+        const auto back = rHeap->midiSettings();
+        check(back.baseChannel == 9 && back.midiOut == 1 && back.programChange == 3 && back.noteTrack[70] == 7 && back.noteTrack[36] == 0, "the settings come back with the plugin state");
+        if (argc > 3) {
+            p.setMidiSettings(MdProcessor::defaultMidiSettings());
+            std::unique_ptr<juce::AudioProcessorEditor> ed(p.createEditor());
+            auto* med = dynamic_cast<MdEditor*>(ed.get());
+            med->devOpenMidi(); med->refresh();
+            auto img = ed->createComponentSnapshot(ed->getLocalBounds(), true, 1.0f);
+            juce::File png{juce::String(argv[3])}; png.deleteFile();
+            juce::PNGImageFormat pf;
+            if (auto st = std::unique_ptr<juce::FileOutputStream>(png.createOutputStream())) pf.writeImageToStream(img, *st);
+        }
+        std::printf(fails ? "MIDI TEST FAILED (%d)\n" : "MIDI TEST OK\n", fails);
+        return fails ? 1 : 0;
+    }
     if (std::getenv("MD_SONGED_TEST")) {
         // Song editing through the editor's own edit path (undo included), the song playing, and the library save
         // (only into a library under MNM_LIBRARY_DIR: the user's own is never touched)

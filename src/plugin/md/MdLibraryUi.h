@@ -101,6 +101,31 @@ private:
     int m_drag = -1, m_dragCol = -1, m_dragY = 0, m_dragV = 0;
 };
 
+// MIDI settings, over the pages, as the unit's global MIDI page: BASE CHANNEL, PRG CHANGE, MIDI OUT and each track's
+// trig note (drag a value or wheel it). DEFAULT MAP puts the standard note map back; FROM PROJECT loads the channel,
+// the map and the program change mode from one of the bank project's globals.
+class MdMidiPanel : public juce::Component {
+public:
+    static constexpr int kS = 3;
+    struct Values { int baseChannel = 0, programChange = 1, midiOut = 0; std::array<int, 16> note{}; };   // note -1 = none
+    std::function<Values()> get;
+    std::function<void(const Values&)> set;
+    std::function<void()> onDefault, onFromProject, onClose;
+    void paint(juce::Graphics&) override;
+    void mouseDown(const juce::MouseEvent&) override;
+    void mouseDrag(const juce::MouseEvent&) override;
+    void mouseUp(const juce::MouseEvent&) override { m_drag = -1; }
+    void mouseWheelMove(const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
+    bool keyPressed(const juce::KeyPress& k) override;
+private:
+    // cells: 0 base channel, 1 program change, 2 MIDI out, 3..18 the tracks' notes
+    juce::Rectangle<int> cellRect(int c) const;
+    int cellAt(juce::Point<int> lcd) const;
+    void change(int cell, int to);
+    int cellValue(const Values& v, int c) const;
+    int m_drag = -1, m_dragY = 0, m_dragV = 0;
+};
+
 class MdLibraryDrop : public juce::Component {
 public:
     static constexpr int kS = 2, kRowH = 12, kHeadH = 15, kFootH = 15, kLcdW = 220;

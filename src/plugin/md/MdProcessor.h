@@ -128,6 +128,19 @@ public:
     juce::String bankName() const { return m_bankName; }
     juce::String bankProjectId() const { return m_bankProjectId; }
     mnm::mddump::Dump bankDump() const;   // the bank as a dump: its kits, patterns and songs (for the library)
+    // MIDI settings, as the unit's globals (message thread to set; kept in the plugin state):
+    //   baseChannel  0..15 (-1 = OFF: no trigs or CCs in): trigs come in on it, the CC map spans it and the next three
+    //   noteTrack    the trig note map: note -> track (-1 none); a track's first note is the one it sends
+    //   programChange 0 OFF, 1 IN (a program change on the base channel = the next pattern), 2 OUT (the pattern
+    //                changes go out), 3 IN+OUT
+    //   midiOut      0 OFF, 1 TRIGS (the trigs played go out as notes: a step long, velocity 127 when accented),
+    //                2 TRIGS+CCS (and the parameters as CCs: knob turns, locks as they play and release)
+    struct MidiSettings { int baseChannel = 0; std::array<int8_t, 128> noteTrack{}; int programChange = 1, midiOut = 0; };
+    static MidiSettings defaultMidiSettings();
+    MidiSettings midiSettings() const;
+    void setMidiSettings(const MidiSettings& s);
+    std::vector<mnm::mddump::Global> bankGlobals() const { return m_bankGlobals; }   // the bank project's globals
+    static MidiSettings fromGlobal(const mnm::mddump::Global& g, const MidiSettings& keep);
     void setBankProject(const juce::String& projectId, const juce::String& name) { m_bankProjectId = projectId; m_bankName = name; }
     bool bankHasPattern(int slot) const;
     // Pattern editing (message thread): the pattern of a slot (null: none), and an edit of it: fn changes a copy (an
@@ -287,7 +300,8 @@ private:
     std::array<juce::LagrangeInterpolator, 2> m_inInterp;
     std::array<int32_t, 64> m_inBlock{};
     // seq: index into m_seqTrigs (a sequencer trig with its locks / slides / accent), -1 = a MIDI note or the UI
-    struct PendingTrig { int track; double enginePos; int velocity; int seq = -1; };   // engine frames from the current FIFO read point
+    // seq: index into m_seqTrigs (a sequencer trig), -1 a note or the UI; echo: false for a MIDI note (not sent out again)
+    struct PendingTrig { int track; double enginePos; int velocity; int seq = -1; bool echo = true; };   // engine frames from the current FIFO read point
     std::vector<PendingTrig> m_pending;
 
     // ---- pattern playback (audio thread unless noted)
@@ -377,7 +391,19 @@ private:
     void seqStop();
     void applyKitSwitch();   // at a pattern change's time: its kit plays (m_kitSwitch) until the message thread has loaded it
     static int overrideMachine(const mnm::mddump::Kit& kit, int t);   // the kit's machine, GND--- for one the plugin has not
-    void trigLocks(int t, const mnm::md::SeqTrig* s);   // a trig's locks and slides (none: a MIDI / UI trig releases them)
+    void trigLocks(int t, const mnm::md::SeqTrig* s, int pos = 0);   // a trig's locks and slides (none: a MIDI / UI trig releases them)
+    // MIDI settings and out
+    std::atomic<int> m_baseCh{0}, m_pcMode{1}, m_midiOutMode{0};
+    std::array<std::atomic<int8_t>, 128> m_noteTrack{};
+    std::array<std::atomic<int8_t>, kTracks> m_trackNote{};
+    std::vector<mnm::mddump::Global> m_bankGlobals;
+    struct OutNote { int channel, note; int64_t offAt; };
+    std::vector<OutNote> m_outNotes;
+    std::array<std::array<int16_t, 25>, kTracks> m_outSeen{};   // the values last sent (24 params, level)
+    int m_lastPos = 0;
+    double m_lastRatio = 1.0;
+    void sendCc(int t, int p, int value, int pos);   // p 0..23, 24 = level, by the CC map
+    void scanKnobsOut(int pos);
     int kitParam(int t, int p) const;   // the knob's own value (a pattern's kit until loaded, a CTR write, else the parameter)
     int seqParam(int t, int p) const { const int v = m_lockVal[size_t(t)][size_t(p)]; return v >= 0 ? v : kitParam(t, p); }
 };
