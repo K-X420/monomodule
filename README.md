@@ -69,9 +69,10 @@ patterns along.
 | Mixer (all 16 levels, pans, mutes, solos) | **MIX** on the bar or the **M** key; Shift+click M / S = only that track |
 | Browse kits / sounds | Click the KIT or sound selector, then **Up / Down** (on One / Six: presets, or kits after the KIT selector) |
 
-## Installing on macOS (pre-release builds)
+## Installing on macOS
 
-The macOS zip (`Monomodule-<version>-macos-universal.zip`) runs on Apple Silicon and Intel Macs, macOS 12 or later.
+Download the latest release from **[Releases](https://github.com/K-X420/monomodule/releases)**. The macOS zip
+(`Monomodule-<version>-macos-universal.zip`) runs on Apple Silicon and Intel Macs, macOS 12 or later.
 
 1. Unzip it.
 2. Double-click **Install Monomodule.command**. If macOS says it can't be opened because it is from an
@@ -85,7 +86,7 @@ The macOS zip (`Monomodule-<version>-macos-universal.zip`) runs on Apple Silicon
 
 ## Installing a release
 
-Pre-built downloads for macOS, Windows and Linux are on the project's **Releases** page.
+Pre-built downloads for macOS, Windows and Linux are on the **[Releases](https://github.com/K-X420/monomodule/releases)** page.
 
 | Platform | Plugins | Library app |
 |---|---|---|
