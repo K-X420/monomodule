@@ -3,11 +3,11 @@
 # and added to the draft by hand before it is published.
 name: build
 
+# Builds run on demand (the Actions tab, or `gh workflow run build.yml --ref <branch>`) and for version tags; pushes and
+# pull requests do not start one (the macOS job's minutes are the costly part).
 on:
   push:
-    branches: [master, main, machinedrum]
     tags: ['v*']
-  pull_request:
   workflow_dispatch:
 
 permissions:
