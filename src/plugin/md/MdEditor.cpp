@@ -330,7 +330,10 @@ void MdTrackKeys::mouseMove(const juce::MouseEvent& e)
     const auto p = e.getPosition() / kScale;
     juce::String tip;
     if (m_grid.on) {
-        setTooltip("Step " + juce::String(m_grid.page * 16 + 1) + "-" + juce::String(m_grid.page * 16 + 16)
+        const int key = trackAt(e.getPosition());
+        const int step = m_grid.page * 16 + juce::jmax(0, key);
+        const auto locks = key >= 0 && stepLocks ? stepLocks(step) : juce::String();
+        setTooltip("Step " + juce::String(step + 1) + (locks.isNotEmpty() ? ". LOCKS: " + locks : juce::String())
                    + ". Click: trig on/off. Shift+click: hold for locks (turn the track's knobs; double-click one to clear its lock). Ctrl+click: select that track. Alt+click: mute that track. Right-click: step menu. Ctrl+Z: undo.");
         return;
     }
@@ -717,6 +720,20 @@ MdEditor::MdEditor(MdProcessor& p)
     m_keys.onHold = [this](int s) { holdStep(s == m_heldStep ? -1 : s); };
     m_keys.onSelect = [this](int t) { selectTrack(t); };
     m_keys.onMuteKey = [this](int t) { toggleMute(t); };
+    m_keys.stepLocks = [this](int step) {   // "PTCH 90, DEC 40": the selected track's locks on that step
+        const auto p = m_proc.bankPattern(editSlot());
+        juce::String s;
+        if (!p || step < 0 || step >= 64) return s;
+        for (int q = 0; q < 24; ++q) {
+            const int row = p->lockRow(m_track, q);
+            if (row < 0 || p->locks[row][step] > 127) continue;
+            juce::String name = q < 24 ? juce::String(q) : juce::String();
+            if (auto* prm = m_proc.apvts.getParameter(trackParamId(m_track, q))) name = prm->getName(32).fromFirstOccurrenceOf(" ", false, false);
+            if (s.isNotEmpty()) s << ", ";
+            s << name << " " << int(p->locks[row][step]);
+        }
+        return s;
+    };
     setWantsKeyboardFocus(true);
     m_keys.onStepMenu = [this](int s) { stepMenu(s); };
     addAndMakeVisible(m_seqBar);

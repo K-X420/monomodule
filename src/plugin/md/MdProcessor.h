@@ -119,7 +119,7 @@ public:
     // The track's output level for the LEV fader's meter, as Monomodule's: linear peak at the plugin's output scale,
     // falling off x0.8 per host block so it stays readable between UI polls
     float trackPeak(int t) const { return m_peak[size_t(t)].load(); }
-    // SOLO (the mixer's; not saved): while any track is soloed, the others ignore their trigs, as a mute
+    // SOLO (the mixer's; kept with the session): while any track is soloed, the others ignore their trigs, as a mute
     void setSolo(int t, bool on) { if (on) m_solo.fetch_or(1u << t); else m_solo.fetch_and(~(1u << t)); }
     bool soloed(int t) const { return (m_solo.load() >> t) & 1u; }
     void clearSolo() { m_solo.store(0); }

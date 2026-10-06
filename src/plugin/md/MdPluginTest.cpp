@@ -995,6 +995,49 @@ int main(int argc, char** argv)
         const bool started = p.internalPlay();
         note(91, true, 3);
         check(started && !p.internalPlay(), "the START note runs PLAY, the STOP note stops it");
+        // live recording at 2x (3 clocks a step; a clock = 1000 samples here, a block 0.48 clock): a hit past 2/3 of
+        // its step goes onto the next step, one at half stays; a knob turned during a step with no trig after it is forgotten
+        {
+            head.playing = false; run(3);
+            ms = MdProcessor::defaultMidiSettings(); p.setMidiSettings(ms);
+            if (auto* a = p.apvts.getParameter(seqModeId())) a->setValueNotifyingHost(0.0f);
+            if (auto* a = p.apvts.getParameter(patternId())) a->setValueNotifyingHost(a->convertTo0to1(8.0f));
+            setP(machineId(0), float(machineIndexOf(16)));
+            p.editPattern(8, [](mnm::mddump::Pattern& x) { x.length = 16; x.doubleTempo = 1; x.trigs[0] = 1ull << 10; });
+            run(40);
+            p.setRecord(true);
+            head.ppq = 0; head.playing = true;
+            run(11);                     // clock 5.28: step 2 (index 1), 76% through -> step 3 (index 2)
+            note(38, true, 11);          // T2; now at clock 10.56: step 4 (index 3), 52% -> stays
+            note(38, true, 23);          // now at clock 21.6: step 8 (index 7)
+            setP(knobId(0, 0), 99);      // T1 PTCH turned during step 8; steps 9 and 10 have no T1 trig, step 11 does
+            run(40);
+            p.setRecord(false); run(3);
+            head.playing = false; run(3);
+            const auto pat = p.bankPattern(8);
+            const uint64_t t2 = pat ? pat->trigs[1] : 0;
+            check(((t2 >> 2) & 1) && ((t2 >> 3) & 1) && !((t2 >> 1) & 1), "2x: a hit 76% into step 2 records on step 3, one 52% into step 4 stays on 4 (T2 trigs " + juce::String::toHexString((juce::int64) t2) + ")");
+            check(pat && pat->lockRow(0, 0) < 0, "a knob turned during a step with no trig after it is forgotten (no lock on step 11)");
+        }
+        // solo comes back with the session
+        {
+            p.setSolo(3, true);
+            juce::MemoryBlock st; p.getStateInformation(st);
+            auto rHeap = std::make_unique<MdProcessor>();
+            rHeap->setStateInformation(st.getData(), int(st.getSize()));
+            check(rHeap->soloed(3) && !rHeap->soloed(2), "SOLO is kept with the session");
+            p.clearSolo();
+        }
+        // GRID: a step's tooltip lists its locks
+        {
+            if (auto* a = p.apvts.getParameter(patternId())) a->setValueNotifyingHost(a->convertTo0to1(9.0f));
+            p.editPattern(9, [](mnm::mddump::Pattern& x) { x.trigs[0] = 1ull << 2; x.setLock(0, 0, 2, 77); x.setLock(0, 17, 2, 40); });
+            run(3);
+            std::unique_ptr<juce::AudioProcessorEditor> ed(p.createEditor());
+            auto* med = dynamic_cast<MdEditor*>(ed.get());
+            const auto tip = med->devKeys().stepLocks ? med->devKeys().stepLocks(2) : juce::String();
+            check(tip.contains("77") && tip.contains("VOL 40") && med->devKeys().stepLocks(3).isEmpty(), "GRID step tooltip lists its locks: " + tip);
+        }
         std::printf(fails ? "OSCHECK TEST FAILED (%d)\n" : "OSCHECK TEST OK\n", fails);
         return fails ? 1 : 0;
     }

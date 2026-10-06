@@ -71,6 +71,7 @@ public:
         bool operator==(const Grid& o) const { return on == o.on && page == o.page && length == o.length && play == o.play && held == o.held && trigs == o.trigs && accent == o.accent && slide == o.slide && swing == o.swing && locks == o.locks; }
     };
     void setGrid(const Grid& g) { if (!(g == m_grid)) { m_grid = g; repaint(); } }
+    std::function<juce::String(int step)> stepLocks;   // GRID: a step's locks as text for its tooltip ("" none)
     std::function<void(int step)> onStep, onHold;
     std::function<void(int step)> onStepMenu;
     std::function<void(int track)> onSelect, onMuteKey;   // Ctrl / Cmd + click: select; Alt + click: mute (as FUNC + trig)
@@ -298,6 +299,7 @@ private:
     one::KnobPage m_syn, m_fx, m_routing, m_lfo, m_master, m_out;
     MdBadgeButton m_sample;
     MdTrackKeys m_keys;
+    juce::TooltipWindow m_tips{this, 700};   // shows the panels' tooltips (hover ~0.7 s)
     MdSeqBar m_seqBar;
     bool m_gridOn = false;
     int m_gridPage = 0, m_heldStep = -1, m_outTab = 0, m_ptnPoll = 0;

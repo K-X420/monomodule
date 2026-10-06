@@ -1886,6 +1886,7 @@ void MdProcessor::getStateInformation(juce::MemoryBlock& destData)
     juce::String locked;
     for (int t = 0; t < kTracks; ++t) locked << (m_locked[size_t(t)].load() ? "1" : "0");
     state.setProperty("locked", locked, nullptr);
+    state.setProperty("solo", int(m_solo.load()), nullptr);
     state.setProperty("kitSnapshot", juce::String::toHexString(m_kitSnapshot.data(), int(m_kitSnapshot.size()), 0), nullptr);
     const auto base = mnm::mddump::encodeKit(m_baseKit);
     state.setProperty("baseKit", juce::String::toHexString(base.data(), int(base.size()), 0), nullptr);
@@ -1944,6 +1945,7 @@ void MdProcessor::setStateInformation(const void* data, int sizeInBytes)
     m_kitKey = apvts.state.getProperty("kitKey", "").toString();
     const auto locked = apvts.state.getProperty("locked", "").toString();
     for (int t = 0; t < kTracks; ++t) m_locked[size_t(t)].store(locked[t] == '1');
+    m_solo.store(uint32_t(int(apvts.state.getProperty("solo", 0))) & 0xFFFFu);
     auto hexBytes = [this](const char* prop) {
         juce::MemoryBlock mb;
         mb.loadFromHexString(apvts.state.getProperty(prop, "").toString());
