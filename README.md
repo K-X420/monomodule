@@ -75,6 +75,10 @@ patterns along.
 | Live recording | **REC**, then play: notes and track keys go onto the nearest step, knob turns become locks |
 | Length, speed, swing, accent, kit | The OUTPUT panel's **PATTERN** tab |
 | Songs | MODE = SONG on the OUT tab; MENU > EDIT SONG to edit its rows. In the editor (as the MD): **Up / Down** pick a row, **Enter** starts there (or, while playing, plays it next), **Ctrl+Down / Up** insert / delete a row, **Ctrl+C / V** copy / paste a row. A LOOP to a later row is a JUMP, to its own row a HALT |
+| Patterns as Ableton MIDI clips | **Drag the PTN box** (the whole pattern) or **the track box** (T1 BD: that track) onto an Ableton track: a clip of its trigs (accents as velocity, locks as CCs) |
+| Learn a note map entry | MIDI SETTINGS: **click** a note cell (a track, FROM, START, STOP), then play the note. Click again or Esc: cancel |
+| Samples | MENU > SAMPLES: the 48 ROM slots. Rename (Enter / double-click), clear (Delete), **RAM 1-4 >** copies a RAM machine's recording into the selected slot (the RAM machines start empty after, as on the MD) |
+| CLASSIC / EXTENDED | OUT tab, **EXT**: CLASSIC plays patterns without their locks (kept) and without their kits, as the MD's CLASSIC mode |
 | Use the MD as a sound module | MIDI SETTINGS > **CTRL IN OFF**: Ableton's play / stop don't run the sequencer (PLAY does, at Ableton's tempo; LFOs and delay stay in time) |
 | Keep your edits | Saved with the Ableton set; MENU > SAVE PATTERNS + SONGS TO LIBRARY puts them in the Library project |
 | MIDI channel, note map, program change, MIDI out | MENU > MIDI SETTINGS |

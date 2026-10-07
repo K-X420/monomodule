@@ -108,6 +108,17 @@ public:
     // UW samples (message thread): any audio file into a ROM slot (mixed to mono, kept at its own rate; the DSP
     // resamples). Kept in the plugin state. Returns an error text, empty on success.
     juce::String loadSample(int slot, const juce::File& file);
+    // The UW sample manager (as the MD's): a slot renamed; a RAM recording (RAM-R1..R4 = 0..3) copied into a ROM slot,
+    // which reloads the sample memory and so empties the RAM machines, as on the unit. Return an error text, empty on success.
+    juce::String renameSample(int slot, const juce::String& name);
+    // MIDI SETTINGS learn (as the MD's map editor): the next note that comes in is caught (not played)
+    void armLearn() { m_learned.store(-1); m_learnArm.store(true); }
+    void cancelLearn() { m_learnArm.store(false); }
+    int takeLearned() { return m_learned.exchange(-1); }
+    std::atomic<bool> m_learnArm{false};
+    std::atomic<int> m_learned{-1};
+    juce::String copyRamToRom(int ram, int slot);
+    double ramSeconds(int ram) const;   // the length of RAM-R(ram + 1)'s recording now (0: none)
     static bool isAudioFile(const juce::String& path);   // a format loadSample reads (wav, aiff, flac, ogg, ...)
     int firstEmptyRomSlot() const;                        // in ROM-01..48 order; -1 when every ROM slot holds a sample
     void clearSample(int slot);
@@ -434,6 +445,8 @@ private:
     // MIDI settings and out
     std::atomic<int> m_baseCh{0}, m_pcMode{1}, m_midiOutMode{0}, m_pcChannel{0}, m_ptnNoteMode{1};
     std::atomic<bool> m_ctrlIn{true};
+    std::atomic<float>* m_extended = nullptr;   // CLASSIC (0) / EXTENDED (1)
+    bool extendedMode() const { return !m_extended || m_extended->load() >= 0.5f; }
     std::array<std::atomic<int16_t>, 128> m_noteAction{};
     // pattern notes (audio thread): the held note, the pattern MOMENTARY brings back (-1 = stop), a pattern to start at
     // once, the sequencer halted by STOP / a GATE note-off, a pattern the parameter is still to catch up with

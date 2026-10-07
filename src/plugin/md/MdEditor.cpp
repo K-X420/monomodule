@@ -1,6 +1,7 @@
 #include "MdEditor.h"
 #include <map>
 #include "MdMachineText.h"
+#include "MdMidiExport.h"
 #include "MdParamWords.h"
 #include <cmath>
 #include "ShnolkLogo.h"
@@ -69,7 +70,8 @@ const spec::Param kLfoParams[8] = {readout("TRK", kTrackNames, kTracks), withIco
                                    withIcons(readout("SHP2", kShape2Names, 6), spec::Icons::MdWave2), readout("TYPE", kLfoTypes, 3), numeric("SPD", 64), numeric("DEP", 0), numeric("MIX", 0)};
 constexpr const char* kSeqNames[2] = {"OFF", "ON"};
 constexpr const char* kModeNames[2] = {"PATTERN", "SONG"};
-const spec::Param kOutParams[8] = {numeric("VOL", 80), toggle("VEL", kVelNames), numeric("ACNT", 64), blank(),
+constexpr const char* kExtNames[2] = {"CLASSIC", "EXTENDED"};
+const spec::Param kOutParams[8] = {numeric("VOL", 80), toggle("VEL", kVelNames), numeric("ACNT", 64), toggle("EXT", kExtNames, 1),
                                    toggle("SEQ", kSeqNames, 1), readout("PTN", kPatternNames, 128), toggle("MODE", kModeNames), readout("SONG", kSongNames, 32)};
 constexpr const char* kMasterTabs[4] = {"REV", "DEL", "EQ", "DYN"};
 
@@ -928,6 +930,41 @@ MdEditor::MdEditor(MdProcessor& p)
         if (auto* p = m_proc.apvts.getParameter(what == MdMixer::Level ? levelId(t) : panId(t))) { if (begin) p->beginChangeGesture(); else p->endChangeGesture(); }
     };
     m_mixer.onClose = [this] { grabKeyboardFocus(); };
+    addChildComponent(m_samplePanel);
+    m_samplePanel.setWantsKeyboardFocus(true);
+    m_samplePanel.setTooltip("UW samples. Arrows: a slot. Enter / double-click: rename. Delete: clear. RAM 1-4: copy that recording here");
+    m_samplePanel.name = [this](int i) { return m_proc.sampleName(romSlotIndex(i)); };
+    m_samplePanel.seconds = [this](int i) { return m_proc.sampleSeconds(romSlotIndex(i)); };
+    m_samplePanel.ramSeconds = [this](int r) { return m_proc.ramSeconds(r); };
+    m_samplePanel.memoryUsed = [this] { return m_proc.sampleMemoryUsed(); };
+    m_samplePanel.onClose = [this] { grabKeyboardFocus(); };
+    m_samplePanel.onClear = [this](int i) { m_proc.clearSample(romSlotIndex(i)); m_samplePanel.repaint(); };
+    m_samplePanel.onRename = [this](int i) {
+        const int slot = romSlotIndex(i);
+        if (m_proc.sampleName(slot).isEmpty()) { flash("EMPTY SLOT"); return; }
+        auto* aw = new juce::AlertWindow("Rename ROM-" + juce::String(i + 1).paddedLeft('0', 2), {}, juce::MessageBoxIconType::NoIcon, this);
+        aw->addTextEditor("name", m_proc.sampleName(slot));
+        aw->addButton("RENAME", 1, juce::KeyPress(juce::KeyPress::returnKey));
+        aw->addButton("CANCEL", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+        aw->enterModalState(true, juce::ModalCallbackFunction::create([this, aw, slot](int r) {
+            if (r == 1) { const auto err = m_proc.renameSample(slot, aw->getTextEditorContents("name")); if (err.isNotEmpty()) flash(err.toUpperCase()); }
+            m_samplePanel.repaint();
+            m_samplePanel.grabKeyboardFocus();
+        }), true);
+    };
+    m_samplePanel.onCopyRam = [this](int ram, int i) {   // as the MD: the RAM machines start empty after (the memory reloads)
+        const int slot = romSlotIndex(i);
+        juce::AlertWindow::showOkCancelBox(juce::MessageBoxIconType::QuestionIcon, "RAM " + juce::String(ram + 1) + " to ROM-" + juce::String(i + 1).paddedLeft('0', 2),
+            "Copy RAM " + juce::String(ram + 1) + "'s recording into ROM-" + juce::String(i + 1).paddedLeft('0', 2)
+                + (m_proc.sampleName(slot).isNotEmpty() ? " (replacing " + m_proc.sampleName(slot) + ")" : juce::String())
+                + "? The sample memory reloads, so the RAM machines start empty.",
+            "COPY", "CANCEL", this, juce::ModalCallbackFunction::create([this, ram, slot](int r) {
+                if (r != 1) return;
+                const auto err = m_proc.copyRamToRom(ram, slot);
+                flash(err.isNotEmpty() ? err.toUpperCase() : juce::String("COPIED TO ROM"));
+                m_samplePanel.repaint();
+            }));
+    };
     addChildComponent(m_midiPanel);
     m_midiPanel.get = [this] {
         const auto s = m_proc.midiSettings();
@@ -976,6 +1013,8 @@ MdEditor::MdEditor(MdProcessor& p)
         if (v.stopNote >= 0) s.noteAction[size_t(v.stopNote)] = MdProcessor::kStopNote;
         m_proc.setMidiSettings(s);
     };
+    m_midiPanel.onLearn = [this] { m_proc.armLearn(); };
+    m_midiPanel.onLearnCancel = [this] { m_proc.cancelLearn(); };
     m_midiPanel.onDefault = [this] {
         auto s = MdProcessor::defaultMidiSettings();
         const auto cur = m_proc.midiSettings();
@@ -1014,6 +1053,7 @@ MdEditor::MdEditor(MdProcessor& p)
     m_songEd.startRow = [this] { return m_proc.songStartRow(); };
     m_songEd.cuedRow = [this] { return m_proc.songCue(); };
     m_songEd.patternLength = [this](int p) { const auto pat = m_proc.bankPattern(p); return pat ? juce::jlimit(1, 64, int(pat->length)) : 16; };
+    m_seqBar.onDragOut = [this](MdSeqBar::Part p) { dragOutClip(p == MdSeqBar::Trk); };
     m_seqBar.onEditClick = [this](MdSeqBar::Part p, int page, const juce::ModifierKeys& mods) {
         if (p == MdSeqBar::PtnPrev || p == MdSeqBar::PtnNext) {   // Shift + the PTN arrows: the chain grows / shrinks
             if (!mods.isShiftDown()) return;
@@ -1146,7 +1186,7 @@ void MdEditor::bindOutPage(int tab)
     m_outTab = tab;
     for (int k = 0; k < 8; ++k) m_out.setValuesSource(k, nullptr);
     if (tab == 0) {
-        m_out.bind(kOutParams, [](int k) { return k == 0 ? masterId() : k == 1 ? velModeId() : k == 2 ? accentId() : k == 4 ? seqId() : k == 5 ? patternId() : k == 6 ? seqModeId() : k == 7 ? songId() : juce::String(); });
+        m_out.bind(kOutParams, [](int k) { return k == 0 ? masterId() : k == 1 ? velModeId() : k == 2 ? accentId() : k == 3 ? extendedId() : k == 4 ? seqId() : k == 5 ? patternId() : k == 6 ? seqModeId() : k == 7 ? songId() : juce::String(); });
         m_out.setValuesSource(5, [this] { return m_ptnNamePtrs.data(); });
         return;
     }
@@ -1265,7 +1305,7 @@ juce::String knobTip(const juce::String& label, int page, const juce::String& fa
         {"LEV", "Output level"}, {"TIME", "Delay time (tempo synced)"}, {"FB", "Feedback"}, {"MOD", "Modulation depth"}, {"MFRQ", "Modulation rate"},
     };
     static const std::map<juce::String, const char*> out = {
-        {"VOL", "Plugin output level"}, {"VEL", "Note velocity: VOLUME or ACCENT"}, {"ACNT", "Accent amount for played notes"},
+        {"VOL", "Plugin output level"}, {"VEL", "Note velocity: VOLUME or ACCENT"}, {"EXT", "EXTENDED plays locks and pattern kits; CLASSIC plays neither"}, {"ACNT", "Accent amount for played notes"},
         {"SEQ", "Sequencer on / off"}, {"PTN", "The pattern"}, {"MODE", "PATTERN or SONG"}, {"SONG", "The song SONG mode plays"},
         {"LEN", "Pattern length"}, {"SPD", "Pattern speed"}, {"SWNG", "Swing amount"}, {"ACC", "Accent amount"}, {"KIT", "The pattern's kit"},
         {"GRID", "Keys as steps (G)"}, {"PAGE", "The page GRID shows"},
@@ -1302,6 +1342,13 @@ void MdEditor::toggleMixer()
     m_mixer.setVisible(true);
     m_mixer.toFront(true);
     m_mixer.grabKeyboardFocus();
+}
+
+void MdEditor::openSamplePanel()
+{
+    m_mixer.setVisible(false); m_midiPanel.setVisible(false); m_songEd.setVisible(false);
+    m_samplePanel.setBounds(m_syn.getX(), m_syn.getY(), m_routing.getRight() - m_syn.getX(), m_out.getBottom() - m_syn.getY());
+    m_samplePanel.open();
 }
 
 void MdEditor::openMidiPanel()
@@ -1608,6 +1655,29 @@ void MdEditor::togglePerTrack(int f)
     });
     flash(juce::String(names[f]) + (nowAll ? ": ALL" : ": T" + juce::String(t + 1)));
     refreshGrid();
+}
+
+// PTN / TRK dragged out of the bar: the pattern (or the track) as a MIDI file, dropped where it lands (an Ableton track:
+// a clip). Notes on the tracks' trig notes (so the clip plays the plugin back), accents as velocity, locks as CCs.
+void MdEditor::dragOutClip(bool trackOnly)
+{
+    const int slot = editSlot();
+    const auto pat = m_proc.bankPattern(slot);
+    if (!pat) { flash("EMPTY"); return; }
+    const auto kit = m_proc.captureMdKit();
+    const auto mf = trackOnly ? mnm::library::buildMdTrackMidiFile(&kit, *pat, m_track) : mnm::library::buildMdPatternMidiFile(&kit, *pat);
+    const auto dir = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("Monomodule MD clips");
+    dir.createDirectory();
+    juce::String name = kPatternNames[juce::jlimit(0, 127, slot)];
+    if (trackOnly) {
+        const int mi = juce::jlimit(0, kNumMachines - 1, m_machineIndex);
+        name << " T" << (m_track + 1) << " " << (shortOf(mi) == "---" ? familyOf(mi) : shortOf(mi));
+    }
+    const auto file = dir.getChildFile(juce::File::createLegalFileName(name) + ".mid");
+    file.deleteFile();
+    if (auto out = std::unique_ptr<juce::FileOutputStream>(file.createOutputStream())) { mf.writeTo(*out); out->flush(); }
+    else { flash("NO CLIP"); return; }
+    juce::DragAndDropContainer::performExternalDragDropOfFiles({file.getFullPathName()}, false, this);
 }
 
 void MdEditor::toggleMute(int t)
@@ -1960,6 +2030,7 @@ void MdEditor::showMenu()
     m.addItem(21, "PASTE MACHINE ONTO T" + juce::String(m_track + 1) + "  (CTRL+SHIFT+V)", m_soundClip.has_value());
     m.addItem(22, "CLEAR T" + juce::String(m_track + 1) + " MACHINE  (CTRL+SHIFT+DEL)");
     m.addItem(11, "MIDI SETTINGS...");
+    m.addItem(23, "SAMPLES...");
     m.addSeparator();
     {
         const int sl = juce::jlimit(0, 31, int(std::lround(m_proc.apvts.getRawParameterValue(songId())->load())));
@@ -1977,6 +2048,7 @@ void MdEditor::showMenu()
     m.addItem(8, "PLUGIN INFO...");
     m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&m_menuButton), [this](int r) {
         if (r == 11) { openMidiPanel(); return; }
+        if (r == 23) { openSamplePanel(); return; }
         if (r == 16) { toggleMixer(); return; }
         if (r == 18) { undoKit(); return; }
         if (r == 19) { reloadKit(); return; }
@@ -2340,6 +2412,7 @@ void MdEditor::sampleMenu()
 void MdEditor::timerCallback()
 {
     if (m_muteQueue != 0 && !juce::ModifierKeys::currentModifiers.isShiftDown()) applyMuteQueue();   // Shift let go: the queued mutes flip together
+    if (m_midiPanel.learning() >= 0) if (const int n = m_proc.takeLearned(); n >= 0) m_midiPanel.learned(n);   // LEARN: the note played
     // the LCD artwork follows the Monomachine OS file the other Monomodule plugins use
     if (const auto path = loadSharedOsPath(); path != m_artPath) {
         m_artPath = path;

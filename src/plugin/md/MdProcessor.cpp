@@ -69,6 +69,7 @@ MdProcessor::MdProcessor()
     m_bpm = apvts.getRawParameterValue(bpmId());
     m_accent = apvts.getRawParameterValue(accentId());
     m_seqOn = apvts.getRawParameterValue(seqId());
+    m_extended = apvts.getRawParameterValue(extendedId());
     m_patternParam = apvts.getRawParameterValue(patternId());
     m_seqMode = apvts.getRawParameterValue(seqModeId());
     m_songParam = apvts.getRawParameterValue(songId());
@@ -477,9 +478,10 @@ void MdProcessor::trigLocks(int t, const mnm::md::SeqTrig* s, int pos)
     const int id = ok ? overrideMachine(*ok, t) : machineIdOf(t);
     const bool voice = !isMidMachine(id) && !isCtrMachine(id);
     auto& locks = m_lockVal[size_t(t)];
+    const bool ext = extendedMode();   // CLASSIC: the pattern's locks (and so its slides) are not played
     for (int q = 0; q < 24; ++q) {
         m_glide[size_t(t)][size_t(q)].active = false;
-        const int v = s ? s->locks[size_t(q)] : -1;
+        const int v = s && ext ? s->locks[size_t(q)] : -1;
         if (v >= 0) {
             if (ccOut && locks[size_t(q)] != v) sendCc(t, q, v, pos);
             locks[size_t(q)] = int16_t(v);
@@ -490,7 +492,7 @@ void MdProcessor::trigLocks(int t, const mnm::md::SeqTrig* s, int pos)
             if (ccOut) sendCc(t, q, kitParam(t, q), pos);
         }
     }
-    if (s && s->slideMask)
+    if (s && ext && s->slideMask)
         for (int q = 0; q < 24; ++q)
             if ((s->slideMask >> q) & 1) {
                 const int to = s->slideTo[size_t(q)] >= 0 ? s->slideTo[size_t(q)] : kitParam(t, q);
@@ -533,7 +535,7 @@ void MdProcessor::seqStart(Segment& seg, int slot, int start, int end, int64_t s
     seg.accentOn = 0x80 + 2 * int(pat.accentAmount);
     m_seqLenUi.store(seg.player.length());
     for (int t = 0; t < kTracks; ++t) m_seqTrigsUi[size_t(t)].store(pat.trigs[t]);
-    if (!real) return;   // no kit to bring in
+    if (!real || !extendedMode()) return;   // no kit to bring in (CLASSIC: patterns have no kit)
     const int k = pat.kit;
     if (k < 0 || k >= 64 || !bank->hasKit[size_t(k)] || k == m_seqKitSlot.load()) return;
     m_seqKitSlot.store(k);
@@ -1301,6 +1303,7 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
     for (const auto meta : midi) {
         const auto m = meta.getMessage();
         const int base = m_baseCh.load();
+        if (m.isNoteOn() && m_learnArm.exchange(false)) { m_learned.store(m.getNoteNumber()); continue; }   // MIDI SETTINGS learn
         if (m.isProgramChange()) {   // as on the unit (PRG CHANGE IN, base channel): the next pattern
             const int pcCh = m_pcChannel.load(), ch = m.getChannel() - 1;   // AUTO: the base channel and the next three
             if (!(m_pcMode.load() & 1) || (pcCh > 0 ? ch != pcCh - 1 : (base < 0 || ch < base || ch > base + 3))) continue;
@@ -1529,6 +1532,43 @@ juce::String MdProcessor::loadSample(int slot, const juce::File& file)
         m_samples[size_t(slot)] = std::move(previous);
         pushSamples();
         return "Not enough sample memory (about 32 seconds in all)";
+    }
+    return {};
+}
+
+juce::String MdProcessor::renameSample(int slot, const juce::String& name)
+{
+    if (slot < 0 || slot >= mnm::md::VoiceEngine::kSlots || m_samples[size_t(slot)].data.empty()) return "That slot holds no sample";
+    const auto n = name.trim().toUpperCase().substring(0, 12);
+    if (n.isEmpty()) return "A name, please";
+    m_samples[size_t(slot)].name = n;
+    return {};
+}
+
+double MdProcessor::ramSeconds(int ram) const
+{
+    const juce::ScopedLock sl(m_engineLock);
+    if (!m_engine || ram < 0 || ram > 3) return 0.0;
+    return double(m_engine->voices().slotLength(32 + ram)) / 44100.0;   // (the recorders run at 44.1 kHz)
+}
+
+juce::String MdProcessor::copyRamToRom(int ram, int slot)
+{
+    if (ram < 0 || ram > 3 || slot < 0 || slot >= mnm::md::VoiceEngine::kSlots || (slot >= 32 && slot < 48)) return "Not a ROM slot";
+    Sample s;
+    {
+        const juce::ScopedLock sl(m_engineLock);
+        if (!m_engine) return "No OS loaded";
+        s.data = m_engine->voices().readSlot(32 + ram, &s.rate);
+    }
+    if (s.data.empty()) return "RAM " + juce::String(ram + 1) + " has no recording";
+    s.name = "RAM" + juce::String(ram + 1) + " COPY";
+    auto previous = std::move(m_samples[size_t(slot)]);
+    m_samples[size_t(slot)] = std::move(s);
+    if (!pushSamples()) {
+        m_samples[size_t(slot)] = std::move(previous);
+        pushSamples();
+        return "Not enough sample memory";
     }
     return {};
 }

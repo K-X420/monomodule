@@ -200,6 +200,7 @@ public:
     one::KnobPage& devSynPage() { return m_syn; }
     MdSongEditor& devSongEditor() { return m_songEd; }
     void devOpenMidi() { openMidiPanel(); }
+    void devOpenSamples() { openSamplePanel(); }
     void devToggleMixer() { toggleMixer(); }
     MdMixer& devMixer() { return m_mixer; }
     bool devGridOn() const { return m_gridOn; }
@@ -259,6 +260,7 @@ private:
     void redo();
     void toggleMute(int t);
     void deletePage(int page);
+    void dragOutClip(bool trackOnly);   // the pattern / the track as a MIDI clip dragged out
     void flipStepFlag(int step, int flag);   // a step's accent / slide / swing mark (the all-tracks mask or the track's own)
     int m_markMode = 0;                      // GRID's edit window: 0 trigs, 1 accent, 2 slide, 3 swing
     void togglePerTrack(int flag);           // A / S / W keys: that mark between all tracks and per track
@@ -285,6 +287,9 @@ private:
     void doEditSong(int slot, const juce::String& label, const std::function<void(mnm::mddump::Song&)>& fn, int coalesce = -1);
     MdSongEditor m_songEd;
     MdMidiPanel m_midiPanel;
+    MdSamplePanel m_samplePanel;
+    void openSamplePanel();
+    static int romSlotIndex(int rom) { return rom < 32 ? rom : rom + 16; }   // ROM-01..48 (0..47) -> the UW slot
     void openMidiPanel();
     MdMixer m_mixer;
     void toggleMixer();

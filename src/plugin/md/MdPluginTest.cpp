@@ -10,6 +10,7 @@
 #include "MdProcessor.h"
 #include "MdEditor.h"
 #include "MdPreview.h"
+#include "MdMidiExport.h"
 #include "MdMachineText.h"
 
 int main(int argc, char** argv)
@@ -1281,6 +1282,90 @@ int main(int argc, char** argv)
         std::printf(fails ? "RATE TEST FAILED (%d)\n" : "RATE TEST OK\n", fails);
         return fails ? 1 : 0;
     }
+    if (std::getenv("MD_FOUR_TEST")) {   // CLASSIC / EXTENDED, note learn, the sample manager, the MIDI clip
+        int fails = 0;
+        auto check = [&](bool ok, const juce::String& what) { std::printf("  %s %s\n", ok ? "ok  " : "FAIL", what.toRawUTF8()); fails += ok ? 0 : 1; };
+        struct Head : juce::AudioPlayHead {
+            double ppq = 0; bool playing = false;
+            juce::Optional<PositionInfo> getPosition() const override { PositionInfo q; q.setPpqPosition(ppq); q.setBpm(120); q.setIsPlaying(playing); return q; }
+        } head;
+        auto pHeap = std::make_unique<MdProcessor>();
+        auto& p = *pHeap;
+        p.setFirmwarePath(juce::String(argv[1]), false);
+        p.setPlayHead(&head);
+        const int blk = 480;
+        p.prepareToPlay(48000.0, blk);
+        juce::AudioBuffer<float> buf(2, blk);
+        std::vector<juce::MidiMessage> out;
+        auto run = [&](int blocks, juce::MidiBuffer in = {}) {
+            for (int i = 0; i < blocks; ++i) {
+                buf.clear(); juce::MidiBuffer m = i == 0 ? in : juce::MidiBuffer();
+                p.processBlock(buf, m);
+                for (const auto e : m) out.push_back(e.getMessage());
+                if (head.playing) head.ppq += blk / 48000.0 * 2.0;
+                p.syncMachineSideEffects();
+            }
+        };
+        // CLASSIC: the pattern's lock (T1 PTCH 10 on step 1) is not played (its CC does not go out); EXTENDED: it is
+        auto ms = MdProcessor::defaultMidiSettings(); ms.midiOut = 2; p.setMidiSettings(ms);
+        p.editPattern(0, [](mnm::mddump::Pattern& x) { x.length = 16; x.trigs[0] = 1; x.setLock(0, 0, 0, 10); });
+        auto lockOut = [&](bool extended) {
+            if (auto* q = p.apvts.getParameter(extendedId())) q->setValueNotifyingHost(extended ? 1.0f : 0.0f);
+            head.playing = false; run(3); out.clear();
+            head.ppq = 0; head.playing = true; run(20);
+            for (const auto& m : out) if (m.isController() && m.getControllerNumber() == 16 && m.getControllerValue() == 10) return true;
+            return false;
+        };
+        const bool ext = lockOut(true), classic = lockOut(false);
+        check(ext && !classic, "EXTENDED plays the lock (CC 16 = 10 goes out), CLASSIC does not");
+        if (auto* q = p.apvts.getParameter(extendedId())) q->setValueNotifyingHost(1.0f);
+        head.playing = false; run(3);
+        // LEARN: the next note is caught, not played
+        p.setTrigLogging(true);
+        p.armLearn();
+        { juce::MidiBuffer in; in.addEvent(juce::MidiMessage::noteOn(1, 36, uint8_t(100)), 0); run(1, in); }
+        const int learned = p.takeLearned();
+        check(learned == 36 && p.trigLog().empty(), "LEARN: note 36 caught (" + juce::String(learned) + "), T1 not played");
+        { juce::MidiBuffer in; in.addEvent(juce::MidiMessage::noteOn(1, 36, uint8_t(100)), 0); run(1, in); }
+        check(!p.trigLog().empty(), "after it, the note plays T1 again");
+        // the sample manager: a ROM sample reads back from sample memory as loaded; rename; RAM copy with nothing recorded
+        {
+            const auto wav = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("md_four_test.wav");
+            wav.deleteFile();
+            {
+                juce::WavAudioFormat fmt;
+                std::unique_ptr<juce::FileOutputStream> s(wav.createOutputStream());
+                std::unique_ptr<juce::AudioFormatWriter> w(fmt.createWriterFor(s.get(), 44100.0, 1, 16, {}, 0));
+                if (w) {
+                    s.release();
+                    juce::AudioBuffer<float> sb(1, 4410);
+                    for (int i = 0; i < sb.getNumSamples(); ++i) sb.setSample(0, i, 0.5f * std::sin(float(i) * 0.05f));
+                    w->writeFromAudioSampleBuffer(sb, 0, sb.getNumSamples());
+                }
+            }
+            const auto err = p.loadSample(4, wav);
+            double rate = 0;
+            const auto back = p.engineForTests()->voices().readSlot(4, &rate);
+            double maxErr = 0;
+            for (size_t i = 0; i < back.size() && i < 4410; ++i) maxErr = std::max(maxErr, std::abs(double(back[i]) - 0.5 * std::sin(double(i) * 0.05)));
+            check(err.isEmpty() && back.size() == 4410 && maxErr < 0.02 && std::abs(rate - 44100.0) < 50.0,
+                  "a ROM sample reads back from sample memory (" + juce::String(int(back.size())) + " samples, max error " + juce::String(maxErr, 4) + ", " + juce::String(rate, 0) + " Hz)");
+            check(p.renameSample(4, "kick 1").isEmpty() && p.sampleName(4) == "KICK 1", "rename: ROM-05 is KICK 1");
+            check(p.ramSeconds(0) == 0.0 && p.copyRamToRom(0, 6).isNotEmpty(), "RAM 1 with nothing recorded: no copy (and a reason)");
+            wav.deleteFile();
+        }
+        // the MIDI clip: the pattern's trigs as notes on the tracks' trig notes
+        {
+            mnm::mddump::Pattern pat; pat.length = 16; pat.trigs[0] = 0x1111; pat.trigs[1] = 0x0101;
+            const auto mf = mnm::library::buildMdPatternMidiFile(nullptr, pat);
+            int on36 = 0, on38 = 0;
+            for (int tr = 0; tr < mf.getNumTracks(); ++tr)
+                for (const auto* ev : *mf.getTrack(tr)) if (ev->message.isNoteOn()) { on36 += ev->message.getNoteNumber() == 36; on38 += ev->message.getNoteNumber() == 38; }
+            check(on36 == 4 && on38 == 2, "MIDI clip: T1's 4 trigs on note 36, T2's 2 on note 38");
+        }
+        std::printf(fails ? "FOUR TEST FAILED (%d)\n" : "FOUR TEST OK\n", fails);
+        return fails ? 1 : 0;
+    }
     if (std::getenv("MD_MIXER_TEST")) {   // G = GRID, M = the mixer; its faders, mutes and solos
         int fails = 0;
         auto check = [&](bool ok, const juce::String& what) { std::printf("  %s %s\n", ok ? "ok  " : "FAIL", what.toRawUTF8()); fails += ok ? 0 : 1; };
@@ -1701,6 +1786,17 @@ int main(int argc, char** argv)
     float peak = 0; double sum = 0;
     for (int c = 0; c < 2; ++c) for (int i = 0; i < total; ++i) { const float v = out.getSample(c, i); peak = std::max(peak, std::abs(v)); sum += double(v) * v; }
     std::printf("rendered %.2f s in %.0f ms (%.1fx realtime); peak %.3f RMS %.4f\n", total / rate, ms, total / rate * 1000.0 / ms, peak, std::sqrt(sum / (2.0 * total)));
+    if (ramTest) {   // the sample manager's RAM > ROM: RAM-R1's recording into ROM-11, and the RAM machines empty after
+        const double recSec = proc.ramSeconds(0);
+        const auto err = proc.copyRamToRom(0, 10);
+        double e = 0, r = 0;
+        const auto back = proc.engineForTests()->voices().readSlot(10, &r);
+        for (float v : back) e += double(v) * v;
+        std::printf("RAM > ROM: RAM 1 held %.2f s; copy %s; ROM-11 now %.2f s (%s, RMS %.4f, %.0f Hz); RAM 1 after: %.2f s\n", recSec,
+                    err.isEmpty() ? "ok" : err.toRawUTF8(), proc.sampleSeconds(10), proc.sampleName(10).toRawUTF8(),
+                    back.empty() ? 0.0 : std::sqrt(e / double(back.size())), r, proc.ramSeconds(0));
+        std::printf(recSec > 0.1 && err.isEmpty() && std::abs(proc.sampleSeconds(10) - recSec) < 0.05 && e > 0 && proc.ramSeconds(0) == 0.0 ? "RAM TO ROM OK\n" : "RAM TO ROM FAILED\n");
+    }
 
     if (std::getenv("MD_METER")) {
         std::printf("meter peaks:");
@@ -1783,6 +1879,7 @@ int main(int argc, char** argv)
                 med->refresh();
                 std::printf("after keys %s: track 1 machine %s\n", keys, kMachines[size_t(std::lround(proc.apvts.getRawParameterValue(machineId(0))->load()))].name);
             }
+            if (std::getenv("MD_UI_SAMPLES")) { proc.renameSample(0, "X"); med->devOpenSamples(); med->refresh(); }   // dev: the sample manager
             if (std::getenv("MD_UI_GRIDCLICK")) { med->devBarPart(MdSeqBar::Grid); med->refresh(); }   // dev: GRID clicked on a fresh plugin
             if (std::getenv("MD_UI_KITS")) med->showKitList();
             if (std::getenv("MD_UI_ABOUT")) med->showAbout();

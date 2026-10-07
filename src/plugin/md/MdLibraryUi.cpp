@@ -228,10 +228,18 @@ MdSeqBar::Part MdSeqBar::partAt(juce::Point<int> lcd) const
     return None;
 }
 
+void MdSeqBar::mouseDrag(const juce::MouseEvent& e)
+{
+    if (m_dragged || (m_downPart != Ptn && m_downPart != Trk) || e.getDistanceFromDragStart() < 8) return;
+    m_dragged = true;
+    if (onDragOut) onDragOut(m_downPart);
+}
+
 void MdSeqBar::mouseDown(const juce::MouseEvent& e)
 {
     const auto lcd = e.getPosition() / kS;
     const auto p = partAt(lcd);
+    m_downPart = p; m_dragged = false;
     const bool edit = e.mods.isShiftDown() || e.mods.isCommandDown() || e.mods.isCtrlDown() || e.mods.isAltDown();
     if (p == Pages) {
         for (int i = 0; i < 4; ++i)
@@ -259,8 +267,8 @@ void MdSeqBar::mouseMove(const juce::MouseEvent& e)
         case Mute: setTooltip(m_s.muted ? "The track is muted: its trigs don't play. Click to unmute (Alt+click a key in GRID: that key's track)"
                                          : "Mute the track (Alt+click a key in GRID: that key's track)"); break;
         case TrkPrev: case TrkNext: setTooltip("The track whose steps GRID shows and edits"); break;
-        case Trk: setTooltip("The track GRID edits. Shift+click: copy it. Ctrl+click: paste onto it. Alt+click: clear it"); break;
-        case Ptn: setTooltip("The pattern. Shift+click: copy it. Ctrl+click: paste onto it. Alt+click: clear its steps"); break;
+        case Trk: setTooltip("The track GRID edits. Drag it into Ableton: its MIDI clip. Shift+click: copy it. Ctrl+click: paste onto it. Alt+click: clear it"); break;
+        case Ptn: setTooltip("The pattern. Drag it into Ableton: a MIDI clip. Shift+click: copy it. Ctrl+click: paste onto it. Alt+click: clear its steps"); break;
         case PtnPrev: case PtnNext: setTooltip("The pattern (PTN): played by SEQ, edited by GRID (\"-\" = an empty slot). Shift+click >: add the next pattern to a chain; Shift+click <: take the last one off"); break;
         case Pages: setTooltip("Pages of 16 steps: solid = playing, underlined = shown by GRID. Click: show it. Shift+click: copy it (all tracks). "
                                "Ctrl+click: paste onto it. Alt+click: clear it. Keys: Ctrl+C / Ctrl+V / Delete on the shown page"); break;
@@ -380,10 +388,10 @@ void MdMidiPanel::paint(juce::Graphics& g)
             cv.text(spec::kFontBold8, value.toRawUTF8(), x, r.getY() + 2, true);
         };
         cell(20, nullptr, modes[juce::jlimit(0, 2, v.ptnMode)]);
-        cell(21, "FROM", v.ptnFrom == -2 ? juce::String("CUSTOM") : v.ptnFrom < 0 ? juce::String("OFF") : noteName(v.ptnFrom));
+        cell(21, "FROM", m_learn == 21 ? juce::String("?") : v.ptnFrom == -2 ? juce::String("CUSTOM") : v.ptnFrom < 0 ? juce::String("OFF") : noteName(v.ptnFrom));
         cell(22, "BNK", juce::String::charToString(juce::juce_wchar('A' + juce::jlimit(0, 7, v.ptnBank))));
-        cell(23, "START", v.startNote < 0 ? juce::String("--") : noteName(v.startNote));
-        cell(24, "STOP", v.stopNote < 0 ? juce::String("--") : noteName(v.stopNote));
+        cell(23, "START", m_learn == 23 ? juce::String("?") : v.startNote < 0 ? juce::String("--") : noteName(v.startNote));
+        cell(24, "STOP", m_learn == 24 ? juce::String("?") : v.stopNote < 0 ? juce::String("--") : noteName(v.stopNote));
     }
     {   // CTRL IN: Ableton's play / stop run the sequencer (OFF: a sound module; PLAY runs it at Ableton's tempo)
         const auto r = cellRect(25);
@@ -399,12 +407,14 @@ void MdMidiPanel::paint(juce::Graphics& g)
         cv.text(spec::kFontBold8, ch.toRawUTF8(), r.getX() + 14, r.getY() + 2, true);
     }
     cv.dotsH(2, w - 3, kMpGridY - 17);
-    cv.text(spec::kFontSmall4x5, "TRIG NOTES (THE NOTE MAP): DRAG A NOTE, WHEEL IT", 6, kMpGridY - 11, true);
+    cv.text(spec::kFontSmall4x5, "TRIG NOTES (THE NOTE MAP): CLICK, THEN PLAY A NOTE", 6, kMpGridY - 11, true);
     for (int t = 0; t < 16; ++t) {
         const auto r = cellRect(3 + t);
         frame(cv, r);
-        cv.text(spec::kFontTiny3x5, ("T" + juce::String(t + 1)).toRawUTF8(), r.getX() + 3, r.getY() + 3, true);
-        cv.text(spec::kFontBold8, noteName(v.note[size_t(t)]).toRawUTF8(), r.getX() + 3, r.getY() + 10, true);
+        const bool lrn = m_learn == 3 + t;
+        if (lrn) cv.fillRect(r.getX(), r.getY(), r.getWidth(), r.getHeight(), true);
+        cv.text(spec::kFontTiny3x5, ("T" + juce::String(t + 1)).toRawUTF8(), r.getX() + 3, r.getY() + 3, !lrn);
+        cv.text(lrn ? spec::kFontTiny3x5 : spec::kFontBold8, lrn ? "PLAY A NOTE" : noteName(v.note[size_t(t)]).toRawUTF8(), r.getX() + 3, r.getY() + (lrn ? 11 : 10), !lrn);
     }
     const int by = h - 14;   // the buttons
     cv.dotsH(2, w - 3, by - 3);
@@ -433,9 +443,30 @@ void MdMidiPanel::mouseDown(const juce::MouseEvent& e)
     if ((c == 23 || c == 24) && m_dragV < 0) m_dragV = c == 23 ? 91 : 93;
 }
 
+void MdMidiPanel::mouseUp(const juce::MouseEvent& e)
+{
+    const int c = m_drag;
+    m_drag = -1;
+    if (c < 0 || e.mouseWasDraggedSinceMouseDown()) return;
+    const bool noteCell = (c >= 3 && c <= 18) || c == 21 || c == 23 || c == 24;
+    if (!noteCell) return;
+    if (m_learn == c) { m_learn = -1; if (onLearnCancel) onLearnCancel(); }   // again: cancelled
+    else { m_learn = c; if (onLearn) onLearn(); }
+    repaint();
+}
+
+void MdMidiPanel::learned(int note)
+{
+    if (m_learn < 0) return;
+    const int c = m_learn;
+    m_learn = -1;
+    change(c, juce::jlimit(0, 127, note));
+}
+
 void MdMidiPanel::mouseDrag(const juce::MouseEvent& e)
 {
     if (m_drag < 0) return;
+    if (std::abs(e.getDistanceFromDragStartY()) < 2) return;   // a click is LEARN, not a turn
     const int steps = (m_dragY - e.getPosition().y) / (2 * kS);
     change(m_drag, m_dragV + steps);
 }
@@ -453,7 +484,10 @@ void MdMidiPanel::mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWhe
 
 bool MdMidiPanel::keyPressed(const juce::KeyPress& k)
 {
-    if (k == juce::KeyPress::escapeKey) { setVisible(false); if (onClose) onClose(); return true; }
+    if (k == juce::KeyPress::escapeKey) {
+        if (m_learn >= 0) { m_learn = -1; if (onLearnCancel) onLearnCancel(); repaint(); return true; }
+        setVisible(false); if (onClose) onClose(); return true;
+    }
     return false;
 }
 
@@ -643,6 +677,96 @@ bool MdMixer::keyPressed(const juce::KeyPress& k)
 {
     if (k == juce::KeyPress::escapeKey) { close(); return true; }
     if (auto* p = getParentComponent()) return p->keyPressed(k);   // G, M and the rest still work while it is open
+    return false;
+}
+
+// ---------------------------------------------------------------------------------------------- UW sample manager
+
+namespace { constexpr int kSpTitleH = 10, kSpGridY = 14, kSpRowH = 9; }
+
+juce::Rectangle<int> MdSamplePanel::slotRect(int i) const
+{
+    const int w = getWidth() / kS, cw = (w - 6) / kCols;
+    return {3 + (i / kRows) * cw, kSpGridY + (i % kRows) * kSpRowH, cw - 2, kSpRowH - 1};
+}
+
+juce::Rectangle<int> MdSamplePanel::buttonRect(int b) const
+{
+    const int h = getHeight() / kS, by = h - 14;
+    static const int x[6] = {6, 50, 100, 158, 216, 274}, wd[6] = {40, 36, 54, 54, 54, 54};
+    return {x[b], by, wd[b], 10};
+}
+
+void MdSamplePanel::paint(juce::Graphics& g)
+{
+    const int w = getWidth() / kS, h = getHeight() / kS;
+    LcdCanvas cv(w, h);
+    cv.fillRect(0, 0, w, h, false);
+    frame(cv, {0, 0, w, h});
+    cv.fillRect(0, 0, w, kSpTitleH, true);
+    cv.text(spec::kFontBold8, "SAMPLES", 4, 1, false);
+    const juce::String mem = "MEMORY " + juce::String(int(std::lround((memoryUsed ? memoryUsed() : 0.0) * 100.0))) + "%";
+    cv.text(spec::kFontTiny3x5, mem.toRawUTF8(), 60, 3, false);
+    cv.text(spec::kFontBold8, "X", w - 10, 1, false);
+    for (int i = 0; i < 48; ++i) {
+        const auto r = slotRect(i);
+        const bool sel = i == m_sel;
+        if (sel) cv.fillRect(r.getX(), r.getY(), r.getWidth(), r.getHeight(), true);
+        const auto n = name ? name(i) : juce::String();
+        const double sec = seconds ? seconds(i) : 0.0;
+        cv.text(spec::kFontTiny3x5, juce::String(i + 1).paddedLeft('0', 2).toRawUTF8(), r.getX() + 1, r.getY() + 2, !sel);
+        cv.text(spec::kFontTiny3x5, fit(spec::kFontTiny3x5, n.isEmpty() ? juce::String("--") : n, r.getWidth() - 34).toRawUTF8(), r.getX() + 11, r.getY() + 2, !sel);
+        if (sec > 0) {
+            const juce::String s = juce::String(sec, 1) + "S";
+            cv.text(spec::kFontTiny3x5, s.toRawUTF8(), r.getRight() - 1 - LcdCanvas::textWidth(spec::kFontTiny3x5, s.toRawUTF8()), r.getY() + 2, !sel);
+        }
+    }
+    const int by = h - 14;
+    cv.dotsH(2, w - 3, by - 3);
+    for (int b = 0; b < 6; ++b) {
+        const auto r = buttonRect(b);
+        const double rs = b >= 2 && ramSeconds ? ramSeconds(b - 2) : 1.0;
+        if (rs > 0) frame(cv, r); else dottedFrame(cv, r);
+        const juce::String label = b == 0 ? juce::String("RENAME") : b == 1 ? juce::String("CLEAR")
+                                 : "RAM" + juce::String(b - 1) + (rs > 0 ? " " + juce::String(rs, 1) + "S>" : juce::String(" --"));
+        cv.text(spec::kFontTiny3x5, label.toRawUTF8(), r.getX() + 4, r.getY() + 3, true);
+    }
+    cv.draw(g, 0, 0, kS);
+}
+
+void MdSamplePanel::mouseDown(const juce::MouseEvent& e)
+{
+    const auto p = e.getPosition() / kS;
+    const int w = getWidth() / kS;
+    if (p.y < kSpTitleH) { if (p.x >= w - 14) { setVisible(false); if (onClose) onClose(); } return; }
+    for (int i = 0; i < 48; ++i) if (slotRect(i).contains(p)) { m_sel = i; repaint(); return; }
+    for (int b = 0; b < 6; ++b)
+        if (buttonRect(b).contains(p)) {
+            if (b == 0 && onRename) onRename(m_sel);
+            else if (b == 1 && onClear) onClear(m_sel);
+            else if (b >= 2 && onCopyRam && ramSeconds && ramSeconds(b - 2) > 0) onCopyRam(b - 2, m_sel);
+            repaint();
+            return;
+        }
+}
+
+void MdSamplePanel::mouseDoubleClick(const juce::MouseEvent& e)
+{
+    const auto p = e.getPosition() / kS;
+    for (int i = 0; i < 48; ++i) if (slotRect(i).contains(p) && onRename) { m_sel = i; onRename(i); return; }
+}
+
+bool MdSamplePanel::keyPressed(const juce::KeyPress& k)
+{
+    const int code = k.getKeyCode();
+    auto move = [&](int d) { m_sel = juce::jlimit(0, 47, m_sel + d); repaint(); return true; };
+    if (code == juce::KeyPress::escapeKey) { setVisible(false); if (onClose) onClose(); return true; }
+    if (code == juce::KeyPress::upKey) return move(-1);
+    if (code == juce::KeyPress::downKey) return move(1);
+    if (code == juce::KeyPress::leftKey) return move(-kRows);
+    if (code == juce::KeyPress::rightKey) return move(kRows);
+    if (code == juce::KeyPress::returnKey) { if (onRename) onRename(m_sel); return true; }
+    if (code == juce::KeyPress::deleteKey || code == juce::KeyPress::backspaceKey) { if (onClear) onClear(m_sel); repaint(); return true; }
     return false;
 }
 

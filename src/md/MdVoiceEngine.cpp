@@ -242,6 +242,35 @@ void VoiceEngine::setMasterReturn(const int32_t* lr64)
         for (TWord k = 0; k < 64; ++k) m_dsp->memWrite(MemArea_X, 0x700 + slot * 0x40 + k, TWord(lr64[k]) & 0xFFFFFF);
 }
 
+uint32_t VoiceEngine::slotLength(int slot) const
+{
+    if (slot < 0 || slot >= kSlots) return 0;
+    const TWord len = m_mem->get(MemArea_P, kSlotTable + 4 * TWord(slot) + 1) & 0xFFFFFF;
+    return len > kSampleCapacity ? 0 : uint32_t(len);
+}
+
+std::vector<float> VoiceEngine::readSlot(int slot, double* rate) const
+{
+    std::vector<float> out;
+    if (slot < 0 || slot >= kSlots) return out;
+    const TWord rec = kSlotTable + 4 * TWord(slot);
+    const TWord base = m_mem->get(MemArea_P, rec + 0), len = m_mem->get(MemArea_P, rec + 1) & 0xFFFFFF;
+    if (len == 0 || len > kSampleCapacity || base < kSampleBase || base + (len + 1) / 2 > kSampleEnd) return out;
+    out.reserve(len);
+    for (TWord i = 0; i < len; ++i) {
+        const TWord w = m_mem->get(MemArea_P, base + i / 2);
+        const TWord code = (i & 1) ? (w & 0xFFF) : ((w >> 12) & 0xFFF);
+        const int32_t v = int32_t(m_mem->get(MemArea_Y, 0x146000 + code) << 8) >> 8;
+        out.push_back(float(double(v) / 8388608.0));
+    }
+    if (rate) {
+        const TWord rw = m_mem->get(MemArea_P, rec + 3) >> 4;   // 0x16250000 / period (ns)
+        *rate = rw > 0 ? 1e9 / (double(0x16250000) / double(rw)) : 44100.0;
+        if (*rate < 1000.0 || *rate > 192000.0) *rate = 44100.0;
+    }
+    return out;
+}
+
 uint32_t VoiceEngine::peek(int space, uint32_t addr) const
 {
     return m_mem->get(space == 0 ? MemArea_P : space == 1 ? MemArea_X : MemArea_Y, addr);

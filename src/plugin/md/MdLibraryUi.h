@@ -69,9 +69,13 @@ public:
     void paint(juce::Graphics&) override;
     void resized() override;
     void mouseDown(const juce::MouseEvent&) override;
+    void mouseDrag(const juce::MouseEvent&) override;   // PTN / the track dragged out: a MIDI clip (onDragOut)
     void mouseMove(const juce::MouseEvent&) override;
     void mouseExit(const juce::MouseEvent&) override { if (m_hover != None) { m_hover = None; repaint(); } }
+    std::function<void(Part)> onDragOut;
 private:
+    Part m_downPart = None;
+    bool m_dragged = false;
     Part partAt(juce::Point<int> lcd) const;
     int dotX(int i) const { return m_rects[size_t(Pages)].getX() + 3 + i * 9; }
     Anchors m_anchors;
@@ -137,7 +141,11 @@ public:
     void paint(juce::Graphics&) override;
     void mouseDown(const juce::MouseEvent&) override;
     void mouseDrag(const juce::MouseEvent&) override;
-    void mouseUp(const juce::MouseEvent&) override { m_drag = -1; }
+    void mouseUp(const juce::MouseEvent&) override;
+    // LEARN (as the MD's map editor): a click on a note cell (no drag) waits for a note; the editor hands it in
+    std::function<void()> onLearn, onLearnCancel;
+    int learning() const { return m_learn; }
+    void learned(int note);
     void mouseWheelMove(const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
     bool keyPressed(const juce::KeyPress& k) override;
 private:
@@ -147,6 +155,8 @@ private:
     int cellAt(juce::Point<int> lcd) const;
     void change(int cell, int to);
     int cellValue(const Values& v, int c) const;
+    int m_learn = -1;   // the cell waiting for a note
+    bool m_moved = false;
     int m_drag = -1, m_dragY = 0, m_dragV = 0;
 };
 
@@ -184,6 +194,32 @@ private:
     int levelAt(int t, int y) const;
     int panAt(int t, int x) const;
     Hit m_drag;
+};
+
+// The UW sample manager, over the pages (as the MD's): the 48 ROM slots with their names and lengths. Click a slot;
+// RENAME (or double-click / Enter), CLEAR (or Delete); RAM 1-4 > copies that RAM machine's recording into the slot
+// (the sample memory reloads, so the RAM machines start empty, as on the unit). Arrows move, Esc closes.
+class MdSamplePanel : public juce::Component, public juce::SettableTooltipClient {
+public:
+    static constexpr int kS = 3;
+    std::function<juce::String(int slot)> name;          // slot = ROM 0..47
+    std::function<double(int slot)> seconds;
+    std::function<double(int ram)> ramSeconds;
+    std::function<double()> memoryUsed;
+    std::function<void(int slot)> onRename, onClear;
+    std::function<void(int ram, int slot)> onCopyRam;
+    std::function<void()> onClose;
+    void open() { setVisible(true); toFront(true); grabKeyboardFocus(); repaint(); }
+    void paint(juce::Graphics&) override;
+    void mouseDown(const juce::MouseEvent&) override;
+    void mouseDoubleClick(const juce::MouseEvent&) override;
+    bool keyPressed(const juce::KeyPress& k) override;
+    int selected() const { return m_sel; }
+private:
+    static constexpr int kCols = 4, kRows = 12;
+    juce::Rectangle<int> slotRect(int i) const;
+    juce::Rectangle<int> buttonRect(int b) const;   // 0 RENAME, 1 CLEAR, 2..5 RAM 1..4 >
+    int m_sel = 0;
 };
 
 class MdLibraryDrop : public juce::Component {

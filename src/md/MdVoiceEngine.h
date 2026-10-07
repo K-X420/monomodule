@@ -59,6 +59,10 @@ public:
     const std::string& faultReason() const { return m_fault; }
     uint64_t lastPassInstructions() const { return m_lastInstr; }
     uint32_t peek(int space, uint32_t addr) const;   // debug: 0 = P, 1 = X, 2 = Y
+    // A slot's sample as it is in sample memory now (a RAM recorder's recording: slots 32..35), decoded through the
+    // DSP's table; its rate from the slot record. Empty when the slot holds nothing.
+    std::vector<float> readSlot(int slot, double* rate = nullptr) const;
+    uint32_t slotLength(int slot) const;   // its length in samples (no decoding)
 
 private:
     bool runToPark(uint64_t maxExec);
