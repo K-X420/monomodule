@@ -37,7 +37,9 @@ struct SeqTrig {
 
 class PatternPlayer {
 public:
-    static int stepClocks(int multiplier) { static const int t[4] = {6, 3, 8, 4}; return t[multiplier & 3]; }
+    // clocks (24 a quarter note) per step: the unit's 0 1x, 1 2x, 2 3/4x, 3 3/2x; then the plugin's own 4 1/2x, 5 1/4x,
+    // 6 1/8x, 7 3x (kept in the same byte; a real MD knows only 0-3)
+    static int stepClocks(int multiplier) { static const int t[8] = {6, 3, 8, 4, 12, 24, 48, 2}; return t[multiplier & 7]; }
 
     PatternPlayer() = default;
     explicit PatternPlayer(const mddump::Pattern& p) { set(p); }

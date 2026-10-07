@@ -111,6 +111,7 @@ void MdProcessor::loadEngine()
         auto fw = std::make_unique<mnm::md::Firmware>(mnm::md::loadFirmware(m_firmwarePath.toStdString()));
         auto engine = std::make_unique<mnm::md::Engine>(*fw);
         text::readRomBadges(fw->mainOs, mnm::md::kMainOsBase);   // the family badges, for the logos
+        text::readMdLfoIcons(fw->mainOs, mnm::md::kMainOsBase);  // the LFO wave icons
         m_fw = std::move(fw); m_engine = std::move(engine);
         m_snap = true;
         m_status = "OS loaded: " + juce::File(m_firmwarePath).getFileName();
@@ -402,6 +403,7 @@ void MdProcessor::editPattern(int slot, const std::function<void(mnm::mddump::Pa
         p.length = 16;
         p.kit = uint8_t(juce::jmax(0, m_seqKitSlot.load()));
         p.accentEditAll = p.slideEditAll = p.swingEditAll = 1;
+        p.swing = 0xAAAAAAAAAAAAAAAAull;   // steps 2, 4, 6...: the swing trigs every factory pattern has
         p.accentAmount = 64;
         for (auto& row : p.locks) std::fill(std::begin(row), std::end(row), uint8_t(0xFF));
     }
@@ -517,6 +519,7 @@ void MdProcessor::seqStart(Segment& seg, int slot, int start, int end, int64_t s
         mnm::mddump::Pattern p;
         p.length = 16;
         p.accentEditAll = p.slideEditAll = p.swingEditAll = 1;
+        p.swing = 0xAAAAAAAAAAAAAAAAull;
         for (auto& row : p.locks) std::fill(std::begin(row), std::end(row), uint8_t(0xFF));
         return p;
     }();
@@ -1215,6 +1218,7 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
             if (const auto q = pos->getPpqPosition()) m_hostPpq = *q; else m_hostPlaying = false;
         }
     m_hostPlayingUi.store(m_hostPlaying);
+    m_beatUi.store(float(m_hostPpq - std::floor(m_hostPpq)));
     m_seqBpm = m_hostBpm.load();
     if (m_hostPlaying) {   // the host's transport: PLAY gives way
         m_intPlay.store(false);

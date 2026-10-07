@@ -11,6 +11,7 @@
 #include <cstring>
 #include <atomic>
 #include <vector>
+#include "one/SpecData.h"
 #include "MdLogos.h"
 
 namespace mnm::plugin::md::text {
@@ -80,9 +81,9 @@ inline void readRomBadges(const std::vector<uint8_t>& os, uint32_t base)
     const uint32_t end = base + uint32_t(os.size());
     auto u32 = [&](uint32_t a) -> uint32_t { const size_t o = a - base; return (uint32_t(os[o]) << 24) | (uint32_t(os[o + 1]) << 16) | (uint32_t(os[o + 2]) << 8) | os[o + 3]; };
     auto badge = [&](uint32_t a) {
-        if (a + 20 > end) return false;
+        if (uint64_t(a) + 20 > end) return false;
         const uint32_t w = u32(a), h = u32(a + 4), px = u32(a + 12), mask = u32(a + 16);
-        return w == 23 && h == 13 && mask == px + 4 * w && px >= base && mask + 4 * w <= end;
+        return w == 23 && h == 13 && px >= base && uint64_t(mask) == uint64_t(px) + 4 * w && uint64_t(mask) + 4 * w <= end;
     };
     for (uint32_t a = base; a + 100 <= end; a += 2) {
         bool all = true;
@@ -106,6 +107,40 @@ inline void readRomBadges(const std::vector<uint8_t>& os, uint32_t base)
             rb.framed[size_t(s)].family = rb.bare[size_t(s)].family = s == 4 ? "ROM" : "RAM";
         }
         rb.ready.store(true);
+        return;
+    }
+}
+
+// The LFO wave icons (17x9, the OS's table of 12: SHP1's TRI SAW SQR LIN EXP RND, then SHP2's inverted ones), found as
+// 12 icon descriptors' pointers back to back; handed to the cells through uispec::extIcons()
+inline void readMdLfoIcons(const std::vector<uint8_t>& os, uint32_t base)
+{
+    static std::array<std::array<uint64_t, 16>, 12> rows{};
+    static std::array<mnm::uispec::Bitmap, 12> bms{};
+    static std::atomic<bool> done{false};
+    if (done.load()) return;
+    const uint32_t end = base + uint32_t(os.size());
+    auto u32 = [&](uint32_t a) -> uint32_t { const size_t o = a - base; return (uint32_t(os[o]) << 24) | (uint32_t(os[o + 1]) << 16) | (uint32_t(os[o + 2]) << 8) | os[o + 3]; };
+    auto wave = [&](uint32_t d) {
+        if (d < base || uint64_t(d) + 20 > end) return false;   // (64-bit: a stray word near 2^32 must not wrap)
+        const uint32_t w = u32(d), h = u32(d + 4), px = u32(d + 12), mask = u32(d + 16);
+        return w == 17 && h == 9 && px >= base && uint64_t(mask) == uint64_t(px) + 4 * w && uint64_t(mask) + 4 * w <= end;
+    };
+    for (uint32_t a = base; a + 48 <= end; a += 2) {
+        bool all = true;
+        for (uint32_t i = 0; i < 12 && all; ++i) all = wave(u32(a + 4 * i));
+        if (!all) continue;
+        for (int i = 0; i < 12; ++i) {
+            const uint32_t d = u32(a + 4 * uint32_t(i)), px = u32(d + 12);
+            for (int r = 0; r < 9; ++r) {
+                uint64_t row = 0;
+                for (int c = 0; c < 17; ++c) if ((u32(px + 4 * uint32_t(c)) >> (32 - 9 + r)) & 1u) row |= uint64_t(1) << (63 - c);
+                rows[size_t(i)][size_t(r)] = row;
+            }
+            bms[size_t(i)] = mnm::uispec::Bitmap{17, 9, rows[size_t(i)].data()};
+            mnm::uispec::extIcons()[size_t(i / 6)][size_t(i % 6)] = &bms[size_t(i)];
+        }
+        done.store(true);
         return;
     }
 }

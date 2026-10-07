@@ -13,7 +13,8 @@ constexpr int kCcBases[4] = {16, 40, 72, 96};   // + param 0-23, on channel 1 + 
 juce::MidiMessageSequence trackSequence(const Kit* kit, const Pattern& pat, int track)
 {
     const int len = juce::jlimit(1, 64, int(pat.length));
-    const int stepTicks = pat.doubleTempo ? kPPQ / 8 : kPPQ / 4;
+    static const int kStepClocks[8] = {6, 3, 8, 4, 12, 24, 48, 2};   // per speed (as md::PatternPlayer), 24 a quarter note
+    const int stepTicks = kPPQ * kStepClocks[pat.doubleTempo & 7] / 24;
     const int swing = pat.swingPercent();
     const uint64_t swingMask = pat.swingEditAll ? pat.swing : pat.swingPerTrack[track];
     const uint64_t accentMask = pat.accentEditAll ? pat.accent : pat.accentPerTrack[track];

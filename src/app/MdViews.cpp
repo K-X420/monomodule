@@ -365,7 +365,7 @@ void MdPatternView::paint(juce::Graphics& g)
     cv.draw(g, 0, 0);
     // summary
     const int x = 3 * kScale;
-    int xx = ui::labelled(g, x, 12 * kScale, 7 * kScale, "LENGTH", juce::String(steps) + (p.doubleTempo ? "  x2 TEMPO" : ""));
+    int xx = ui::labelled(g, x, 12 * kScale, 7 * kScale, "LENGTH", juce::String(steps) + [&] { static const char* const s[8] = {"", "  2X", "  3/4X", "  3/2X", "  1/2X", "  1/4X", "  1/8X", "  3X"}; return juce::String(s[p.doubleTempo & 7]); }());
     xx = ui::labelled(g, xx + 18, 12 * kScale, 7 * kScale, "SWING", juce::String(p.swingPercent()) + "%");
     xx = ui::labelled(g, xx + 18, 12 * kScale, 7 * kScale, "ACCENT", juce::String(int(p.accentAmount)));
     ui::labelled(g, xx + 18, 12 * kScale, 7 * kScale, "KIT", m_hasKit ? pad2(p.kit) + " " + juce::String(m_kit.name) : pad2(p.kit) + " (empty)");

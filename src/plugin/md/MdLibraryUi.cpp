@@ -88,17 +88,35 @@ void MdSeqBar::resized()
     x += 1 + gap;
     take(Grid, 30);
     x += 1 + gap;
-    take(TrkPrev, arrowW); take(Trk, 58); take(TrkNext, arrowW); take(Mute, 13);
+    take(TrkPrev, arrowW); take(Trk, 52); take(TrkNext, arrowW); take(Mute, 13);
     x += 1 + gap;
-    take(PtnPrev, arrowW); take(Ptn, 46); take(PtnNext, arrowW);
+    take(PtnPrev, arrowW); take(Ptn, 42); take(PtnNext, arrowW);
     x += 1 + gap;
-    take(Pages, 22 + 4 * 11 + 2);
+    const int afterPtn = x;
+    take(Pages, 4 + 4 * 10 + 1);
     x += 1 + gap;
-    take(Edit, 22);
+    take(Edit, 20);
+    x += 1 + gap;
+    take(DelPg, 20);
     x += 1 + gap;
     take(Mix, 25);
     x += 1 + gap;
     take(Step, juce::jmax(40, getWidth() / kS - x));
+    if (m_anchors.menuW > 0) {   // MIX under SYNC, STEP under MENU; DEL / X2 / the pages packed right to left before MIX
+        m_rects[size_t(Step)] = {m_anchors.menuX, 0, m_anchors.menuW, kLcdH};
+        m_rects[size_t(Mix)] = {m_anchors.syncX, 0, m_anchors.syncW, kLcdH};
+        const int g2 = 4;   // a tighter gap inside this group
+        int right = m_anchors.syncX - gap;
+        for (Part p : {DelPg, Edit, Pages}) {
+            const int pw = m_rects[size_t(p)].getWidth();
+            m_rects[size_t(p)] = {right - pw, 0, pw, kLcdH};
+            right -= pw + g2;
+        }
+        if (right < afterPtn - gap) {   // too narrow: back to packing left to right
+            x = afterPtn;
+            for (Part p : {Pages, Edit, DelPg}) { const int pw = m_rects[size_t(p)].getWidth(); m_rects[size_t(p)] = {x, 0, pw, kLcdH}; x += pw + gap; }
+        }
+    }
 }
 
 void MdSeqBar::paint(juce::Graphics& g)
@@ -142,34 +160,41 @@ void MdSeqBar::paint(juce::Graphics& g)
         cv.text(spec::kFontBold8, fit(spec::kFontBold8, text, r.getRight() - (r.getX() + 8 + lw) - 3).toRawUTF8(), r.getX() + 8 + lw, r.getY() + 4, true);
     };
     arrows(TrkPrev, TrkNext);
-    {   // MUTE of the selected track: solid while muted
+    {   // MUTE of the selected track: a speaker (crossed out and solid while muted)
         const auto r = box(Mute, m_s.muted);
-        cv.text(spec::kFontBold8, "M", r.getX() + 3, r.getY() + 4, !m_s.muted);
+        pixelIcon(cv, m_s.muted ? kIconMuted : kIconSpeaker, 7, r.getX() + 3, r.getY() + 4, !m_s.muted);
     }
     labelled(Trk, "TRK", "T" + juce::String(m_s.track + 1) + " " + m_s.machine);
     arrows(PtnPrev, PtnNext);
     labelled(Ptn, "PTN", juce::String(kPatternNames[juce::jlimit(0, 127, m_s.pattern)]) + (m_s.empty ? "-" : ""));
     {   // the pages: a ring each (a point past the length), solid when playing, underlined when GRID shows it
         const auto r = box(Pages, false);
-        cv.text(spec::kFontTiny3x5, "PAGE", r.getX() + 4, r.getY() + 5, true);
         const int pages = (juce::jlimit(1, 64, m_s.length) + 15) / 16, playing = m_s.step >= 0 ? m_s.step / 16 : -1;
         for (int i = 0; i < 4; ++i) {
             const int x = dotX(i), y = r.getY() + 3;
             if (i >= pages) { cv.fillRect(x + 3, y + 3, 1, 1, true); continue; }
             static const char* const ring[7] = {"..###..", ".#...#.", "#.....#", "#.....#", "#.....#", ".#...#.", "..###.."};
             static const char* const disc[7] = {"..###..", ".#####.", "#######", "#######", "#######", ".#####.", "..###.."};
-            const auto& shape = i == playing ? disc : ring;
+            const auto& shape = i == playing && m_s.beat ? disc : ring;   // the playing page blinks on the beat
             for (int dy = 0; dy < 7; ++dy) for (int dx = 0; dx < 7; ++dx) if (shape[dy][dx] == '#') cv.set(x + dx, y + dy, true);
             if (m_s.grid && i == m_s.page) cv.fillRect(x, y + 9, 7, 1, true);
         }
     }
-    {   // X2: the pattern doubled
+    {   // X2: the pattern doubled (two pages, x2)
         const auto r = box(Edit, false);
-        cv.text(spec::kFontBold8, "X2", r.getX() + 4, r.getY() + 4, true);
+        pixelIcon(cv, kIconDouble, 5, r.getX() + 3, r.getY() + 2, true);
+        cv.text(spec::kFontTiny3x5, "X2", r.getX() + 6, r.getY() + 8, true);
+    }
+    {   // DEL PG: the shown page removed (the pages after it move up)
+        const auto r = box(DelPg, false);
+        pixelIcon(cv, kIconDelPage, 5, r.getX() + 5, r.getY() + 2, true);
+        cv.text(spec::kFontTiny3x5, "DEL", r.getX() + 4, r.getY() + 8, true);
     }
     {   // MIX: solid while the mixer is open
         const auto r = box(Mix, m_s.mix);
-        cv.text(spec::kFontBold8, "MIX", r.getX() + 4, r.getY() + 4, !m_s.mix);
+        const int tw = LcdCanvas::textWidth(spec::kFontBold8, "MIX"), x0 = r.getX() + (r.getWidth() - 9 - 3 - tw) / 2;
+        pixelIcon(cv, kIconFaders, 9, x0, r.getY() + 3, !m_s.mix);
+        cv.text(spec::kFontBold8, "MIX", x0 + 12, r.getY() + 4, !m_s.mix);
     }
     {
         juce::String s = m_s.flash.isNotEmpty() ? m_s.flash : m_s.seqOff ? juce::String("SEQ OFF")
@@ -229,6 +254,7 @@ void MdSeqBar::mouseMove(const juce::MouseEvent& e)
                                "Ctrl+click: paste onto it. Alt+click: clear it. Keys: Ctrl+C / Ctrl+V / Delete on the shown page"); break;
         case Step: setTooltip(m_s.seqOff ? "SEQ is OFF (OUT tab): the pattern does not play. PLAY, a placed step or REC turns it on" : "The playing step / the pattern's length"); break;
         case Edit: setTooltip("X2: the pattern doubled (its steps again after themselves, twice the length). Ctrl+D"); break;
+        case DelPg: setTooltip("DEL PAGE: remove the shown page (the pages after it move up; a 1-page pattern is cleared). Ctrl+Z undoes it"); break;
         case Mix: setTooltip("MIX: the 16 tracks' levels, pans, mutes and solos (M)"); break;
         default: setTooltip({}); break;
     }

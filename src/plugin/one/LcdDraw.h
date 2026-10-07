@@ -38,6 +38,12 @@ inline void pixelIcon(LcdCanvas& cv, const char* const* rows, int n, int x, int 
         for (int c = 0; rows[r][c]; ++c) if (rows[r][c] == '#') cv.set(x + c, y + r, on);
 }
 
+inline const char* const kIconSpeaker[] = {"...#...", "..##..#", "##.#.#.", "#..#.#.", "##.#.#.", "..##..#", "...#..."};   // 7x7: a speaker, its sound
+inline const char* const kIconMuted[] = {"...#...", "..##...", "##.##.#", "#..#.#.", "##.##.#", "..##...", "...#..."};     // 7x7: the speaker, crossed
+inline const char* const kIconLock[] = {"..###..", ".#...#.", ".#...#.", "#######", "#.....#", "#..#..#", "#######"};       // 7x7 padlock
+inline const char* const kIconFaders[] = {".#..#..#.", ".#..#..#.", "###.#..#.", ".#.###.#.", ".#..#..#.", ".#..#.###", ".#..#..#.", ".#..#..#.", ".#..#..#."};   // 9x9
+inline const char* const kIconDouble[] = {"###.###", "#.#.#.#", "#.#.#.#", "#.#.#.#", "###.###"};   // 7x5: two pages
+inline const char* const kIconDelPage[] = {"#####...", "#...#...", "#...#...", "#...#...", "#####..."};   // 5x5: a page (DEL under it)
 inline const char* const kIconSave[] = {   // a disk
     "########.", "#.#..#.##", "#.#..#..#", "#.####..#", "#.......#", "#.#####.#", "#.#...#.#", "#.#...#.#", "#########"};
 inline const char* const kIconLibrary[] = {   // four slots

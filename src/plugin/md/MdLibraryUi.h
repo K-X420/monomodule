@@ -42,20 +42,24 @@ private:
 // page GRID shows; a click shows that page) and the playing step (SONG: the row as well).
 class MdSeqBar : public juce::Component, public juce::SettableTooltipClient {
 public:
-    enum Part { None = -1, Play, Rec, Grid, TrkPrev, Trk, TrkNext, Mute, PtnPrev, Ptn, PtnNext, Pages, Edit, Mix, Step, kParts };
+    enum Part { None = -1, Play, Rec, Grid, TrkPrev, Trk, TrkNext, Mute, PtnPrev, Ptn, PtnNext, Pages, Edit, DelPg, Mix, Step, kParts };
     static constexpr int kS = 2, kLcdH = 15;
     struct State {
+        bool beat = false;   // the first half of each quarter note (the playing page's dot lights)
         bool playing = false, hostPlaying = false, grid = false, mix = false, empty = true, muted = false, rec = false, recording = false, seqOff = false;
         juce::String flash;   // a short confirmation in the STEP box ("COPIED PAGE 1")
         int track = 0, pattern = 0, length = 16, page = 0, step = -1, row = -1;
         juce::String machine;
-        bool operator==(const State& o) const { return playing == o.playing && mix == o.mix && flash == o.flash && seqOff == o.seqOff && rec == o.rec && recording == o.recording && muted == o.muted && hostPlaying == o.hostPlaying && grid == o.grid && empty == o.empty && track == o.track && pattern == o.pattern && length == o.length && page == o.page && step == o.step && row == o.row && machine == o.machine; }
+        bool operator==(const State& o) const { return beat == o.beat && playing == o.playing && mix == o.mix && flash == o.flash && seqOff == o.seqOff && rec == o.rec && recording == o.recording && muted == o.muted && hostPlaying == o.hostPlaying && grid == o.grid && empty == o.empty && track == o.track && pattern == o.pattern && length == o.length && page == o.page && step == o.step && row == o.row && machine == o.machine; }
     };
     std::function<void(Part)> onPart;
     std::function<void(int)> onPage;
     // Shift / Ctrl (Cmd) / Alt + click on TRK, PTN or a page dot: copy / paste / clear (page: the dot's page)
     std::function<void(Part, int page, const juce::ModifierKeys&)> onEditClick;
     void setState(const State& s) { if (!(s == m_s)) { m_s = s; repaint(); } }
+    // the header's columns over the bar (bar LCD px): MIX goes under SYNC, STEP under MENU
+    struct Anchors { int syncX = 0, syncW = 0, menuX = 0, menuW = 0; bool operator!=(const Anchors& o) const { return syncX != o.syncX || syncW != o.syncW || menuX != o.menuX || menuW != o.menuW; } };
+    void setAnchors(const Anchors& a) { if (a != m_anchors) { m_anchors = a; resized(); repaint(); } }
     void paint(juce::Graphics&) override;
     void resized() override;
     void mouseDown(const juce::MouseEvent&) override;
@@ -63,7 +67,8 @@ public:
     void mouseExit(const juce::MouseEvent&) override { if (m_hover != None) { m_hover = None; repaint(); } }
 private:
     Part partAt(juce::Point<int> lcd) const;
-    int dotX(int i) const { return m_rects[size_t(Pages)].getX() + 22 + i * 11; }
+    int dotX(int i) const { return m_rects[size_t(Pages)].getX() + 4 + i * 10; }
+    Anchors m_anchors;
     State m_s;
     Part m_hover = None;
     std::array<juce::Rectangle<int>, kParts> m_rects{};   // LCD px

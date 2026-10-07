@@ -1,4 +1,5 @@
 #include "OneEditor.h"
+#include "SharedSettings.h"
 #include "ShnolkLogo.h"
 #include "ParamDisplay.h"
 #include "MachineText.h"
@@ -247,6 +248,7 @@ OneEditor::OneEditor(MnmOneProcessor& p)
 
     // the library: strip in the header, its list, the panel over the pages, the save dialog over everything
     addAndMakeVisible(m_strip);
+    if (loadSharedSetting("tooltips", "1") != "0") m_tips = std::make_unique<juce::TooltipWindow>(this, 700);
     setWantsKeyboardFocus(true);
     m_strip.onPart = [this](PresetStrip::Part part) {
         if (part == PresetStrip::Kit) m_browseKits = true;

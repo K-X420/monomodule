@@ -113,7 +113,7 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> m_bpmSyncAttach;
     juce::Label m_status, m_fwPath;
     LcdButton m_menuButton{"MENU"};
-    juce::TooltipWindow m_tips{this, 700};   // shows the tooltips (hover ~0.7 s)
+    std::unique_ptr<juce::TooltipWindow> m_tips;   // shows the tooltips (hover ~0.7 s), unless the shared TOOLTIPS setting is off
     bool m_browseKits = false;   // the arrow keys step kits (the KIT selector was used last), else presets
     // Six, on the face (also in MENU): POLY (spread the notes over tracks 1-6) and the selected track's sound copied to all
     LcdToggle m_poly{"POLY"};

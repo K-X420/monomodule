@@ -169,6 +169,7 @@ public:
     void editSong(int slot, const std::function<void(mnm::mddump::Song&)>& fn);
     void setBankSong(int slot, std::shared_ptr<const mnm::mddump::Song> s);
     int seqStep() const { return m_seqStepUi.load(); }        // the playing step, -1 when not playing
+    float beatPhase() const { return m_beatUi.load(); }        // 0..1 through the current quarter note (UI: blinks)
     int seqLength() const { return m_seqLenUi.load(); }       // the pattern's length (steps)
     int seqPattern() const { return m_seqPatternUi.load(); }  // the playing (or next, when stopped) pattern slot, -1 = none
     uint64_t seqTrigs(int t) const { return m_seqTrigsUi[size_t(t)].load(); }   // that pattern's trig steps of track t
@@ -357,6 +358,7 @@ private:
     std::atomic<float>* m_songParam = nullptr;
     std::array<std::atomic<uint64_t>, kTracks> m_seqTrigsUi{};
     std::atomic<int> m_seqRowUi{-1};
+    std::atomic<float> m_beatUi{0.0f};
     std::atomic<int> m_programChange{-1};                // a MIDI program change for the message thread (PATTERN follows)
     bool m_seqRunning = false;
     double m_seqExpect = 0, m_seqClock0 = 0, m_seqCps = 0;   // clocks: the block's expected start, its start, per host sample

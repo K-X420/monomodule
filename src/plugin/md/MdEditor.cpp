@@ -50,15 +50,19 @@ constexpr spec::Param toggle(const char* label, const char* const* names, int de
 constexpr spec::Param blank() { return {"", spec::Display::Blank, false, 0, 127, 128, spec::Icons::None, nullptr}; }
 
 constexpr const char* kTrackNames[kTracks] = {"T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11", "T12", "T13", "T14", "T15", "T16"};
-constexpr const char* kShapeNames[8] = {"0", "1", "2", "3", "4", "5", "6", "7"};
+// The LFO shapes (manual: triangle, saw, square, linear decay, exponential decay, random; SHP2 = the inverted ones)
+constexpr const char* kShape1Names[8] = {"TRI", "SAW", "SQR", "LIN", "EXP", "RND", "6", "7"};
+constexpr const char* kShape2Names[8] = {"ITRI", "ISAW", "ISQR", "ILIN", "IEXP", "IRND", "6", "7"};
+constexpr spec::Param withIcons(spec::Param p, spec::Icons i) { p.icons = i; return p; }
 constexpr const char* kVelNames[2] = {"VOLUME", "ACCENT"};
 
 const spec::Param kFxParams[8] = {numeric("AMD", 0), numeric("AMF", 0), numeric("EQF", 64), bipolar("EQG"),
                                   numeric("FLTF", 0), numeric("FLTW", 127), numeric("FLTQ", 0), numeric("SRR", 0)};
 const spec::Param kRoutingParams[8] = {numeric("DIST", 0), numeric("VOL", 100), bipolar("PAN"), numeric("DEL", 0),
                                        numeric("REV", 0), readout("OUT", kRouteNames, kNumRoutes, kNumRoutes - 1), readout("TRGG", kGroupNames, 17), readout("MUTG", kGroupNames, 17)};
-const spec::Param kLfoParams[8] = {readout("TRK", kTrackNames, kTracks), readout("PARAM", kLfoParamNames, 24), readout("SHP1", kShapeNames, 8),
-                                   readout("SHP2", kShapeNames, 8), readout("TYPE", kLfoTypes, 3), numeric("SPD", 64), numeric("DEP", 0), numeric("MIX", 0)};
+const spec::Param kLfoParams[8] = {readout("TRK", kTrackNames, kTracks), withIcons(readout("PARAM", kLfoParamNames, 24), spec::Icons::MdLfoParam),
+                                   withIcons(readout("SHP1", kShape1Names, 8), spec::Icons::MdWave1),
+                                   withIcons(readout("SHP2", kShape2Names, 8), spec::Icons::MdWave2), readout("TYPE", kLfoTypes, 3), numeric("SPD", 64), numeric("DEP", 0), numeric("MIX", 0)};
 constexpr const char* kSeqNames[2] = {"OFF", "ON"};
 constexpr const char* kModeNames[2] = {"PATTERN", "SONG"};
 const spec::Param kOutParams[8] = {numeric("VOL", 80), toggle("VEL", kVelNames), numeric("ACNT", 64), blank(),
@@ -235,6 +239,11 @@ void MdTrackKeys::paintGrid(LcdCanvas& cv)
         else dottedFrame(cv, r.getX(), r.getY(), r.getWidth(), r.getHeight());
         const bool ink = !trig;
         cv.text(spec::kFontBold8, juce::String(s + 1).toRawUTF8(), r.getX() + 3, r.getY() + 3, ink);
+        {   // which track the keys are: "T3 SD"
+            const int mi = juce::jlimit(0, kNumMachines - 1, m_machine[size_t(juce::jlimit(0, kTracks - 1, m_selected))]);
+            const juce::String tag = "T" + juce::String(m_selected + 1) + " " + (shortOf(mi) == "---" ? familyOf(mi) : shortOf(mi));
+            cv.text(spec::kFontTiny3x5, one::fit(spec::kFontTiny3x5, tag, r.getWidth() - 5).toRawUTF8(), r.getX() + 3, r.getY() + 14, ink);
+        }
         int fx = r.getX() + 3;   // the step's flags along the bottom
         auto flag = [&](const char* c, bool on) { if (on) cv.text(spec::kFontTiny3x5, c, fx, r.getBottom() - 8, ink); fx += 6; };
         flag("A", (gr.accent >> s) & 1);
@@ -275,14 +284,6 @@ void MdTrackKeys::paint(juce::Graphics& g)
         const int m = m_machine[size_t(t)];
         cv.textCentred(spec::kFontTiny3x5, familyOf(m).toRawUTF8(), r.getX() + 1, r.getWidth() - 1, r.getY() + 13, ink);
         cv.textCentred(spec::kFontTiny3x5, shortOf(m).toRawUTF8(), r.getX() + 1, r.getWidth() - 1, r.getY() + 19, ink);
-        // LOCK and MUTE keys along the bottom: solid when on, dotted otherwise
-        auto key = [&](juce::Rectangle<int> b, const char* letter, bool on) {
-            if (on) cv.fillRect(b.getX(), b.getY(), b.getWidth(), b.getHeight(), ink);
-            else dottedFrame(cv, b.getX(), b.getY(), b.getWidth(), b.getHeight());
-            cv.textCentred(spec::kFontTiny3x5, letter, b.getX(), b.getWidth(), b.getY() + 2, on ? !ink : ink);
-        };
-        key(lockBox(t), "L", m_locked[size_t(t)]);
-        key(muteBox(t), "M", m_muted[size_t(t)]);
         if (m_seqLen > 0) {   // the step this key stands for, on the playing page
             const int page = m_seqStep >= 0 ? m_seqStep / 16 : 0, s = page * 16 + t;
             if (s < m_seqLen) {
@@ -290,6 +291,24 @@ void MdTrackKeys::paint(juce::Graphics& g)
                 if ((m_seqTrigs >> s) & 1) cv.fillRect(bx, by, 6, 6, ink);   // unlit: nothing (the L and M keys stay clear)
                 if (s == m_seqStep) cv.invertRect(r.getX(), r.getY(), r.getWidth(), r.getHeight());   // the running light
             }
+        }
+        {   // LOCK and MUTE as round game-pad buttons (L / M), drawn over everything so they read on a lit key too:
+            // hollow when off, solid when on, in the colour that stands out from the key under them
+            const int page = m_seqStep >= 0 ? m_seqStep / 16 : 0;
+            const bool lit = m_seqLen > 0 && page * 16 + t == m_seqStep && m_seqStep < m_seqLen;
+            const bool c = !(sel != lit);   // the contrast colour (ink on a paper key)
+            static const char* const disc[9] = {"..#####..", ".#######.", "#########", "#########", "#########", "#########", "#########", ".#######.", "..#####.."};
+            static const char* const ring[9] = {"..#####..", ".#.....#.", "#.......#", "#.......#", "#.......#", "#.......#", "#.......#", ".#.....#.", "..#####.."};
+            auto button = [&](juce::Rectangle<int> b, const char* letter, bool on) {
+                for (int y = 0; y < 9; ++y)
+                    for (int x = 0; x < 9; ++x) {
+                        if (disc[y][x] != '#') continue;
+                        cv.set(b.getX() + x, b.getY() + y, on ? c : (ring[y][x] == '#' ? c : !c));
+                    }
+                cv.text(spec::kFontTiny3x5, letter, b.getX() + 3, b.getY() + 2, on ? !c : c);
+            };
+            button(lockBox(t), "L", m_locked[size_t(t)]);
+            button(muteBox(t), "M", m_muted[size_t(t)]);
         }
         if (t == m_dropTarget) {   // a sound from the library would land here: an inner frame
             cv.invertRect(r.getX() + 1, r.getY() + 1, r.getWidth() - 2, 1); cv.invertRect(r.getX() + 1, r.getBottom() - 2, r.getWidth() - 2, 1);
@@ -311,6 +330,11 @@ void MdTrackKeys::mouseDown(const juce::MouseEvent& e)
             else if (e.mods.isCommandDown() || e.mods.isCtrlDown()) { if (onSelect) onSelect(i); }
             else if (s >= m_grid.length) return;
             else if (e.mods.isShiftDown()) { if (onHold) onHold(s); }
+            else if (onPaint) {   // a click sets the trig the other way; a drag from here paints that over the keys
+                m_paintOn = !((m_grid.trigs >> s) & 1);
+                m_painting = true; m_paintLast = s;
+                onPaint(s, m_paintOn, true);
+            }
             else if (onStep) onStep(s);
             return;
         }
@@ -320,9 +344,21 @@ void MdTrackKeys::mouseDown(const juce::MouseEvent& e)
         if (!keyRect(t).contains(p)) continue;
         if (lockBox(t).expanded(1).contains(p)) { if (onLock) onLock(t); }
         else if (muteBox(t).expanded(1).contains(p)) { if (onMute) onMute(t); }
+        else if ((e.mods.isCommandDown() || e.mods.isCtrlDown()) && onSelect) onSelect(t);   // select without a sound
         else if (onPress) onPress(t);
         return;
     }
+}
+
+void MdTrackKeys::mouseDrag(const juce::MouseEvent& e)
+{
+    if (!m_painting || !m_grid.on || !onPaint) return;
+    const int key = trackAt(e.getPosition());
+    if (key < 0) return;
+    const int s = m_grid.page * 16 + key;
+    if (s == m_paintLast || s >= m_grid.length) return;
+    m_paintLast = s;
+    if ((((m_grid.trigs >> s) & 1) != 0) != m_paintOn) onPaint(s, m_paintOn, false);
 }
 
 void MdTrackKeys::mouseMove(const juce::MouseEvent& e)
@@ -705,7 +741,7 @@ MdEditor::MdEditor(MdProcessor& p)
     for (auto* pg : {&m_syn, &m_fx, &m_routing, &m_lfo, &m_master, &m_out}) addAndMakeVisible(pg);
     m_master.setTabs({kMasterTabs[0], kMasterTabs[1], kMasterTabs[2], kMasterTabs[3]}, 0, [this](int tab) { bindMasterFx(tab); });
     for (int s = 0; s < 128; ++s) { m_ptnNames[size_t(s)] = kPatternNames[s]; m_ptnNamePtrs[size_t(s)] = m_ptnNames[size_t(s)].c_str(); }
-    m_out.setTabs({"OUT", "PATTERN"}, 0, [this](int tab) { bindOutPage(tab); });
+    m_out.setTabs({"OUT", "PTN"}, 0, [this](int tab) { bindOutPage(tab); });
     bindOutPage(0);
     m_keys.onStep = [this](int s) {
         const int t = m_track;
@@ -715,6 +751,16 @@ MdEditor::MdEditor(MdProcessor& p)
             else p.trigs[t] |= 1ull << s;
         });
         if (removed && s == m_heldStep) holdStep(-1);
+        refreshGrid();
+    };
+    m_keys.onPaint = [this](int s, bool on, bool first) {   // one stroke = one undo step
+        if (first) ++m_paintStroke;
+        const int t = m_track;
+        doEdit(editSlot(), on ? "paint steps" : "erase steps", [&](mnm::mddump::Pattern& p) {
+            if (on) p.trigs[t] |= 1ull << s;
+            else { p.trigs[t] &= ~(1ull << s); p.clearStepLocks(t, s); }
+        }, 20000 + (m_paintStroke & 0xFFFF));
+        if (!on && s == m_heldStep) holdStep(-1);
         refreshGrid();
     };
     m_keys.onHold = [this](int s) { holdStep(s == m_heldStep ? -1 : s); };
@@ -750,6 +796,7 @@ MdEditor::MdEditor(MdProcessor& p)
             case MdSeqBar::Grid: toggleGrid(); break;
             case MdSeqBar::Mix: toggleMixer(); break;
             case MdSeqBar::Edit: doublePattern(); return;
+            case MdSeqBar::DelPg: deletePage(juce::jlimit(0, 3, m_gridPage)); return;
             case MdSeqBar::Rec: m_proc.setRecord(!m_proc.recordArmed()); if (m_proc.recordArmed()) seqOn(); break;
             case MdSeqBar::Mute: toggleMute(m_track); break;
             case MdSeqBar::TrkPrev: selectTrack((m_track + kTracks - 1) % kTracks); break;
@@ -766,6 +813,7 @@ MdEditor::MdEditor(MdProcessor& p)
         refreshGrid();
     };
     addChildComponent(m_songEd);
+    setTooltipsOn(loadSharedSetting("tooltips", "1") != "0");
     addChildComponent(m_mixer);
     m_mixer.setWantsKeyboardFocus(true);
     m_mixer.strip = [this](int t) {
@@ -1004,16 +1052,16 @@ void MdEditor::bindOutPage(int tab)
         for (int i = 0; i < 31; ++i) { n.swing[size_t(i)] = std::to_string(50 + i) + "%"; n.swingP[size_t(i)] = n.swing[size_t(i)].c_str(); }
         return n;
     }();
-    static const char* const kSpd[4] = {"1X", "2X", "3/4X", "3/2X"};
+    static const char* const kSpd[8] = {"1X", "2X", "3/4X", "3/2X", "1/2X", "1/4X", "1/8X", "3X"};   // 4-7: the plugin's extras
     static const char* const kPages[4] = {"1", "2", "3", "4"};
-    const spec::Param params[8] = {readout("LEN", names.lenP.data(), 64, 15), readout("SPD", kSpd, 4), readout("SWNG", names.swingP.data(), 31), numeric("ACC", 64),
+    const spec::Param params[8] = {readout("LEN", names.lenP.data(), 64, 15), readout("SPD", kSpd, 8), readout("SWNG", names.swingP.data(), 31), numeric("ACC", 64),
                                    readout("KIT", names.kitP.data(), 64), toggle("GRID", kSeqNames), readout("PAGE", kPages, 4), readout("PTN", kPatternNames, 128)};
     m_out.bindCustom(params,
         [this](int k) {
             const auto p = m_proc.bankPattern(editSlot());
             switch (k) {
                 case 0: return p ? juce::jlimit(0, 63, int(p->length) - 1) : 15;
-                case 1: return p ? int(p->doubleTempo & 3) : 0;
+                case 1: return p ? int(p->doubleTempo & 7) : 0;
                 case 2: return p ? juce::jlimit(0, 30, p->swingPercent() - 50) : 0;
                 case 3: return p ? int(p->accentAmount) : 64;
                 case 4: return p ? juce::jlimit(0, 63, int(p->kit)) : 0;
@@ -1035,7 +1083,7 @@ void MdEditor::bindOutPage(int tab)
             doEdit(editSlot(), what[juce::jlimit(0, 4, k)], [&](mnm::mddump::Pattern& p) {
                 switch (k) {
                     case 0: p.length = uint8_t(v + 1); p.scale = uint8_t(v / 16); break;   // SCALE: the pages the length needs
-                    case 1: p.doubleTempo = uint8_t(v & 3); break;
+                    case 1: p.doubleTempo = uint8_t(v & 7); break;
                     case 2: p.swingAmount = uint32_t(v * 16384 / 50); break;
                     case 3: p.accentAmount = uint8_t(v); break;
                     case 4: p.kit = uint8_t(v); break;
@@ -1095,6 +1143,12 @@ void MdEditor::stepMenu(int s)
         if (r == 1 && s == m_heldStep) holdStep(-1);
         refreshGrid();
     });
+}
+
+void MdEditor::setTooltipsOn(bool on)
+{
+    if (on && !m_tips) m_tips = std::make_unique<juce::TooltipWindow>(this, 700);
+    if (!on) m_tips.reset();
 }
 
 void MdEditor::toggleGrid()
@@ -1236,6 +1290,27 @@ bool MdEditor::keyPressed(const juce::KeyPress& k)
     if (code == 'Z' || code == 'z') { undo(); return true; }
     if (code == 'Y' || code == 'y') { redo(); return true; }
     return false;
+}
+
+// DEL PAGE: the page goes, the pages after it move up and the pattern is 16 steps shorter (one page: its steps cleared)
+void MdEditor::deletePage(int page)
+{
+    const int slot = editSlot();
+    const auto cur = m_proc.bankPattern(slot);
+    if (!cur) { flash("EMPTY"); return; }
+    const int pages = (juce::jlimit(1, 64, int(cur->length)) + 15) / 16;
+    if (page >= pages) return;
+    doEdit(slot, "delete page", [&](mnm::mddump::Pattern& x) {
+        if (pages == 1) { x.clearSteps(0, 16, -1); x.swing = cur->swing; return; }
+        const auto src = x;
+        for (int k = page; k < pages - 1; ++k) x.copySteps(src, (k + 1) * 16, k * 16, 16, -1, -1);
+        x.clearSteps((pages - 1) * 16, 16, -1);
+        x.length = uint8_t(juce::jmax(16, int(x.length) - 16));
+        x.scale = uint8_t((x.length - 1) / 16);
+    });
+    m_gridPage = juce::jmin(page, pages - 2 < 0 ? 0 : pages - 2);
+    flash(pages == 1 ? "CLEARED P1" : "DEL P" + juce::String(page + 1));
+    refreshGrid();
 }
 
 void MdEditor::toggleMute(int t)
@@ -1435,6 +1510,7 @@ void MdEditor::refreshGrid()
         s.playing = m_proc.seqPlaying() || m_proc.internalPlay();
         s.hostPlaying = m_proc.hostPlaying();
         s.grid = m_gridOn;
+        s.beat = m_proc.beatPhase() < 0.5f;
         s.mix = m_mixer.isVisible();
         s.track = m_track;
         s.muted = m_proc.apvts.getRawParameterValue(muteId(m_track))->load() >= 0.5f;
@@ -1466,7 +1542,7 @@ void MdEditor::refreshGrid()
             g.trigs = p->trigs[t];
             g.accent = p->accentEditAll ? p->accent : p->accentPerTrack[t];
             g.slide = p->slideEditAll ? p->slide : p->slidePerTrack[t];
-            g.swing = p->swingEditAll ? p->swing : p->swingPerTrack[t];
+            g.swing = p->swingAmount == 0 ? 0 : p->swingEditAll ? p->swing : p->swingPerTrack[t];   // W only while it swings
             for (int q = 0; q < 24; ++q) {
                 const int row = p->lockRow(t, q);
                 if (row < 0) continue;
@@ -1570,6 +1646,7 @@ void MdEditor::showMenu()
     outputs.addItem(41, "PER TRACK (TRACK 1-16, WHERE ENABLED)", true, outMode == int(OutputMode::Tracks));
     m.addSubMenu("PLUGIN OUTPUTS", outputs);
     m.addItem(16, "MIXER  (M)", true, m_mixer.isVisible());
+    m.addItem(17, "TOOLTIPS", true, m_tips != nullptr);
     m.addItem(11, "MIDI SETTINGS...");
     m.addSeparator();
     {
@@ -1589,6 +1666,7 @@ void MdEditor::showMenu()
     m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&m_menuButton), [this](int r) {
         if (r == 11) { openMidiPanel(); return; }
         if (r == 16) { toggleMixer(); return; }
+        if (r == 17) { setTooltipsOn(m_tips == nullptr); saveSharedSetting("tooltips", m_tips ? "1" : "0"); return; }
         if (r == 12) { openSongEditor(); return; }
         if (r == 13) { saveBankToLibrary(); return; }
         if (r == 14) { undo(); return; }
@@ -1983,7 +2061,8 @@ void MdEditor::timerCallback()
             if (m_heldStep >= 0) for (auto* pg : {&m_syn, &m_fx, &m_routing, &m_lfo}) pg->pull();
             if (--m_ptnPoll <= 0) {   // the bank: its name on the panel, its empty slots marked
                 m_ptnPoll = 10;
-                const auto badge = m_proc.bankName().isNotEmpty() ? m_proc.bankName().toUpperCase().removeCharacters(" ").substring(0, 8) : juce::String("NO PTNS");
+                const auto bn = m_proc.bankName();
+                const auto badge = bn.isEmpty() ? juce::String("BANK: --") : bn == "PLUGIN" ? juce::String("BANK: NEW") : "BANK: " + bn.toUpperCase().removeCharacters(" ").substring(0, 7);
                 if (badge != m_bankBadge) { m_bankBadge = badge; m_out.setBadge(m_bankBadge.toRawUTF8()); }
                 bool changed = false;
                 for (int s = 0; s < 128; ++s) {
@@ -2058,6 +2137,8 @@ void MdEditor::resized()
     {   // the sequencer bar: under the kit strip, from the machine block to the right edge
         const int x0 = m_machineBlock.getRight() + 12;
         m_seqBar.setBounds(x0, m_strip.getBottom() + 6, (r.getRight() - x0) / MdSeqBar::kS * MdSeqBar::kS, MdSeqBar::kLcdH * MdSeqBar::kS);
+        m_seqBar.setAnchors({(m_bpmSync.getX() - x0) / MdSeqBar::kS, m_bpmSync.getWidth() / MdSeqBar::kS,
+                             (m_menuButton.getX() - x0) / MdSeqBar::kS, (m_menuButton.getRight() - x0) / MdSeqBar::kS - (m_menuButton.getX() - x0) / MdSeqBar::kS});
     }
     r.removeFromTop(6);
 

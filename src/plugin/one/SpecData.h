@@ -4,12 +4,17 @@
 #include <cstdint>
 #include "RomArt.h"   // Bitmap, Font and the artwork itself (read from the user's OS file, not generated)
 
+#include <array>
+
 namespace mnm::uispec {
 
 enum class Display : uint8_t { Blank, Numeric, Bipolar, List, Readout };
 // Switch: no glyph set in the OS file (LFO TRIG/MULT); drawn as the plain ring with a pointer line per position.
 // The other families name an icon array of RomArt.h.
-enum class Icons : uint8_t { None, Toggle, FmRatio, EnsPitch, FmDynFrq, SidWave, DproSync, DproWave, VoCons, DdrwWave, LfoPage, LfoWave, LfoDest, Switch };
+enum class Icons : uint8_t { None, Toggle, FmRatio, EnsPitch, FmDynFrq, SidWave, DproSync, DproWave, VoCons, DdrwWave, LfoPage, LfoWave, LfoDest, Switch,
+                            MdWave1, MdWave2, MdLfoParam };
+// Icons a plugin supplies from its own OS file (Monomodule MD: its LFO waves, SHP1 / SHP2 order), null until read
+inline std::array<std::array<const Bitmap*, 16>, 2>& extIcons() { static std::array<std::array<const Bitmap*, 16>, 2> a{}; return a; }
 
 struct Param {
     const char* label;        // as the LCD shows it ("---" when blank)
@@ -72,6 +77,12 @@ inline const Bitmap* icon(Icons f, int i)
     case Icons::LfoPage: return i >= 0 && i < 9 ? kIconLfoPage[i] : nullptr;
     case Icons::LfoWave: return i >= 0 && i < 11 ? kIconLfoWave[i] : nullptr;
     case Icons::LfoDest: return i >= 0 && i < 8 ? kIconLfoDest[i] : nullptr;
+    case Icons::MdWave1: return i >= 0 && i < 16 ? extIcons()[0][size_t(i)] : nullptr;
+    case Icons::MdWave2: return i >= 0 && i < 16 ? extIcons()[1][size_t(i)] : nullptr;
+    case Icons::MdLfoParam: {   // the MD's PARAM by group, in the Monomachine's LFO page icons (SYNT EFFX FILT AMP LFO1)
+        static const int page[24] = {1, 1, 1, 1, 1, 1, 1, 1, 4, 4, 4, 4, 3, 3, 3, 4, 2, 2, 2, 2, 2, 5, 5, 5};
+        return i >= 0 && i < 24 ? kIconLfoPage[page[i]] : nullptr;
+    }
     default: return nullptr;
     }
 }

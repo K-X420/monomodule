@@ -3,6 +3,7 @@
 // the editor to a PNG.
 #include "one/RomArt.h"
 #include <cstdio>
+#include <map>
 #include <cstring>
 #include <juce_audio_formats/juce_audio_formats.h>
 #include "MdProcessor.h"
@@ -150,7 +151,7 @@ int main(int argc, char** argv)
                 const bool okG = !d.globals.empty() && d.globals[0].trackOfNote(36) == 0 && d.globals[0].trackOfNote(62) == 15 && d.globals[0].baseChannel == 0 && d.globals[0].tempo == 2400;
                 const auto fromG = d.globals.empty() ? ms : MdProcessor::fromGlobal(d.globals[0], ms);
                 check(okG && fromG.noteTrack[36] == 0 && fromG.baseChannel == 0, "the factory pack global: notes 36..62 = T1..T16, channel 1, 100 BPM; loaded as settings");
-                if (!d.globals.empty()) { int pn = 0; for (int i = 0; i < 128; ++i) if (d.globals[0].keyMap[i] >= 16) ++pn; std::printf("  (factory global: pattern-note mode %d, %d notes on patterns / start / stop, PRG CHANGE byte %d)\n", int(d.globals[0].trigMode), pn, int(d.globals[0].programChange)); } if (std::getenv("MD_KEYMAP_DUMP") && !d.globals.empty()) { for (int i = 0; i < 128; ++i) std::printf("%d:%d ", i, int(d.globals[0].keyMap[i])); std::printf("\n"); }
+                if (!d.globals.empty()) { int pn = 0; for (int i = 0; i < 128; ++i) if (d.globals[0].keyMap[i] >= 16) ++pn; std::printf("  (factory global: pattern-note mode %d, %d notes on patterns / start / stop, PRG CHANGE byte %d)\n", int(d.globals[0].trigMode), pn, int(d.globals[0].programChange)); } if (std::getenv("MD_SWINGMASK_DUMP")) { std::map<std::string,int> c; for (const auto& pt : d.patterns) { char b[64]; std::snprintf(b, sizeof b, "%016llX all=%u", (unsigned long long) pt.swing, unsigned(pt.swingEditAll)); ++c[b]; } for (const auto& [k, n] : c) std::printf("swing mask %s x%d\n", k.c_str(), n); } if (std::getenv("MD_KEYMAP_DUMP") && !d.globals.empty()) { for (int i = 0; i < 128; ++i) std::printf("%d:%d ", i, int(d.globals[0].keyMap[i])); std::printf("\n"); }
             }
         }
         ms = MdProcessor::defaultMidiSettings(); ms.baseChannel = 9; ms.midiOut = 1; ms.programChange = 3; ms.noteTrack[70] = 7;
@@ -367,6 +368,29 @@ int main(int argc, char** argv)
         check(proc.apvts.getRawParameterValue(muteId(2))->load() >= 0.5f, "Alt+click key 3: T3 muted");
         med->devMuteKey(2);
         check(proc.apvts.getRawParameterValue(muteId(2))->load() < 0.5f, "again: unmuted");
+        {   // a fresh pattern swings the even steps (as the factory patterns), so SWNG works at once
+            med->devStep(7); med->devStep(7);   // make sure slot exists... (a trig set and removed)
+            const auto pp = proc.bankPattern(0);
+            check(pp && pp->swing != 0, "patterns made in the plugin have swing trigs (steps 2, 4, 6...)");
+        }
+        {   // a drag paints: the first key turned on, the keys dragged over on too; one undo step for the stroke
+            const auto before = trigs();
+            med->devPaint(8, true, true); med->devPaint(9, true, false); med->devPaint(10, true, false);
+            check((trigs() & (7ull << 8)) == (7ull << 8), "a drag over steps 9-11 paints them on");
+            med->devUndo();
+            check(trigs() == before, "one undo takes the whole stroke back");
+            med->devPaint(8, true, true); med->devPaint(9, true, false);
+            med->devPaint(8, false, true); med->devPaint(9, false, false);
+            check((trigs() & (3ull << 8)) == 0, "a stroke started on a lit step erases");
+        }
+        {   // DEL PAGE: page 2 of a 3-page pattern goes, page 3 moves up
+            proc.editPattern(0, [](mnm::mddump::Pattern& x) { x.length = 48; x.scale = 2; x.trigs[0] = (1ull << 0) | (1ull << 17) | (1ull << 34); });
+            med->devDeletePage(1);
+            const auto pp = proc.bankPattern(0);
+            check(pp && pp->length == 32 && pp->trigs[0] == ((1ull << 0) | (1ull << 18)), "DEL PAGE 2: 48 -> 32 steps, page 3's trig (step 35) now step 19");
+            med->devUndo();
+            check(proc.bankPattern(0)->length == 48, "undo brings the page back");
+        }
         med->devBarClick(MdSeqBar::Pages, 0, juce::ModifierKeys(juce::ModifierKeys::shiftModifier));   // the bar says "COPIED PAGE 1"
         if (argc > 3) {
             med->devHold(4); med->refresh();
@@ -1038,6 +1062,19 @@ int main(int argc, char** argv)
             const auto tip = med->devKeys().stepLocks ? med->devKeys().stepLocks(2) : juce::String();
             check(tip.contains("77") && tip.contains("VOL 40") && med->devKeys().stepLocks(3).isEmpty(), "GRID step tooltip lists its locks: " + tip);
         }
+        {   // the plugin's extra speeds: 1/2x, 1/4x, 1/8x, 3x after the unit's four
+            mnm::mddump::Pattern sp; sp.length = 16; sp.trigs[0] = 1ull << 1;
+            std::vector<mnm::md::SeqTrig> got;
+            bool ok = true;
+            const int want[8] = {6, 3, 8, 4, 12, 24, 48, 2};
+            for (int k = 0; k < 8; ++k) {
+                sp.doubleTempo = uint8_t(k);
+                mnm::md::PatternPlayer pl; pl.set(sp);
+                got.clear(); pl.trigs(0.0, 200.0, got, -1);
+                ok = ok && !got.empty() && std::abs(got[0].clock - want[k]) < 1e-9;
+            }
+            check(ok, "speeds 1x 2x 3/4x 3/2x 1/2x 1/4x 1/8x 3x: step 2 at clocks 6 3 8 4 12 24 48 2");
+        }
         std::printf(fails ? "OSCHECK TEST FAILED (%d)\n" : "OSCHECK TEST OK\n", fails);
         return fails ? 1 : 0;
     }
@@ -1540,6 +1577,7 @@ int main(int argc, char** argv)
                 med->refresh();
                 std::printf("after keys %s: track 1 machine %s\n", keys, kMachines[size_t(std::lround(proc.apvts.getRawParameterValue(machineId(0))->load()))].name);
             }
+            if (std::getenv("MD_UI_GRIDCLICK")) { med->devBarPart(MdSeqBar::Grid); med->refresh(); }   // dev: GRID clicked on a fresh plugin
             if (std::getenv("MD_UI_KITS")) med->showKitList();
             if (std::getenv("MD_UI_ABOUT")) med->showAbout();
             if (std::getenv("MD_UI_SKIN")) med->showSkinDialog();

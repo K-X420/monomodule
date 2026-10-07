@@ -10,7 +10,7 @@ void PatternPlayer::set(const mddump::Pattern& p)
     m_len = std::clamp(int(p.length), 1, p.extended ? 64 : 32);
     m_start = 0;
     m_span = m_len;
-    m_step = stepClocks(p.doubleTempo);   // the multiplier byte (+0x92): 0 1x, 1 2x, 2 3/4x, 3 3/2x
+    m_step = stepClocks(p.doubleTempo);   // the multiplier byte (+0x92): 0 1x, 1 2x, 2 3/4x, 3 3/2x (4-7: the plugin's extra speeds)
     m_swing = double(m_step) * double(p.swingAmount) / 16384.0;
     m_swingWhole = int((int64_t(m_step) * int64_t(p.swingAmount)) >> 14);
     for (int t = 0; t < 16; ++t)

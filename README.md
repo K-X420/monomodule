@@ -52,11 +52,14 @@ patterns along.
 
 | Do | How |
 |---|---|
-| Place steps | **GRID** (or the **G** key) on, then click the keys (they are the selected track's steps). **TRK < >** picks the track |
+| Place steps | **GRID** (or the **G** key) on, then click the keys (drag across keys to paint steps on or off; the keys show the track, e.g. T3 SD) (they are the selected track's steps). **TRK < >** picks the track |
 | Lock parameters on a step | **Shift+click** the step, turn knobs (they are that step's locks); double-click a knob to clear its lock; Shift+click again to release |
 | Step menu (accent, slide, swing, clear locks) | Right-click a step |
 | Select / mute a track in GRID | **Ctrl+click** / **Alt+click** a key (key n = track n), or **M** on the bar |
-| Pages (17-64) | The page dots: click to show a page |
+| Pages (17-64) | The page dots: click to show a page (the playing page blinks on the beat). **DEL** removes the shown page |
+| Select a track without hearing it | **Ctrl+click** its key (a plain click plays it, as on the MD) |
+| Speeds | 1X 2X 3/4X 3/2X as on the MD, plus the plugin's own 1/2X 1/4X 1/8X 3X (PTN tab, SPD) |
+| Reverse a ROM / RAM-P sample | Set END lower than STRT (as on the MD) |
 | Copy / paste / clear | **Shift / Ctrl / Alt + click** on a page dot (that page), **TRK** (the track) or **PTN** (the pattern). Keys: Ctrl+C / Ctrl+V / Delete on the shown page |
 | Double the pattern | **X2** or Ctrl+D |
 | Undo / redo | Ctrl+Z / Ctrl+Shift+Z (also in MENU) |

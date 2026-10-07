@@ -73,6 +73,7 @@ public:
     void setGrid(const Grid& g) { if (!(g == m_grid)) { m_grid = g; repaint(); } }
     std::function<juce::String(int step)> stepLocks;   // GRID: a step's locks as text for its tooltip ("" none)
     std::function<void(int step)> onStep, onHold;
+    std::function<void(int step, bool on, bool first)> onPaint;   // GRID click / drag: set a step's trig (first = a new stroke)
     std::function<void(int step)> onStepMenu;
     std::function<void(int track)> onSelect, onMuteKey;   // Ctrl / Cmd + click: select; Alt + click: mute (as FUNC + trig)
     int devSeqStep() const { return m_seqStep; }   // dev/tests
@@ -83,9 +84,13 @@ public:
     }
 private:
     juce::Rectangle<int> keyRect(int t) const;   // LCD px
-    juce::Rectangle<int> lockBox(int t) const { const auto r = keyRect(t); return {r.getX() + 2, r.getBottom() - 10, 8, 8}; }
-    juce::Rectangle<int> muteBox(int t) const { const auto r = keyRect(t); return {r.getRight() - 10, r.getBottom() - 10, 8, 8}; }
+    juce::Rectangle<int> lockBox(int t) const { const auto r = keyRect(t); return {r.getX() + 2, r.getBottom() - 11, 9, 9}; }
+    juce::Rectangle<int> muteBox(int t) const { const auto r = keyRect(t); return {r.getRight() - 11, r.getBottom() - 11, 9, 9}; }
     void mouseMove(const juce::MouseEvent&) override;
+    void mouseDrag(const juce::MouseEvent&) override;
+    void mouseUp(const juce::MouseEvent&) override { m_painting = false; }
+    bool m_painting = false, m_paintOn = false;
+    int m_paintLast = -1;
     int m_selected = 0;
     std::array<int, kTracks> m_machine{};
     std::array<bool, kTracks> m_active{}, m_muted{}, m_locked{};
@@ -160,6 +165,9 @@ public:
     // dev/tests: the GRID as clicks drive it
     void devStep(int s) { if (m_keys.onStep) m_keys.onStep(s); }
     void devHold(int s) { holdStep(s); }
+    void devPaint(int s, bool on, bool first) { if (m_keys.onPaint) m_keys.onPaint(s, on, first); }
+    void devDeletePage(int page) { deletePage(page); }
+    void devSetPage(int page) { m_gridPage = page; }
     void devMuteKey(int t) { if (m_keys.onMuteKey) m_keys.onMuteKey(t); }
     void devStripPart(MdKitStrip::Part p) { if (m_strip.onPart) m_strip.onPart(p); }
     void devUndo() { undo(); }
@@ -177,7 +185,7 @@ public:
     void devOpenSong(int slot) { m_songEd.setBounds(m_syn.getX(), m_syn.getY(), m_routing.getRight() - m_syn.getX(), m_out.getBottom() - m_syn.getY()); m_songEd.open(slot); }
     void showGrid(int held)   // dev/snapshot: the PATTERN tab, GRID on, a step held (-1 none)
     {
-        m_out.setTabs({"OUT", "PATTERN"}, 1, [this](int tab) { bindOutPage(tab); });
+        m_out.setTabs({"OUT", "PTN"}, 1, [this](int tab) { bindOutPage(tab); });
         bindOutPage(1);
         m_gridOn = true;
         holdStep(held);
@@ -225,6 +233,8 @@ private:
     void undo();
     void redo();
     void toggleMute(int t);
+    void deletePage(int page);
+    int m_paintStroke = 0;
     struct UndoStep {
         int slot = 0; std::shared_ptr<const mnm::mddump::Pattern> before, after; juce::String label;
         int song = -1; std::shared_ptr<const mnm::mddump::Song> songBefore, songAfter;   // a song edit (song >= 0)
@@ -299,7 +309,8 @@ private:
     one::KnobPage m_syn, m_fx, m_routing, m_lfo, m_master, m_out;
     MdBadgeButton m_sample;
     MdTrackKeys m_keys;
-    juce::TooltipWindow m_tips{this, 700};   // shows the panels' tooltips (hover ~0.7 s)
+    std::unique_ptr<juce::TooltipWindow> m_tips;   // shows the panels' tooltips (hover ~0.7 s); none while TOOLTIPS is off
+    void setTooltipsOn(bool on);
     MdSeqBar m_seqBar;
     bool m_gridOn = false;
     int m_gridPage = 0, m_heldStep = -1, m_outTab = 0, m_ptnPoll = 0;
