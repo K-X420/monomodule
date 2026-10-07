@@ -115,8 +115,8 @@ void MdMixer::paint(juce::Graphics& g)
             const auto r = buttonRect(t, solo);
             if (!solo && fn) {
                 frame(cv, r);
-                const juce::String g = s.muteGroup >= 0 ? "T" + juce::String(s.muteGroup + 1) : juce::String("--");
-                cv.textCentred(spec::kFontTiny3x5, g.toRawUTF8(), r.getX(), r.getWidth(), r.getY() + 2, true);
+                const juce::String grp = s.muteGroup >= 0 ? "T" + juce::String(s.muteGroup + 1) : juce::String("--");
+                cv.textCentred(spec::kFontTiny3x5, grp.toRawUTF8(), r.getX(), r.getWidth(), r.getY() + 2, true);
                 continue;
             }
             const bool on = solo ? s.solo : s.mute;
@@ -125,7 +125,7 @@ void MdMixer::paint(juce::Graphics& g)
             if (solo) cv.text(spec::kFontTiny3x5, "S", r.getCentreX() - 1, r.getY() + 2, !on);
             else {   // a 5-wide M (the 3-wide one reads as H)
                 static const char* const glyphM[5] = {"#...#", "##.##", "#.#.#", "#...#", "#...#"};
-                for (int y = 0; y < 5; ++y) for (int x = 0; x < 5; ++x) if (glyphM[y][x] == '#') cv.set(r.getCentreX() - 2 + x, r.getY() + 2 + y, !on);
+                for (int gy = 0; gy < 5; ++gy) for (int gx = 0; gx < 5; ++gx) if (glyphM[gy][gx] == '#') cv.set(r.getCentreX() - 2 + gx, r.getY() + 2 + gy, !on);
             }
         }
     }

@@ -114,7 +114,7 @@ bool VoiceEngine::runToPark(uint64_t maxExec)
                 --budget;
                 auto& r = m_dsp->regs();
                 std::fprintf(stderr, "PC=%04x x0=%06x x1=%06x y0=%06x y1=%06x a=%02x:%06x:%06x b=%02x:%06x:%06x r0=%06x r7=%06x m7=%06x\n", pc,
-                             r.x.var & 0xFFFFFF, (r.x.var >> 24) & 0xFFFFFF, r.y.var & 0xFFFFFF, (r.y.var >> 24) & 0xFFFFFF,
+                             unsigned(r.x.var & 0xFFFFFF), unsigned((r.x.var >> 24) & 0xFFFFFF), unsigned(r.y.var & 0xFFFFFF), unsigned((r.y.var >> 24) & 0xFFFFFF),
                              unsigned((r.a.var >> 48) & 0xFF), unsigned((r.a.var >> 24) & 0xFFFFFF), unsigned(r.a.var & 0xFFFFFF),
                              unsigned((r.b.var >> 48) & 0xFF), unsigned((r.b.var >> 24) & 0xFFFFFF), unsigned(r.b.var & 0xFFFFFF),
                              r.r[0].var, r.r[7].var, r.m[7].var);

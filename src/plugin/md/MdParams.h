@@ -125,8 +125,8 @@ public:
     juce::String getName(int maximumStringLength) const override
     {
         const int id = machineIdNow();
-        const juce::String label = id >= 0 && m_info->known[size_t(id)] ? m_info->labels[size_t(id)][size_t(m_k)] : juce::String();
-        return ("T" + juce::String(m_track + 1) + " " + (label.isNotEmpty() ? label : "SYN " + juce::String(m_k + 1))).substring(0, maximumStringLength);
+        const juce::String knob = id >= 0 && m_info->known[size_t(id)] ? m_info->labels[size_t(id)][size_t(m_k)] : juce::String();
+        return ("T" + juce::String(m_track + 1) + " " + (knob.isNotEmpty() ? knob : "SYN " + juce::String(m_k + 1))).substring(0, maximumStringLength);
     }
     // The value as the editor shows it: a MID machine's NOTE as a note, its N2 / N3 / PB centred; otherwise the number
     juce::String getText(float normalised, int maximumStringLength) const override
