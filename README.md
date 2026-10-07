@@ -76,6 +76,8 @@ patterns along.
 | Length, speed, swing, accent, kit | The OUTPUT panel's **PATTERN** tab |
 | Songs | MODE = SONG on the OUT tab; MENU > EDIT SONG to edit its rows. In the editor (as the MD): **Up / Down** pick a row, **Enter** starts there (or, while playing, plays it next), **Ctrl+Down / Up** insert / delete a row, **Ctrl+C / V** copy / paste a row. A LOOP to a later row is a JUMP, to its own row a HALT |
 | Patterns as Ableton MIDI clips | **Drag the PTN box** (the whole pattern) or **the track box** (T1 BD: that track) onto an Ableton track: a clip of its trigs (accents as velocity, locks as CCs) |
+| MIDI clips into patterns | **Drop a .mid clip** (from Ableton) on the plugin: its notes go onto the tracks by the note map (velocity 112+ = accent, the CC map's controllers = locks); dropped **on a track key**, every note goes onto that track |
+| Resample a track | MENU > SAMPLES, pick a slot, **RESAMPLE Tn**: the selected track's sound rendered into it |
 | Learn a note map entry | MIDI SETTINGS: **click** a note cell (a track, FROM, START, STOP), then play the note. Click again or Esc: cancel |
 | Samples | MENU > SAMPLES: the 48 ROM slots. Rename (Enter / double-click), clear (Delete), **RAM 1-4 >** copies a RAM machine's recording into the selected slot (the RAM machines start empty after, as on the MD) |
 | CLASSIC / EXTENDED | OUT tab, **EXT**: CLASSIC plays patterns without their locks (kept) and without their kits, as the MD's CLASSIC mode |

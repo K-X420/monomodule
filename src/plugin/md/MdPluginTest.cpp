@@ -1363,6 +1363,36 @@ int main(int argc, char** argv)
                 for (const auto* ev : *mf.getTrack(tr)) if (ev->message.isNoteOn()) { on36 += ev->message.getNoteNumber() == 36; on38 += ev->message.getNoteNumber() == 38; }
             check(on36 == 4 && on38 == 2, "MIDI clip: T1's 4 trigs on note 36, T2's 2 on note 38");
         }
+        {   // a MIDI clip in: the export of a pattern, dropped into an empty slot, comes back the same; onto a key: one track
+            if (auto* q = p.apvts.getParameter(patternId())) q->setValueNotifyingHost(q->convertTo0to1(20.0f));
+            run(2);
+            mnm::mddump::Pattern src; src.length = 32; src.accentEditAll = src.slideEditAll = src.swingEditAll = 1;
+            for (auto& row : src.locks) std::fill(std::begin(row), std::end(row), uint8_t(0xFF));
+            src.trigs[0] = 0x0001000100010001ull & 0xFFFFFFFFull; src.trigs[2] = (1ull << 4) | (1ull << 20); src.accent = 1ull << 4;
+            src.setLock(2, 1, 20, 33);
+            const auto kit = p.captureMdKit();
+            const auto mf = mnm::library::buildMdPatternMidiFile(&kit, src);
+            const auto file = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("md_clip_test.mid");
+            file.deleteFile();
+            { juce::FileOutputStream o(file); mf.writeTo(o); }
+            std::unique_ptr<juce::AudioProcessorEditor> ed(p.createEditor());
+            auto* med = dynamic_cast<MdEditor*>(ed.get());
+            const auto err = med->devImportClip(file, -1);
+            const auto got = p.bankPattern(20);
+            const int row = got ? got->lockRow(2, 1) : -1;
+            check(err.isEmpty() && got && got->length == 32 && got->trigs[0] == src.trigs[0] && got->trigs[2] == src.trigs[2]
+                  && ((got->accent >> 4) & 1) && row >= 0 && got->locks[row][20] == 33,
+                  "a pattern's MIDI clip dropped back in: the same trigs, accent, length and lock (" + err + ")");
+            const auto err2 = med->devImportClip(file, 9);   // onto key 10: every note on T10
+            const auto got2 = p.bankPattern(20);
+            check(err2.isEmpty() && got2 && got2->trigs[9] == (src.trigs[0] | src.trigs[2]) && got2->trigs[0] == src.trigs[0],
+                  "the clip onto key 10: all its notes on T10, the other tracks kept");
+            file.deleteFile();
+            // RESAMPLE: T1's sound rendered into ROM-08
+            const auto rerr = p.resampleTrack(0, 7);
+            check(rerr.isEmpty() && p.sampleSeconds(7) > 0.05 && p.sampleName(7).startsWith("T1 "),
+                  "RESAMPLE T1 > ROM-08: " + juce::String(p.sampleSeconds(7), 2) + " s, " + p.sampleName(7) + (rerr.isNotEmpty() ? " (" + rerr + ")" : juce::String()));
+        }
         std::printf(fails ? "FOUR TEST FAILED (%d)\n" : "FOUR TEST OK\n", fails);
         return fails ? 1 : 0;
     }

@@ -201,6 +201,7 @@ public:
     MdSongEditor& devSongEditor() { return m_songEd; }
     void devOpenMidi() { openMidiPanel(); }
     void devOpenSamples() { openSamplePanel(); }
+    juce::String devImportClip(const juce::File& f, int onlyTrack) { return importMidiClip(f, onlyTrack); }
     void devToggleMixer() { toggleMixer(); }
     MdMixer& devMixer() { return m_mixer; }
     bool devGridOn() const { return m_gridOn; }
@@ -261,6 +262,8 @@ private:
     void toggleMute(int t);
     void deletePage(int page);
     void dragOutClip(bool trackOnly);   // the pattern / the track as a MIDI clip dragged out
+    juce::String importMidiClip(const juce::File& f, int onlyTrack);   // a clip dropped in (onlyTrack: a key's track, -1 the pattern)
+    static bool isMidiFile(const juce::String& path);
     void flipStepFlag(int step, int flag);   // a step's accent / slide / swing mark (the all-tracks mask or the track's own)
     int m_markMode = 0;                      // GRID's edit window: 0 trigs, 1 accent, 2 slide, 3 swing
     void togglePerTrack(int flag);           // A / S / W keys: that mark between all tracks and per track

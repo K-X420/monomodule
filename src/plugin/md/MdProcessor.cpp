@@ -5,6 +5,7 @@
 #include "MdEditor.h"
 #include "SharedSettings.h"
 #include "MdMachineText.h"
+#include "MdPreview.h"
 
 namespace mnm::plugin::md {
 
@@ -1563,6 +1564,44 @@ juce::String MdProcessor::copyRamToRom(int ram, int slot)
     }
     if (s.data.empty()) return "RAM " + juce::String(ram + 1) + " has no recording";
     s.name = "RAM" + juce::String(ram + 1) + " COPY";
+    auto previous = std::move(m_samples[size_t(slot)]);
+    m_samples[size_t(slot)] = std::move(s);
+    if (!pushSamples()) {
+        m_samples[size_t(slot)] = std::move(previous);
+        pushSamples();
+        return "Not enough sample memory";
+    }
+    return {};
+}
+
+juce::String MdProcessor::resampleTrack(int t, int slot, double seconds)
+{
+    if (t < 0 || t >= kTracks || slot < 0 || slot >= mnm::md::VoiceEngine::kSlots || (slot >= 32 && slot < 48)) return "Not a ROM slot";
+    {
+        const juce::ScopedLock sl(m_engineLock);
+        if (!m_fw) return "No OS loaded";
+    }
+    mnm::mdpreview::Options opt;
+    opt.soundSeconds = seconds;
+    opt.bpm = tempo();
+    const auto spec = mnm::mdpreview::soundPreview(captureSound(t), opt);
+    Sample s;
+    s.rate = mnm::mdpreview::kSampleRate;
+    try {
+        mnm::mdpreview::Renderer r(*m_fw);
+        s.data.reserve(spec.frames);
+        const bool ok = r.render(spec, opt.bpm, [&](uint32_t, const mnm::mdpreview::Block& b) {
+            for (int i = 0; i < mnm::mdpreview::Block::kFrames && s.data.size() < spec.frames; ++i) s.data.push_back(0.5f * (b.mixL[size_t(i)] + b.mixR[size_t(i)]));
+        });
+        if (!ok) return juce::String(r.error());
+    } catch (const std::exception& e) { return juce::String(e.what()); }
+    size_t end = s.data.size();   // the silent tail goes
+    while (end > 441 && std::abs(s.data[end - 1]) < 1e-4f) --end;
+    s.data.resize(end);
+    float peak = 0; for (float v : s.data) peak = std::max(peak, std::abs(v));
+    if (peak < 1e-4f) return "T" + juce::String(t + 1) + " makes no sound on its own";
+    const int mi = juce::jlimit(0, kNumMachines - 1, int(std::lround(m_tracks[size_t(t)].machine->load())));
+    s.name = "T" + juce::String(t + 1) + " " + juce::String(kMachines[mi].name);
     auto previous = std::move(m_samples[size_t(slot)]);
     m_samples[size_t(slot)] = std::move(s);
     if (!pushSamples()) {

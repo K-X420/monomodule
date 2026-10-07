@@ -59,6 +59,62 @@ juce::MidiMessageSequence trackSequence(const Kit* kit, const Pattern& pat, int 
 
 int mdTrackNote(int track) { return kTrackNotes[juce::jlimit(0, 15, track)]; }
 
+int mdPatternFromMidi(const juce::MidiFile& mfIn, const std::array<int, 128>& noteTrack, int onlyTrack, const Kit* kit,
+                      Pattern& pat, juce::String* why)
+{
+    const int ppq = mfIn.getTimeFormat() > 0 ? mfIn.getTimeFormat() : 96;
+    static const int kStepClocks[8] = {6, 3, 8, 4, 12, 24, 48, 2};
+    const double stepTicks = double(ppq) * kStepClocks[pat.doubleTempo & 7] / 24.0;
+    struct Hit { int track, step, vel; };
+    struct Cc { int track, param, step, value; };
+    std::vector<Hit> hits;
+    std::vector<Cc> ccs;
+    double endTicks = 0;
+    for (int ti = 0; ti < mfIn.getNumTracks(); ++ti) {
+        const auto* seq = mfIn.getTrack(ti);
+        endTicks = std::max(endTicks, seq->getEndTime());
+        for (const auto* ev : *seq) {
+            const auto& m = ev->message;
+            const int step = int(std::lround(m.getTimeStamp() / stepTicks));
+            if (step < 0 || step >= 64) continue;
+            if (m.isNoteOn()) {
+                const int t = onlyTrack >= 0 ? onlyTrack : noteTrack[size_t(m.getNoteNumber() & 127)];
+                if (t >= 0 && t < kTracks) hits.push_back({t, step, m.getVelocity()});
+            } else if (m.isController()) {   // the CC map: channel 1 + track / 4, CC [16 40 72 96][track % 4] + param
+                const int cc = m.getControllerNumber(), ch = m.getChannel() - 1;
+                for (int b = 0; b < 4; ++b)
+                    if (cc >= kCcBases[b] && cc < kCcBases[b] + 24) {
+                        const int t = onlyTrack >= 0 ? onlyTrack : ch * 4 + b;
+                        if (t >= 0 && t < kTracks) ccs.push_back({t, cc - kCcBases[b], step, m.getControllerValue()});
+                    }
+            }
+        }
+    }
+    if (hits.empty()) { if (why) *why = onlyTrack < 0 ? "no notes on the tracks' trig notes" : "no notes"; return 0; }
+    // the clip's length: its end (the clip's end in Ableton), else just past its last note
+    int len = int(std::ceil(endTicks / stepTicks - 0.01));
+    for (const auto& h : hits) len = std::max(len, h.step + 1);
+    len = juce::jlimit(1, 64, len);
+    std::array<bool, kTracks> replaced{};
+    for (const auto& h : hits) replaced[size_t(h.track)] = true;
+    for (int t = 0; t < kTracks; ++t) if (replaced[size_t(t)]) pat.clearSteps(0, 64, t);
+    int placed = 0;
+    for (const auto& h : hits) {
+        if (!((pat.trigs[h.track] >> h.step) & 1)) ++placed;
+        pat.trigs[h.track] |= uint64_t(1) << h.step;
+        if (h.vel >= 112) (pat.accentEditAll ? pat.accent : pat.accentPerTrack[h.track]) |= uint64_t(1) << h.step;
+    }
+    for (const auto& c : ccs) {
+        if (!replaced[size_t(c.track)] || !((pat.trigs[c.track] >> c.step) & 1)) continue;
+        if (kit && kit->params[c.track][c.param] == c.value) continue;   // the kit's value: a lock's way back, not a lock
+        pat.setLock(c.track, c.param, c.step, c.value);
+    }
+    pat.length = uint8_t(len);
+    pat.scale = uint8_t((len - 1) / 16);
+    pat.extended = pat.extended || len > 32;
+    return placed;
+}
+
 juce::MidiFile buildMdTrackMidiFile(const Kit* kit, const Pattern& pat, int track)
 {
     juce::MidiFile mf;

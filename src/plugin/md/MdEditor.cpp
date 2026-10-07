@@ -932,13 +932,19 @@ MdEditor::MdEditor(MdProcessor& p)
     m_mixer.onClose = [this] { grabKeyboardFocus(); };
     addChildComponent(m_samplePanel);
     m_samplePanel.setWantsKeyboardFocus(true);
-    m_samplePanel.setTooltip("UW samples. Arrows: a slot. Enter / double-click: rename. Delete: clear. RAM 1-4: copy that recording here");
+    m_samplePanel.setTooltip("UW samples. Arrows: a slot. Enter / double-click: rename. Delete: clear. RAM 1-4: copy that recording here. RESAMPLE: the selected track's sound here");
     m_samplePanel.name = [this](int i) { return m_proc.sampleName(romSlotIndex(i)); };
     m_samplePanel.seconds = [this](int i) { return m_proc.sampleSeconds(romSlotIndex(i)); };
     m_samplePanel.ramSeconds = [this](int r) { return m_proc.ramSeconds(r); };
     m_samplePanel.memoryUsed = [this] { return m_proc.sampleMemoryUsed(); };
     m_samplePanel.onClose = [this] { grabKeyboardFocus(); };
     m_samplePanel.onClear = [this](int i) { m_proc.clearSample(romSlotIndex(i)); m_samplePanel.repaint(); };
+    m_samplePanel.track = [this] { return m_track; };
+    m_samplePanel.onResample = [this](int i) {   // the selected track's sound, rendered into the slot
+        const auto err = m_proc.resampleTrack(m_track, romSlotIndex(i));
+        flash(err.isNotEmpty() ? err.toUpperCase() : "T" + juce::String(m_track + 1) + " > ROM-" + juce::String(i + 1).paddedLeft('0', 2));
+        m_samplePanel.repaint();
+    };
     m_samplePanel.onRename = [this](int i) {
         const int slot = romSlotIndex(i);
         if (m_proc.sampleName(slot).isEmpty()) { flash("EMPTY SLOT"); return; }
@@ -1680,6 +1686,33 @@ void MdEditor::dragOutClip(bool trackOnly)
     juce::DragAndDropContainer::performExternalDragDropOfFiles({file.getFullPathName()}, false, this);
 }
 
+bool MdEditor::isMidiFile(const juce::String& path) { return path.endsWithIgnoreCase(".mid") || path.endsWithIgnoreCase(".midi"); }
+
+// A MIDI clip dropped in: the notes onto the tracks by the note map (or all onto the key's track), the export's way back
+juce::String MdEditor::importMidiClip(const juce::File& f, int onlyTrack)
+{
+    juce::MidiFile mf;
+    {
+        juce::FileInputStream in(f);
+        if (!in.openedOk() || !mf.readFrom(in)) return "not a MIDI file";
+    }
+    const auto ms = m_proc.midiSettings();
+    std::array<int, 128> map{};
+    for (int n = 0; n < 128; ++n) map[size_t(n)] = ms.noteTrack[size_t(n)];
+    const auto kit = m_proc.captureMdKit();
+    const int slot = editSlot();
+    mnm::mddump::Pattern probe;   // first on a copy: nothing usable, no undo step
+    if (const auto cur = m_proc.bankPattern(slot)) probe = *cur; else { probe.length = 16; probe.accentEditAll = probe.slideEditAll = probe.swingEditAll = 1; }
+    juce::String why;
+    const int placed = mnm::library::mdPatternFromMidi(mf, map, onlyTrack, &kit, probe, &why);
+    if (placed == 0) return why;
+    doEdit(slot, "MIDI clip", [&](mnm::mddump::Pattern& p) { mnm::library::mdPatternFromMidi(mf, map, onlyTrack, &kit, p, nullptr); });
+    flash("CLIP: " + juce::String(placed) + " TRIGS" + (onlyTrack >= 0 ? " ON T" + juce::String(onlyTrack + 1) : juce::String()));
+    if (onlyTrack >= 0 && onlyTrack != m_track) selectTrack(onlyTrack);
+    refreshGrid();
+    return {};
+}
+
 void MdEditor::toggleMute(int t)
 {
     if (auto* p = m_proc.apvts.getParameter(muteId(t))) {
@@ -2134,15 +2167,20 @@ void MdEditor::importFiles(const juce::Array<juce::File>& files)
 
 bool MdEditor::isInterestedInFileDrag(const juce::StringArray& files)
 {
-    for (const auto& f : files) if (f.endsWithIgnoreCase(".syx") || mnm::library::isMdTransferFile(f) || MdProcessor::isAudioFile(f)) return true;
+    for (const auto& f : files) if (f.endsWithIgnoreCase(".syx") || mnm::library::isMdTransferFile(f) || MdProcessor::isAudioFile(f) || isMidiFile(f)) return true;
     return false;
 }
 
 juce::Rectangle<int> MdEditor::dropFrame(const juce::StringArray& files, int x, int y) const
 {
     const auto pages = juce::Rectangle<int>(m_syn.getX(), m_syn.getY() + m_syn.overhangPx(), m_routing.getRight() - m_syn.getX(), m_out.getBottom() - m_syn.getY() - m_syn.overhangPx());
-    bool sound = false;
-    for (const auto& f : files) sound = sound || f.endsWithIgnoreCase(".mdsound") || MdProcessor::isAudioFile(f);
+    bool sound = false, midi = false;
+    for (const auto& f : files) { sound = sound || f.endsWithIgnoreCase(".mdsound") || MdProcessor::isAudioFile(f); midi = midi || isMidiFile(f); }
+    if (midi) {   // a MIDI clip: onto a track key = that track; anywhere else = the pattern (the keys framed)
+        const int over = m_keys.trackAt(m_keys.getLocalPoint(this, juce::Point<int>(x, y)));
+        if (over >= 0) return (m_keys.keyBounds(over) * kScale + m_keys.getPosition()).expanded(kScale);
+        return m_keys.getBounds().expanded(kScale);
+    }
     if (sound) {   // a sound or a sample: the track key it lands on (the one under the pointer, else the selected track's)
         const int over = m_keys.trackAt(m_keys.getLocalPoint(this, juce::Point<int>(x, y)));
         const auto key = m_keys.keyBounds(over >= 0 ? over : m_track);
@@ -2185,6 +2223,12 @@ void MdEditor::filesDropped(const juce::StringArray& files, int x, int y)
     juce::StringArray errors;
     for (const auto& path : files) {
         const juce::File f(path);
+        if (isMidiFile(path)) {   // a MIDI clip: into the pattern GRID edits (onto a track key: all its notes on that track)
+            const int over = m_keys.trackAt(m_keys.getLocalPoint(this, juce::Point<int>(x, y)));
+            const auto err = importMidiClip(f, over);
+            if (err.isNotEmpty()) errors.add(f.getFileName() + ": " + err);
+            continue;
+        }
         if (path.endsWithIgnoreCase(".syx")) { syx.add(f); continue; }
         if (MdProcessor::isAudioFile(path)) { audio.add(f); continue; }
         mnm::library::MdTransferPayload p;

@@ -208,6 +208,8 @@ public:
     std::function<double()> memoryUsed;
     std::function<void(int slot)> onRename, onClear;
     std::function<void(int ram, int slot)> onCopyRam;
+    std::function<void(int slot)> onResample;   // the selected track's sound into the slot
+    std::function<int()> track;
     std::function<void()> onClose;
     void open() { setVisible(true); toFront(true); grabKeyboardFocus(); repaint(); }
     void paint(juce::Graphics&) override;
@@ -218,7 +220,7 @@ public:
 private:
     static constexpr int kCols = 4, kRows = 12;
     juce::Rectangle<int> slotRect(int i) const;
-    juce::Rectangle<int> buttonRect(int b) const;   // 0 RENAME, 1 CLEAR, 2..5 RAM 1..4 >
+    juce::Rectangle<int> buttonRect(int b) const;   // 0 RENAME, 1 CLEAR, 2..5 RAM 1..4 >, 6 RESAMPLE Tn
     int m_sel = 0;
 };
 

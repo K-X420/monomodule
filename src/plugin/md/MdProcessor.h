@@ -118,6 +118,9 @@ public:
     std::atomic<bool> m_learnArm{false};
     std::atomic<int> m_learned{-1};
     juce::String copyRamToRom(int ram, int slot);
+    // Resample (as an Elektron's): track t's sound, trigged on its own and rendered offline (its effects, the master
+    // effects' sends as the kit has them), into a ROM slot. Message thread; takes a moment (the render).
+    juce::String resampleTrack(int t, int slot, double seconds = 2.0);
     double ramSeconds(int ram) const;   // the length of RAM-R(ram + 1)'s recording now (0: none)
     static bool isAudioFile(const juce::String& path);   // a format loadSample reads (wav, aiff, flac, ogg, ...)
     int firstEmptyRomSlot() const;                        // in ROM-01..48 order; -1 when every ROM slot holds a sample

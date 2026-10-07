@@ -693,7 +693,7 @@ juce::Rectangle<int> MdSamplePanel::slotRect(int i) const
 juce::Rectangle<int> MdSamplePanel::buttonRect(int b) const
 {
     const int h = getHeight() / kS, by = h - 14;
-    static const int x[6] = {6, 50, 100, 158, 216, 274}, wd[6] = {40, 36, 54, 54, 54, 54};
+    static const int x[7] = {6, 50, 100, 158, 216, 274, 334}, wd[7] = {40, 36, 54, 54, 54, 54, 58};
     return {x[b], by, wd[b], 10};
 }
 
@@ -723,8 +723,13 @@ void MdSamplePanel::paint(juce::Graphics& g)
     }
     const int by = h - 14;
     cv.dotsH(2, w - 3, by - 3);
-    for (int b = 0; b < 6; ++b) {
+    for (int b = 0; b < 7; ++b) {
         const auto r = buttonRect(b);
+        if (b == 6) {   // RESAMPLE: the selected track's sound into the slot
+            frame(cv, r);
+            cv.text(spec::kFontTiny3x5, ("RESAMPLE T" + juce::String((track ? track() : 0) + 1)).toRawUTF8(), r.getX() + 4, r.getY() + 3, true);
+            continue;
+        }
         const double rs = b >= 2 && ramSeconds ? ramSeconds(b - 2) : 1.0;
         if (rs > 0) frame(cv, r); else dottedFrame(cv, r);
         const juce::String label = b == 0 ? juce::String("RENAME") : b == 1 ? juce::String("CLEAR")
@@ -740,8 +745,9 @@ void MdSamplePanel::mouseDown(const juce::MouseEvent& e)
     const int w = getWidth() / kS;
     if (p.y < kSpTitleH) { if (p.x >= w - 14) { setVisible(false); if (onClose) onClose(); } return; }
     for (int i = 0; i < 48; ++i) if (slotRect(i).contains(p)) { m_sel = i; repaint(); return; }
-    for (int b = 0; b < 6; ++b)
+    for (int b = 0; b < 7; ++b)
         if (buttonRect(b).contains(p)) {
+            if (b == 6) { if (onResample) onResample(m_sel); repaint(); return; }
             if (b == 0 && onRename) onRename(m_sel);
             else if (b == 1 && onClear) onClear(m_sel);
             else if (b >= 2 && onCopyRam && ramSeconds && ramSeconds(b - 2) > 0) onCopyRam(b - 2, m_sel);
