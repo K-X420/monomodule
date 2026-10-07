@@ -191,6 +191,17 @@ ctest --test-dir build --output-on-failure
 The tests that run the emulated DSP need the OS file. You can pass it through `MNM_OS_SYX` as above, or through the
 `MNM_OS` environment variable. Without it, those tests are reported as skipped and the rest still run.
 
+Monomodule MD has its own headless checks (sequencer, GRID edits, MIDI, the MID / CTR machines, samples and
+more). Build the `MnmMdTest` target, then run them all with the MD OS file. `--kits` takes any MD kit dump and is only
+needed for the kit / sound selector check:
+
+```bash
+cmake --build build --target MnmMdTest
+python tests/run_md_tests.py --md-os /path/to/Elektron_SPS1-1UW_OS1.63.syx --kits /path/to/kits.syx
+```
+
+They write to a temporary library folder, never your own.
+
 ### Command-line tools
 
 - `mnm-render` plays one note on one machine and writes a WAV file, e.g.
