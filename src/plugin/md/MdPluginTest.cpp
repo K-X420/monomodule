@@ -238,6 +238,21 @@ int main(int argc, char** argv)
             juce::PNGImageFormat pf;
             if (auto st = std::unique_ptr<juce::FileOutputStream>(png.createOutputStream())) pf.writeImageToStream(img, *st);
         }
+        if (argc > 3) {   // a snapshot: a pattern row, a LOOP, a JUMP, a HALT; the start row and a cued row marked
+            p.editSong(0, [](mnm::mddump::Song& s) {
+                auto row = [](int ptn) { mnm::mddump::SongRow r; r.bytes[0] = uint8_t(ptn); r.bytes[9] = 16; r.bytes[6] = r.bytes[7] = 0xFF; return r; };
+                mnm::mddump::SongRow loop; loop.bytes[0] = 0xFE; loop.bytes[2] = 2; loop.bytes[3] = 0;
+                mnm::mddump::SongRow jump; jump.bytes[0] = 0xFE; jump.bytes[3] = 5;
+                mnm::mddump::SongRow halt; halt.bytes[0] = 0xFE; halt.bytes[3] = 4;
+                s.rows = {row(0), row(1), loop, jump, halt, row(2)};
+            });
+            p.setSongStartRow(1); p.cueSongRow(5);
+            med->devOpenSong(0); med->refresh();
+            auto img = ed->createComponentSnapshot(ed->getLocalBounds(), true, 1.0f);
+            juce::File png{juce::String(argv[3])}; png.deleteFile();
+            juce::PNGImageFormat pf;
+            if (auto st = std::unique_ptr<juce::FileOutputStream>(png.createOutputStream())) pf.writeImageToStream(img, *st);
+        }
         std::printf(fails ? "SONGED TEST FAILED (%d)\n" : "SONGED TEST OK\n", fails);
         return fails ? 1 : 0;
     }
@@ -1179,6 +1194,50 @@ int main(int argc, char** argv)
             run(3);
             check(p.chain().empty(), "choosing A06 ends the chain");
             head.playing = false; run(3);
+        }
+        {   // CTRL IN OFF: Ableton's transport neither starts nor stops the sequencer; PLAY runs it
+            head.playing = false; run(3);
+            p.setChain({});
+            if (auto* a = p.apvts.getParameter(seqModeId())) a->setValueNotifyingHost(0.0f);
+            if (auto* a = p.apvts.getParameter(patternId())) a->setValueNotifyingHost(a->convertTo0to1(0.0f));
+            auto m2 = MdProcessor::defaultMidiSettings(); m2.ctrlIn = false; p.setMidiSettings(m2);
+            run(3);
+            head.ppq = 0; head.playing = true; run(30);
+            const bool idle = !p.seqPlaying() || p.seqStep() < 0;
+            p.setInternalPlay(true); run(30);
+            const bool runs = p.seqStep() >= 0;
+            head.playing = false; run(30);
+            const bool keeps = p.seqStep() >= 0 && p.internalPlay();
+            check(idle && runs && keeps, "CTRL IN OFF: Ableton's play does not start it, PLAY does, Ableton's stop does not stop it");
+            p.setInternalPlay(false); run(3);
+            m2.ctrlIn = true; p.setMidiSettings(m2); run(3);
+        }
+        {   // SONG transport: the start row, a cued row, a HALT restarted by a cue
+            if (auto* a = p.apvts.getParameter(seqModeId())) a->setValueNotifyingHost(1.0f);
+            auto row = [](int ptn) { mnm::mddump::SongRow r; r.bytes[0] = uint8_t(ptn); r.bytes[9] = 16; r.bytes[6] = r.bytes[7] = 0xFF; return r; };
+            p.editSong(0, [&](mnm::mddump::Song& s) { s.rows = {row(0), row(0), row(3)}; });
+            p.setSongStartRow(2);
+            run(3);
+            head.ppq = 0; head.playing = true; run(5);
+            check(p.seqSongRow() == 2 && p.seqPattern() == 3, "start row 3: the song starts there (row " + juce::String(p.seqSongRow() + 1) + ")");
+            head.playing = false; run(3);
+            p.setSongStartRow(0); run(3);
+            head.ppq = 0; head.playing = true; run(5);
+            p.cueSongRow(2);   // while row 1 plays: row 3 next, row 2 skipped
+            std::vector<int> rowsSeen;
+            for (int i = 0; i < 220; ++i) { run(1); const int r = p.seqSongRow(); if (rowsSeen.empty() || rowsSeen.back() != r) rowsSeen.push_back(r); }
+            check(rowsSeen.size() >= 2 && rowsSeen[0] == 0 && rowsSeen[1] == 2, "row 3 cued while row 1 plays: it plays next (rows " + juce::String(rowsSeen.size() > 1 ? rowsSeen[1] + 1 : -1) + ")");
+            head.playing = false; run(3);
+            mnm::mddump::SongRow halt; halt.bytes[0] = 0xFE; halt.bytes[3] = 1;
+            p.editSong(0, [&](mnm::mddump::Song& s) { s.rows = {row(0), halt}; });
+            run(3);
+            head.ppq = 0; head.playing = true; run(220);
+            const bool halted = p.seqSongRow() == -1;
+            p.cueSongRow(0); run(10);
+            check(halted && p.seqSongRow() == 0, "a HALTed song: a cued row starts it again");
+            head.playing = false; run(3);
+            if (auto* a = p.apvts.getParameter(seqModeId())) a->setValueNotifyingHost(0.0f);
+            run(3);
         }
         std::printf(fails ? "OSCHECK TEST FAILED (%d)\n" : "OSCHECK TEST OK\n", fails);
         return fails ? 1 : 0;

@@ -566,6 +566,7 @@ void MdProcessor::seqNext(double origin, const SeqBank* bank, const std::shared_
     }
     const int sl = juce::jlimit(0, 31, int(std::lround(m_songParam->load())));
     const mnm::mddump::Song* s = bank && bank->hasSong[size_t(sl)] ? &bank->songs[size_t(sl)] : nullptr;
+    if (const int cue = m_songCue.exchange(-1); cue >= 0) m_cursor.row = cue;   // a cued row plays next
     for (int guard = 0; s && guard < 4096; ++guard) {
         auto& cur = m_cursor;
         if (cur.row < 0 || cur.row >= int(s->rows.size()) || cur.row >= 256) break;
@@ -677,6 +678,7 @@ void MdProcessor::scheduleSequencer(int n, double ratio)
     if (m_bankFresh.exchange(false)) { m_patternSeen = -1; m_seg.slot = -1; relocate = true; }
     if (int(song) != m_modeSeen || songSlot != m_songSeen) { m_modeSeen = int(song); m_songSeen = songSlot; relocate = true; }
     if (m_songEdited.exchange(false) && song && !m_seg.valid) relocate = true;   // a song that had ended: rows added
+    if (m_songRelocate.exchange(false) && song) relocate = true;                 // a new start row
     const int want = juce::jlimit(0, 127, int(std::lround(m_patternParam->load())));
     if (m_ptnPending.load() < 0 && want != m_patternSeen) {
         m_patternSeen = want; m_seqQueued = want == m_seg.slot ? -1 : want;
@@ -713,6 +715,7 @@ void MdProcessor::scheduleSequencer(int n, double ratio)
             seqNext(0.0, bank.get(), bank, -1.0, false);
         } else {
             m_cursor = {};
+            m_cursor.row = m_songStart.load();   // from the start row (ENTER on a row while stopped)
             seqNext(0.0, bank.get(), bank, -1.0, true);
             for (int guard = 0; guard < 100000 && m_seg.valid && m_seg.steps >= 0 && m_seg.endClock() <= c0; ++guard)
                 seqNext(m_seg.endClock(), bank.get(), bank, -1.0, true);
@@ -749,6 +752,10 @@ void MdProcessor::scheduleSequencer(int n, double ratio)
             } else if (m_seg.steps >= 0 && m_seg.endClock() > c0) {
                 m_seg.steps = -1;   // the queue was taken back: play on
             }
+        }
+        if (song && !m_seg.valid && m_songCue.load() >= 0) {   // a HALTed / ended song: the cued row starts at the next step
+            const double origin = std::ceil(c0 / 6.0) * 6.0;
+            if (origin < c1) seqNext(origin, bank.get(), bank, engineAt(origin), true);
         }
         seqGenerate(m_seg, c0, c1, ratio);
         if (m_seg.valid && m_seg.steps >= 0 && m_seg.endClock() < c1) {
@@ -803,6 +810,7 @@ MdProcessor::MidiSettings MdProcessor::midiSettings() const
     s.pcChannel = m_pcChannel.load();
     for (int i = 0; i < 128; ++i) s.noteAction[size_t(i)] = m_noteAction[size_t(i)].load();
     s.patternNoteMode = m_ptnNoteMode.load();
+    s.ctrlIn = m_ctrlIn.load();
     s.midiOut = m_midiOutMode.load();
     return s;
 }
@@ -819,6 +827,7 @@ void MdProcessor::setMidiSettings(const MidiSettings& s)
     m_pcMode.store(juce::jlimit(0, 3, s.programChange));
     m_pcChannel.store(juce::jlimit(0, 16, s.pcChannel));
     m_ptnNoteMode.store(juce::jlimit(0, 2, s.patternNoteMode));
+    m_ctrlIn.store(s.ctrlIn);
     for (int i = 0; i < 128; ++i) {
         const int a = s.noteAction[size_t(i)];
         const bool ok = s.noteTrack[size_t(i)] < 0 && ((a >= 0 && a < 128) || a == kStartNote || a == kStopNote);
@@ -1249,6 +1258,7 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
             m_hostPlaying = pos->getIsPlaying();
             if (const auto q = pos->getPpqPosition()) m_hostPpq = *q; else m_hostPlaying = false;
         }
+    if (!m_ctrlIn.load()) m_hostPlaying = false;   // CTRL IN OFF: Ableton's transport is not ours (its tempo still is)
     m_hostPlayingUi.store(m_hostPlaying);
     m_beatUi.store(float(m_hostPpq - std::floor(m_hostPpq)));
     m_seqBpm = m_hostBpm.load();
@@ -1955,6 +1965,7 @@ void MdProcessor::getStateInformation(juce::MemoryBlock& destData)
         g.setProperty("pc", ms.programChange, nullptr);
         g.setProperty("pcch", ms.pcChannel, nullptr);
         g.setProperty("pnm", ms.patternNoteMode, nullptr);
+        g.setProperty("ctrlin", ms.ctrlIn, nullptr);
         juce::String acts;
         for (int i = 0; i < 128; ++i) acts << juce::String::toHexString(int(uint16_t(ms.noteAction[size_t(i)]))).paddedLeft('0', 4);
         g.setProperty("acts", acts, nullptr);
@@ -2008,6 +2019,7 @@ void MdProcessor::setStateInformation(const void* data, int sizeInBytes)
         ms.programChange = int(g.getProperty("pc", 1));
         ms.pcChannel = int(g.getProperty("pcch", 0));
         ms.patternNoteMode = int(g.getProperty("pnm", 1));
+        ms.ctrlIn = bool(g.getProperty("ctrlin", true));
         const auto acts = g.getProperty("acts").toString();
         if (acts.length() == 512)
             for (int i = 0; i < 128; ++i) ms.noteAction[size_t(i)] = int16_t(uint16_t(acts.substring(4 * i, 4 * i + 4).getHexValue32()));

@@ -93,7 +93,10 @@ public:
     std::function<int()> defaultPattern;  // the pattern a new row plays
     std::function<int(int)> patternLength;
     std::function<void()> onClose;
+    std::function<void(int row)> onEnter;   // ENTER on a row: start there (stopped) / play it next (playing)
+    std::function<int()> startRow, cuedRow; // the filled / hollow arrows (-1 none)
     void open(int slot) { m_slot = slot; m_sel = -1; m_scroll = 0; setVisible(true); toFront(true); repaint(); }
+    mnm::mddump::SongRow m_rowClip; bool m_hasRowClip = false;   // Ctrl+C / Ctrl+V of a row
     int slot() const { return m_slot; }
     void paint(juce::Graphics&) override;
     void mouseDown(const juce::MouseEvent&) override;
@@ -126,6 +129,7 @@ public:
     struct Values {
         int baseChannel = 0, programChange = 1, midiOut = 0, pcChannel = 0; std::array<int, 16> note{};
         int ptnMode = 1, ptnFrom = -1, ptnBank = 0, startNote = -1, stopNote = -1;
+        int ctrlIn = 1;   // 1 ON, 0 OFF
     };
     std::function<Values()> get;
     std::function<void(const Values&)> set;

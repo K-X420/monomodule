@@ -74,7 +74,8 @@ patterns along.
 | Undo / redo | Ctrl+Z / Ctrl+Shift+Z (also in MENU) |
 | Live recording | **REC**, then play: notes and track keys go onto the nearest step, knob turns become locks |
 | Length, speed, swing, accent, kit | The OUTPUT panel's **PATTERN** tab |
-| Songs | MODE = SONG on the OUT tab; MENU > EDIT SONG to edit its rows |
+| Songs | MODE = SONG on the OUT tab; MENU > EDIT SONG to edit its rows. In the editor (as the MD): **Up / Down** pick a row, **Enter** starts there (or, while playing, plays it next), **Ctrl+Down / Up** insert / delete a row, **Ctrl+C / V** copy / paste a row. A LOOP to a later row is a JUMP, to its own row a HALT |
+| Use the MD as a sound module | MIDI SETTINGS > **CTRL IN OFF**: Ableton's play / stop don't run the sequencer (PLAY does, at Ableton's tempo; LFOs and delay stay in time) |
 | Keep your edits | Saved with the Ableton set; MENU > SAVE PATTERNS + SONGS TO LIBRARY puts them in the Library project |
 | MIDI channel, note map, program change, MIDI out | MENU > MIDI SETTINGS |
 | Play patterns from MIDI notes | MENU > MIDI SETTINGS > PATTERN NOTES: FROM a white key (16 patterns of a bank up the white keys), START / STOP notes; GATE (plays while held), MOMENTARY (the pattern before comes back), QUEUE (next pattern). FROM PROJECT brings in a project's own map |

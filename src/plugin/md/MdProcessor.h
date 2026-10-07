@@ -149,6 +149,8 @@ public:
     struct MidiSettings {
         int baseChannel = 0; std::array<int8_t, 128> noteTrack{}; int programChange = 1, midiOut = 0, pcChannel = 0;
         std::array<int16_t, 128> noteAction{}; int patternNoteMode = 1;
+        bool ctrlIn = true;   // CTRL IN (as the MD's): Ableton's play / stop run the sequencer; OFF: only PLAY does, at Ableton's
+                              // tempo, and a stop in Ableton does not stop it (a sound module with the LFOs and delay in time)
     };
     static MidiSettings defaultMidiSettings();
     MidiSettings midiSettings() const;
@@ -172,6 +174,12 @@ public:
     // A pattern chain (as the MD's BANK + TRIG keys): PATTERN mode plays its patterns in turn, a pass each, looping;
     // choosing a pattern another way ends it
     void setChain(const std::vector<int>& slots);
+    // SONG transport (as the MD's song edit ENTER): the row a song starts from (two filled arrows), and while it plays,
+    // a row cued to play once the current row ends (two hollow arrows; also restarts a HALTed song)
+    void setSongStartRow(int row) { m_songStart.store(juce::jlimit(0, 255, row)); m_songRelocate.store(true); }
+    int songStartRow() const { return m_songStart.load(); }
+    void cueSongRow(int row) { m_songCue.store(juce::jlimit(-1, 255, row)); }
+    int songCue() const { return m_songCue.load(); }
     std::vector<int> chain() const;
     float beatPhase() const { return m_beatUi.load(); }        // 0..1 through the current quarter note (UI: blinks)
     int seqLength() const { return m_seqLenUi.load(); }       // the pattern's length (steps)
@@ -365,6 +373,8 @@ private:
     std::atomic<float> m_beatUi{0.0f};
     std::array<std::atomic<int8_t>, 16> m_chain{};
     std::atomic<int> m_chainLen{0};
+    std::atomic<int> m_songStart{0}, m_songCue{-1};
+    std::atomic<bool> m_songRelocate{false};
     int m_chainPos = 0;   // audio thread: the chain's playing entry
     std::atomic<int> m_programChange{-1};                // a MIDI program change for the message thread (PATTERN follows)
     bool m_seqRunning = false;
@@ -423,6 +433,7 @@ private:
     void trigLocks(int t, const mnm::md::SeqTrig* s, int pos = 0);   // a trig's locks and slides (none: a MIDI / UI trig releases them)
     // MIDI settings and out
     std::atomic<int> m_baseCh{0}, m_pcMode{1}, m_midiOutMode{0}, m_pcChannel{0}, m_ptnNoteMode{1};
+    std::atomic<bool> m_ctrlIn{true};
     std::array<std::atomic<int16_t>, 128> m_noteAction{};
     // pattern notes (audio thread): the held note, the pattern MOMENTARY brings back (-1 = stop), a pattern to start at
     // once, the sequencer halted by STOP / a GATE note-off, a pattern the parameter is still to catch up with

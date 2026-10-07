@@ -287,6 +287,7 @@ juce::Rectangle<int> MdMidiPanel::cellRect(int c) const
 {
     if (c < 3) return {110, kMpRowY + c * kMpRowH - 2, 80, 12};
     if (c == 19) return {194, kMpRowY + kMpRowH - 2, 46, 12};   // PRG CHANGE's channel
+    if (c == 25) return {194, kMpRowY + 2 * kMpRowH - 2, 54, 12};   // CTRL IN (next to MIDI OUT)
     if (c >= 20) {   // the PATTERN NOTES row, under the note map
         static const int x[5] = {110, 194, 262, 302, 352}, w[5] = {80, 64, 36, 46, 40};
         return {x[c - 20], kMpGridY + 46, w[c - 20], 12};
@@ -297,7 +298,7 @@ juce::Rectangle<int> MdMidiPanel::cellRect(int c) const
 
 int MdMidiPanel::cellAt(juce::Point<int> p) const
 {
-    for (int c = 0; c < 25; ++c) if (cellRect(c).contains(p)) return c;
+    for (int c = 0; c < 26; ++c) if (cellRect(c).contains(p)) return c;
     return -1;
 }
 
@@ -312,6 +313,7 @@ int MdMidiPanel::cellValue(const Values& v, int c) const
     if (c == 22) return v.ptnBank;
     if (c == 23) return v.startNote;
     if (c == 24) return v.stopNote;
+    if (c == 25) return v.ctrlIn;
     return v.note[size_t(c - 3)];
 }
 
@@ -334,6 +336,7 @@ void MdMidiPanel::change(int c, int to)
     else if (c == 22) v.ptnBank = juce::jlimit(0, 7, to);
     else if (c == 23) v.startNote = juce::jlimit(-1, 127, to);
     else if (c == 24) v.stopNote = juce::jlimit(-1, 127, to);
+    else if (c == 25) v.ctrlIn = juce::jlimit(0, 1, to);
     else {
         const int t = c - 3, n = juce::jlimit(-1, 127, to);
         if (n >= 0) for (auto& o : v.note) if (o == n) o = -1;   // a note plays one track: taken from another
@@ -357,13 +360,13 @@ void MdMidiPanel::paint(juce::Graphics& g)
     static const char* const pcs[4] = {"OFF", "IN", "OUT", "IN+OUT"};
     static const char* const outs[3] = {"OFF", "TRIGS", "TRIGS+CCS"};
     const juce::String vals[3] = {v.baseChannel < 0 ? juce::String("OFF") : juce::String(v.baseChannel + 1), pcs[juce::jlimit(0, 3, v.programChange)], outs[juce::jlimit(0, 2, v.midiOut)]};
-    static const char* const notes[3] = {"TRIGS ON IT, CCS ON IT AND THE NEXT 3", "= THE NEXT PATTERN (AUTO: BASE CH+0..3)", "THE PLAYED TRIGS AS NOTES (+ KNOBS, LOCKS AS CCS)"};
+    static const char* const notes[3] = {"TRIGS ON IT, CCS ON IT AND THE NEXT 3", "= THE NEXT PATTERN (AUTO: BASE CH+0..3)", "TRIGS AS NOTES (+ KNOBS / LOCKS AS CCS)"};
     for (int c = 0; c < 3; ++c) {
         const auto r = cellRect(c);
         cv.text(spec::kFontSmall4x5, labels[c], 6, r.getY() + 3, true);
         frame(cv, r);
         cv.text(spec::kFontBold8, vals[c].toRawUTF8(), r.getX() + 4, r.getY() + 2, true);
-        cv.text(spec::kFontTiny3x5, notes[c], (c == 1 ? cellRect(19).getRight() : r.getRight()) + 8, r.getY() + 4, true);
+        cv.text(spec::kFontTiny3x5, notes[c], (c == 1 ? cellRect(19).getRight() : c == 2 ? cellRect(25).getRight() : r.getRight()) + 8, r.getY() + 4, true);
     }
     {   // PATTERN NOTES: notes that play patterns (the unit's key map), START, STOP
         const int y = cellRect(20).getY();
@@ -381,6 +384,12 @@ void MdMidiPanel::paint(juce::Graphics& g)
         cell(22, "BNK", juce::String::charToString(juce::juce_wchar('A' + juce::jlimit(0, 7, v.ptnBank))));
         cell(23, "START", v.startNote < 0 ? juce::String("--") : noteName(v.startNote));
         cell(24, "STOP", v.stopNote < 0 ? juce::String("--") : noteName(v.stopNote));
+    }
+    {   // CTRL IN: Ableton's play / stop run the sequencer (OFF: a sound module; PLAY runs it at Ableton's tempo)
+        const auto r = cellRect(25);
+        frame(cv, r);
+        cv.text(spec::kFontTiny3x5, "CTRL IN", r.getX() + 3, r.getY() + 4, true);
+        cv.text(spec::kFontBold8, v.ctrlIn ? "ON" : "OFF", r.getX() + 32, r.getY() + 2, true);
     }
     {   // PRG CHANGE's channel
         const auto r = cellRect(19);
@@ -417,6 +426,7 @@ void MdMidiPanel::mouseDown(const juce::MouseEvent& e)
     }
     const int c = cellAt(p);
     if (c < 0 || !get) return;
+    if (c == 25) { change(25, get().ctrlIn ? 0 : 1); return; }   // a switch
     m_drag = c; m_dragY = e.getPosition().y; m_dragV = cellValue(get(), c);
     if (c >= 3 && c <= 18 && m_dragV < 0) m_dragV = 36 + (c - 3);
     if (c == 21 && m_dragV < 0) m_dragV = 64;   // E3, as the factory map
@@ -679,7 +689,7 @@ void MdSongEditor::setValue(int row, int col, int v, int coalesce)
             }
             case Rep: b[2] = uint8_t(juce::jlimit(0, b[0] == 0xFE ? 127 : 63, v)); break;
             case Start:
-                if (b[0] == 0xFE) b[3] = uint8_t(juce::jlimit(0, juce::jmax(0, int(s.rows.size()) - 1), v));
+                if (b[0] == 0xFE) { b[3] = uint8_t(juce::jlimit(0, juce::jmax(0, int(s.rows.size()) - 1), v)); if (b[3] > row) b[2] = 0; }   // forward: a JUMP
                 else b[8] = uint8_t(juce::jlimit(0, 63, v));
                 break;
             case End: b[9] = uint8_t(juce::jlimit(0, 64, v)); break;
@@ -720,6 +730,11 @@ void MdSongEditor::paint(juce::Graphics& g)
         auto put = [&](int col, const juce::String& s, bool bold = false) { cv.text(bold ? spec::kFontBold8 : spec::kFontSmall4x5, s.toRawUTF8(), kSeColX[col], bold ? y - 1 : y + 1, ink); };
         put(Num, juce::String(ri + 1));
         if (b[0] == 0xFF) { put(Ptn, "END", true); }
+        else if (b[0] == 0xFE && b[3] == ri) { put(Ptn, "HALT", true); }   // a loop onto itself: the song stops here
+        else if (b[0] == 0xFE && b[3] > ri) {                               // a loop forward: a JUMP (no count)
+            put(Ptn, "JUMP", true);
+            put(Start, "TO " + juce::String(int(b[3]) + 1));
+        }
         else if (b[0] == 0xFE) {
             put(Ptn, "LOOP", true);
             put(Rep, b[2] == 0 ? juce::String("INF") : "X" + juce::String(int(b[2])));
@@ -739,6 +754,18 @@ void MdSongEditor::paint(juce::Graphics& g)
             }
         }
         if (ri == playing) { cv.invertRect(1, y - 1, 2, kSeRowH); cv.invertRect(w - 3, y - 1, 2, kSeRowH); }   // the playing row: bars at the edges
+        {   // the start row: two filled arrows; the cued row (plays next): two hollow ones
+            const int st = startRow ? startRow() : -1, cu = cuedRow ? cuedRow() : -1;
+            if (ri == st || ri == cu) {
+                const bool filled = ri == st && ri != cu;
+                static const char* const solid[7] = {"#...", "##..", "###.", "####", "###.", "##..", "#..."};
+                static const char* const hollow[7] = {"#...", "##..", "#.#.", "#..#", "#.#.", "##..", "#..."};
+                const auto* a = filled ? solid : hollow;
+                for (int yy = 0; yy < 7; ++yy)
+                    for (int xx = 0; xx < 4; ++xx)
+                        if (a[yy][xx] == '#') { cv.set(kSeColX[Ptn] - 7 + xx, y - 1 + yy, ink); cv.set(kSeColX[Mutes] - 4 - xx, y - 1 + yy, ink); }
+            }
+        }
     }
     if (rows > vis) {   // a scroll bar
         const int top = kSeRowY - 1, bh = vis * kSeRowH, th = juce::jmax(4, bh * vis / rows), ty = top + (bh - th) * m_scroll / juce::jmax(1, rows - vis);
@@ -826,9 +853,34 @@ void MdSongEditor::mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWh
     repaint();
 }
 
+// The MD's song edit keys (Ctrl = FUNCTION): UP / DOWN pick a row, Ctrl+DOWN inserts a row, Ctrl+UP deletes it,
+// Ctrl+C / Ctrl+V copy and paste a row, Delete deletes it, ENTER starts from it (stopped) or cues it (playing)
 bool MdSongEditor::keyPressed(const juce::KeyPress& k)
 {
+    const auto mods = k.getModifiers();
+    const bool fn = mods.isCtrlDown() || mods.isCommandDown();
+    const int code = k.getKeyCode();
+    const auto song = getSong ? getSong() : nullptr;
+    const int rows = song ? int(song->rows.size()) : 0;
+    auto select = [&](int r) {
+        m_sel = juce::jlimit(-1, rows - 1, r);
+        if (m_sel >= 0 && m_sel < m_scroll) m_scroll = m_sel;
+        if (m_sel >= m_scroll + rowsVisible()) m_scroll = m_sel - rowsVisible() + 1;
+        repaint();
+    };
     if (k == juce::KeyPress::escapeKey) { setVisible(false); if (onClose) onClose(); return true; }
+    if (code == juce::KeyPress::downKey && fn) { rowOp(7, m_sel < 0 ? rows : m_sel); return true; }   // insert at the cursor
+    if (code == juce::KeyPress::upKey && fn) { if (m_sel >= 0) rowOp(3, m_sel); return true; }
+    if (code == juce::KeyPress::upKey) { select(m_sel <= 0 ? 0 : m_sel - 1); return true; }
+    if (code == juce::KeyPress::downKey) { select(m_sel < 0 ? 0 : m_sel + 1); return true; }
+    if (code == juce::KeyPress::returnKey) { if (m_sel >= 0 && onEnter) { onEnter(m_sel); repaint(); } return true; }
+    if (fn && (code == 'C' || code == 'c') && m_sel >= 0 && m_sel < rows) { m_rowClip = song->rows[size_t(m_sel)]; m_hasRowClip = true; return true; }
+    if (fn && (code == 'V' || code == 'v') && m_hasRowClip && m_sel >= 0 && m_sel < rows && edit) {
+        const int at = m_sel; const auto clip = m_rowClip;
+        edit("paste song row", [&](mnm::mddump::Song& s) { if (at < int(s.rows.size())) s.rows[size_t(at)] = clip; }, -1);
+        repaint();
+        return true;
+    }
     if (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey) { rowOp(3, m_sel); return true; }
     return false;
 }

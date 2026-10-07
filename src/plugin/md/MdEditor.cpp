@@ -890,7 +890,7 @@ MdEditor::MdEditor(MdProcessor& p)
         bindMasterFx(m_masterTab);
     }
     m_mixer.setTooltip("Mixer: level, pan, mute (M) and solo (S) of every track. Alt: the mute groups (Alt+click M: next)");
-    m_songEd.setTooltip("Song editor: the song's rows");
+    m_songEd.setTooltip("Song editor. UP / DOWN: a row. ENTER: start there (or play it next). CTRL+DOWN / UP: insert / delete a row. CTRL+C / V: copy / paste a row");
     m_midiPanel.setTooltip("MIDI settings");
     addChildComponent(m_mixer);
     m_mixer.setWantsKeyboardFocus(true);
@@ -936,6 +936,7 @@ MdEditor::MdEditor(MdProcessor& p)
         v.note.fill(-1);
         for (int n = 0; n < 128; ++n) { const int t = s.noteTrack[size_t(n)]; if (t >= 0 && t < kTracks && v.note[size_t(t)] < 0) v.note[size_t(t)] = n; }
         v.ptnMode = s.patternNoteMode;
+        v.ctrlIn = s.ctrlIn ? 1 : 0;
         for (int n = 0; n < 128; ++n) {
             const int a = s.noteAction[size_t(n)];
             if (a == MdProcessor::kStartNote && v.startNote < 0) v.startNote = n;
@@ -964,6 +965,7 @@ MdEditor::MdEditor(MdProcessor& p)
         s.noteTrack.fill(-1);
         for (int t = 0; t < kTracks; ++t) if (v.note[size_t(t)] >= 0) s.noteTrack[size_t(v.note[size_t(t)])] = int8_t(t);
         s.patternNoteMode = v.ptnMode;
+        s.ctrlIn = v.ctrlIn != 0;
         if (v.ptnFrom != -2) {   // CUSTOM (a project's map) stays as it is until FROM is turned
             for (auto& a : s.noteAction) if (a >= 0 && a < 128) a = -1;
             for (int n = v.ptnFrom, k = 0; v.ptnFrom >= 0 && n < 128 && k < 16; ++n)
@@ -1005,6 +1007,12 @@ MdEditor::MdEditor(MdProcessor& p)
         return song && m_proc.seqPlaying() && sl == m_songEd.slot() ? m_proc.seqSongRow() : -1;
     };
     m_songEd.defaultPattern = [this] { return editSlot(); };
+    m_songEd.onEnter = [this](int row) {   // as the MD's ENTER in song edit
+        if (m_proc.seqPlaying()) { m_proc.cueSongRow(row); flash("NEXT: ROW " + juce::String(row + 1)); }
+        else { m_proc.setSongStartRow(row); flash("START: ROW " + juce::String(row + 1)); }
+    };
+    m_songEd.startRow = [this] { return m_proc.songStartRow(); };
+    m_songEd.cuedRow = [this] { return m_proc.songCue(); };
     m_songEd.patternLength = [this](int p) { const auto pat = m_proc.bankPattern(p); return pat ? juce::jlimit(1, 64, int(pat->length)) : 16; };
     m_seqBar.onEditClick = [this](MdSeqBar::Part p, int page, const juce::ModifierKeys& mods) {
         if (p == MdSeqBar::PtnPrev || p == MdSeqBar::PtnNext) {   // Shift + the PTN arrows: the chain grows / shrinks
