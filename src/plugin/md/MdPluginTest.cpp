@@ -463,6 +463,14 @@ int main(int argc, char** argv)
             pp = proc.bankPattern(0);
             check(pp && !((pp->accentPerTrack[0] >> 3) & 1) && ((pp->accentPerTrack[5] >> 3) & 1), "A on step 4 now flips only the track's own mark");
             med->devPerTrack(0);
+            // the ACCENT window: a stroke over steps 9-12 paints them, one undo takes it back
+            proc.editPattern(0, [](mnm::mddump::Pattern& x) { x.accent = 0; });
+            med->devMarkMode(1);
+            med->devMarkPaint(8, 0, true, true); med->devMarkPaint(9, 0, true, false); med->devMarkPaint(10, 0, true, false); med->devMarkPaint(11, 0, true, false);
+            const bool painted = (proc.bankPattern(0)->accent & (0xFull << 8)) == (0xFull << 8);
+            med->devUndo();
+            check(painted && (proc.bankPattern(0)->accent & (0xFull << 8)) == 0, "ACCENT window: a slide over steps 9-12 accents them; one undo takes the stroke back");
+            med->devMarkMode(0);
         }
         {   // every knob has a tooltip
             bool all = true;

@@ -335,8 +335,13 @@ void MdTrackKeys::mouseDown(const juce::MouseEvent& e)
         for (int i = 0; i < kTracks; ++i) {
             if (!keyRect(i).contains(p)) continue;
             const int s = m_grid.page * 16 + i;
-            if (m_grid.mark > 0 && !e.mods.isAnyModifierKeyDown() && !e.mods.isPopupMenu()) {   // an edit window: the mark flips
-                if (s < m_grid.length && onFlag) onFlag(s, m_grid.mark - 1);
+            if (m_grid.mark > 0 && !e.mods.isAnyModifierKeyDown() && !e.mods.isPopupMenu()) {   // an edit window: the mark flips,
+                if (s >= m_grid.length) return;                                                  // a drag paints it over the keys
+                const uint64_t mask = m_grid.mark == 1 ? m_grid.accent : m_grid.mark == 2 ? m_grid.slide : m_grid.swing;
+                m_paintOn = !((mask >> s) & 1);
+                m_painting = true; m_paintLast = s;
+                if (onMarkPaint) onMarkPaint(s, m_grid.mark - 1, m_paintOn, true);
+                else if (onFlag) onFlag(s, m_grid.mark - 1);
                 return;
             }
             if (e.mods.isPopupMenu()) { if (onStepMenu && s < m_grid.length) onStepMenu(s); }
@@ -366,13 +371,18 @@ void MdTrackKeys::mouseDown(const juce::MouseEvent& e)
 
 void MdTrackKeys::mouseDrag(const juce::MouseEvent& e)
 {
-    if (!m_painting || !m_grid.on || !onPaint) return;
+    if (!m_painting || !m_grid.on) return;
     const int key = trackAt(e.getPosition());
     if (key < 0) return;
     const int s = m_grid.page * 16 + key;
     if (s == m_paintLast || s >= m_grid.length) return;
     m_paintLast = s;
-    if ((((m_grid.trigs >> s) & 1) != 0) != m_paintOn) onPaint(s, m_paintOn, false);
+    if (m_grid.mark > 0) {   // an edit window: the mark
+        const uint64_t mask = m_grid.mark == 1 ? m_grid.accent : m_grid.mark == 2 ? m_grid.slide : m_grid.swing;
+        if ((((mask >> s) & 1) != 0) != m_paintOn && onMarkPaint) onMarkPaint(s, m_grid.mark - 1, m_paintOn, false);
+        return;
+    }
+    if (onPaint && (((m_grid.trigs >> s) & 1) != 0) != m_paintOn) onPaint(s, m_paintOn, false);
 }
 
 void MdTrackKeys::mouseMove(const juce::MouseEvent& e)
@@ -782,6 +792,19 @@ MdEditor::MdEditor(MdProcessor& p)
     };
     m_keys.onHold = [this](int s) { holdStep(s == m_heldStep ? -1 : s); };
     m_keys.onFlag = [this](int s, int f) { flipStepFlag(s, f); };
+    m_keys.onMarkPaint = [this](int s, int f, bool on, bool first) {   // one stroke = one undo step
+        if (first) ++m_paintStroke;
+        static const char* const names[3] = {"accent", "slide", "swing"};
+        const int t = m_track;
+        doEdit(editSlot(), names[f], [&](mnm::mddump::Pattern& p) {
+            uint32_t all[3] = {p.accentEditAll, p.slideEditAll, p.swingEditAll};
+            uint64_t* global[3] = {&p.accent, &p.slide, &p.swing};
+            uint64_t* own[3] = {&p.accentPerTrack[t], &p.slidePerTrack[t], &p.swingPerTrack[t]};
+            uint64_t& m = *(all[f] ? global[f] : own[f]);
+            if (on) m |= 1ull << s; else m &= ~(1ull << s);
+        }, 20000 + (m_paintStroke & 0xFFFF));
+        refreshGrid();
+    };
     m_keys.onSelect = [this](int t) { selectTrack(t); };
     m_keys.onMuteKey = [this](int t) { toggleMute(t); };
     m_keys.onMuteQueue = [this](int t) { m_muteQueue ^= uint16_t(1u << t); m_keys.setMuteQueue(m_muteQueue); };

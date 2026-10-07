@@ -79,6 +79,7 @@ public:
     std::function<void(int step)> onStep, onHold;
     std::function<void(int step, bool on, bool first)> onPaint;   // GRID click / drag: set a step's trig (first = a new stroke)
     std::function<void(int step, int flag)> onFlag;               // GRID: a step's A / S / W button (0 accent, 1 slide, 2 swing)
+    std::function<void(int step, int flag, bool on, bool first)> onMarkPaint;   // an edit window: click / drag sets the mark
     std::function<void(int step)> onStepMenu;
     std::function<void(int track)> onSelect, onMuteKey;   // Ctrl / Cmd + click: select; Alt + click: mute (as FUNC + trig)
     int devSeqStep() const { return m_seqStep; }   // dev/tests
@@ -177,6 +178,7 @@ public:
     void devFlag(int s, int f) { flipStepFlag(s, f); }
     void devPerTrack(int f) { togglePerTrack(f); }
     void devMarkMode(int m) { m_markMode = m; refreshGrid(); }
+    void devMarkPaint(int s, int f, bool on, bool first) { if (m_keys.onMarkPaint) m_keys.onMarkPaint(s, f, on, first); }
     void devUndoKit() { undoKit(); }
     void devSelectTrack(int t) { selectTrack(t); }
     void devCopyMachine() { copyMachine(); }
