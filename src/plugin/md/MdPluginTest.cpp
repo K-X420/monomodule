@@ -84,6 +84,7 @@ int main(int argc, char** argv)
     if (const char* v = std::getenv("MD_EDIT_TEST")) return test::mdEditTest(env, v);
     if (const char* v = std::getenv("MD_SEQ_TEST")) return test::mdSeqTest(env, v);
     if (const char* v = std::getenv("MD_GROUP_TEST")) return test::mdGroupTest(env, v);
+    if (const char* v = std::getenv("MD_XTRA_TEST")) return test::mdXtraTest(env, v);
     bool kitLoaded = false;
     // MD_OUTS_TEST: every output bus live, PER TRACK outputs (MD_OUTS_OFF=n leaves track n's bus off: it stays on
     // the main); prints each bus's level. MD_OUTS_TEST=hw: the same buses in HARDWARE mode
@@ -378,6 +379,18 @@ int main(int argc, char** argv)
             }
             if (std::getenv("MD_UI_SAMPLES")) { proc.renameSample(0, "X"); med->devOpenSamples(); med->refresh(); }   // dev: the sample manager
             if (std::getenv("MD_UI_GRIDCLICK")) { med->devBarPart(MdSeqBar::Grid); med->refresh(); }   // dev: GRID clicked on a fresh plugin
+            if (const char* xm = std::getenv("MD_UI_XTRA")) {   // dev: an extras window (4 condition, 5 micro, 6 retrig) with some values
+                if (auto* a = proc.apvts.getParameter(extrasId())) a->setValueNotifyingHost(1.0f);
+                med->showGrid(-1);
+                for (int s : {0, 3, 4, 8, 10, 12, 14}) med->devStep(s);
+                const int kind = juce::jlimit(4, 6, std::atoi(xm)) - 4;
+                for (int s : {0, 4, 8, 12}) {
+                    med->devExtraPaint(s, kind, true, true);
+                    for (int k = 0; k < s / 4; ++k) med->devExtraWheel(s, kind, kind == 1 ? -5 : 3, false);
+                }
+                med->devMarkMode(kind + 4);
+                med->refresh();
+            }
             if (std::getenv("MD_UI_KITS")) med->showKitList();
             if (std::getenv("MD_UI_ABOUT")) med->showAbout();
             if (std::getenv("MD_UI_SKIN")) med->showSkinDialog();

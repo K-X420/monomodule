@@ -26,5 +26,6 @@ int mdCtrTest(TestEnv& env, const char* value);
 int mdOscheckTest(TestEnv& env, const char* value);
 int mdRateTest(TestEnv& env, const char* value);
 int mdParityTest(TestEnv& env, const char* value);
+int mdXtraTest(TestEnv& env, const char* value);
 
 } // namespace mnm::plugin::md::test

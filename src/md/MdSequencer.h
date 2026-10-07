@@ -33,6 +33,14 @@ struct SeqTrig {
     uint32_t slideMask = 0;                // the parameters that slide from this trig
     std::array<int16_t, 24> slideTo{};     // their end: the next trig's lock, -1 = the kit value
     std::array<int32_t, 24> slideClocks{}; // their duration in clocks (the OS's integer count)
+    bool retrig = false;                   // a retrig's later hit: the voice again, its locks already set
+};
+
+// Monomodule's extras as the player plays them (all off by default, as a real MD): trig conditions, micro-timing,
+// retrigs (MdDump.h). fill = FILL mode; seed makes the probabilities (a pass replays the same way for one seed).
+struct TrigContext {
+    bool extras = false, fill = false;
+    uint32_t seed = 0;
 };
 
 class PatternPlayer {
@@ -64,11 +72,18 @@ public:
     // The trigs that fire in [from, to) (clocks from the origin, where the first pass starts), in time order, of the
     // steps 0 .. maxSteps - 1 counted from the origin (-1 = no end). A swung step's trigs belong to it even when they
     // come after the last step's end (a pattern change, a song row's end).
-    void trigs(double from, double to, std::vector<SeqTrig>& out, int64_t maxSteps = -1) const;
+    // With ctx.extras, a trig plays when its condition does (conditionPlays), at its micro-timing, then its retrigs.
+    void trigs(double from, double to, std::vector<SeqTrig>& out, int64_t maxSteps = -1, const TrigContext& ctx = {}) const;
     SeqTrig trigAt(int64_t stepIndex, int track) const;   // the trig of that step (it must have one)
+    // Does the trig of (stepIndex, track) pass its condition? Passes count from the origin; PRE / NEI look back at the
+    // last trig with another kind of condition on the track / the track before (none: false). No condition: true.
+    bool conditionPlays(int64_t stepIndex, int track, const TrigContext& ctx) const;
+    double microClocks(int track, int step) const { return double(m_p.micro[track][step]) * m_step / 24.0; }
 
 private:
     static bool bit(uint32_t editAll, uint64_t global, uint64_t perTrack, int step) { return ((editAll ? global : perTrack) >> step) & 1; }
+    bool plainCondition(int64_t stepIndex, int track, const TrigContext& ctx) const;   // any but PRE / NEI
+    bool lastCondition(int64_t stepIndex, int track, bool inclusive, const TrigContext& ctx) const;   // PRE / NEI's look back
     mddump::Pattern m_p;
     int m_len = 16, m_step = 6, m_start = 0, m_span = 16;
     double m_swing = 0;

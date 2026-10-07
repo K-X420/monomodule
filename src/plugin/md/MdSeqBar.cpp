@@ -92,8 +92,8 @@ void MdSeqBar::paint(juce::Graphics& g)
     }
     {   // GRID: solid while the keys are steps
         const auto r = box(Grid, m_s.grid);
-        static const char* const names[4] = {"GRID", "ACC", "SLD", "SWG"};
-        cv.textCentred(spec::kFontBold8, names[juce::jlimit(0, 3, m_s.mark)], r.getX(), r.getWidth(), r.getY() + 4, !m_s.grid);
+        static const char* const names[7] = {"GRID", "ACC", "SLD", "SWG", "COND", "TIME", "RTRG"};
+        cv.textCentred(spec::kFontBold8, names[juce::jlimit(0, 6, m_s.mark)], r.getX(), r.getWidth(), r.getY() + 4, !m_s.grid);
     }
     auto arrows = [&](Part prev, Part next) {
         auto r = box(prev, false); arrowH(cv, r.getCentreX(), r.getCentreY(), true, true);

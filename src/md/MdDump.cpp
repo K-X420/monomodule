@@ -168,6 +168,58 @@ void Pattern::clearStepLocks(int track, int step)
     for (int q = 0; q < 24; ++q) clearLock(track, q, step);
 }
 
+bool Pattern::hasExtras() const
+{
+    for (int t = 0; t < kTracks; ++t)
+        for (int s = 0; s < 64; ++s) if (cond[t][s] || micro[t][s] || retrig[t][s]) return true;
+    return false;
+}
+
+void Pattern::clearStepExtras(int track, int step)
+{
+    if (track < 0 || track >= kTracks || step < 0 || step >= 64) return;
+    cond[track][step] = 0; micro[track][step] = 0; retrig[track][step] = 0;
+}
+
+namespace {
+constexpr int kProbabilities[21] = {1, 2, 4, 6, 9, 13, 19, 25, 33, 41, 50, 59, 67, 75, 81, 87, 91, 94, 96, 98, 99};
+}
+
+int conditionPercent(int c) { return c >= 1 && c <= 21 ? kProbabilities[c - 1] : -1; }
+
+bool conditionRatio(int c, int& a, int& b)
+{
+    if (c < kCondRatio || c >= kConditions) return false;
+    int i = c - kCondRatio;
+    for (b = 2; b <= 8; ++b) { if (i < b) { a = i + 1; return true; } i -= b; }
+    return false;
+}
+
+std::string conditionName(int c)
+{
+    static const char* const named[8] = {"FILL", "!FILL", "PRE", "!PRE", "NEI", "!NEI", "1ST", "!1ST"};
+    if (const int p = conditionPercent(c); p > 0) return std::to_string(p) + "%";
+    if (c >= kCondFill && c < kCondRatio) return named[c - kCondFill];
+    int a = 0, b = 0;
+    if (conditionRatio(c, a, b)) return std::to_string(a) + ":" + std::to_string(b);
+    return {};
+}
+
+int retrigHits(uint8_t r)
+{
+    static const int hits[8] = {0, 2, 3, 4, 6, 8, 12, 16};
+    return hits[retrigRate(r)];
+}
+
+std::string retrigName(uint8_t r)
+{
+    const int h = retrigHits(r);
+    if (h == 0) return {};
+    std::string s = "1/" + std::to_string(16 * h);
+    if (retrigSteps(r) > 1) s += "x" + std::to_string(retrigSteps(r));
+    return s;
+}
+
 namespace {
 void setBit(uint64_t& m, int s, bool on) { if (on) m |= 1ull << s; else m &= ~(1ull << s); }
 bool getBit(uint64_t m, int s) { return (m >> s) & 1; }
@@ -194,6 +246,7 @@ void Pattern::copySteps(const Pattern& src, int from, int to, int count, int tra
                 const int v = row >= 0 ? src.locks[row][s] : 0xFF;
                 if (v <= 127) setLock(dt, q, d, v); else clearLock(dt, q, d);
             }
+            cond[dt][d] = src.cond[t][s]; micro[dt][d] = src.micro[t][s]; retrig[dt][d] = src.retrig[t][s];
         }
     }
 }
@@ -210,6 +263,7 @@ void Pattern::clearSteps(int from, int count, int track)
             setBit(trigs[t], s, false);
             setBit(accentPerTrack[t], s, false); setBit(slidePerTrack[t], s, false); setBit(swingPerTrack[t], s, false);
             clearStepLocks(t, s);
+            clearStepExtras(t, s);
         }
     }
 }
@@ -421,6 +475,40 @@ bool isMachinedrumSysex(const uint8_t* data, size_t size)
     return false;
 }
 
+bool isPatternExtras(const uint8_t* m, size_t n)
+{
+    return n >= 9 && m[0] == 0xF0 && m[1] == 0x7D && m[2] == 'M' && m[3] == 'N' && m[4] == 'X' && m[n - 1] == 0xF7;
+}
+
+std::vector<uint8_t> encodePatternExtras(const Pattern& p)
+{
+    std::vector<uint8_t> out;
+    for (int t = 0; t < kTracks; ++t)
+        for (int s = 0; s < 64; ++s)
+            if (p.cond[t][s] || p.micro[t][s] || p.retrig[t][s]) {
+                if (out.empty()) out = {0xF0, 0x7D, 'M', 'N', 'X', 1, uint8_t(p.position & 0x7F)};
+                const int m = std::clamp(int(p.micro[t][s]), -23, 23) + 64;
+                out.insert(out.end(), {uint8_t(t), uint8_t(s), uint8_t(p.cond[t][s] & 0x7F), uint8_t(m), uint8_t(p.retrig[t][s] & 0x7F)});
+            }
+    if (!out.empty()) out.push_back(0xF7);
+    return out;
+}
+
+bool decodePatternExtras(const uint8_t* m, size_t n, int& position, Pattern& p)
+{
+    if (!isPatternExtras(m, n) || m[5] != 1 || (n - 8) % 5 != 0) return false;
+    position = m[6];
+    for (int t = 0; t < kTracks; ++t) for (int s = 0; s < 64; ++s) p.clearStepExtras(t, s);
+    for (size_t i = 7; i + 5 <= n - 1; i += 5) {
+        const int t = m[i], s = m[i + 1];
+        if (t >= kTracks || s >= 64) continue;
+        p.cond[t][s] = m[i + 2] < kConditions ? m[i + 2] : 0;
+        p.micro[t][s] = int8_t(std::clamp(int(m[i + 3]) - 64, -23, 23));
+        p.retrig[t][s] = uint8_t(m[i + 4] & 0x3F);
+    }
+    return true;
+}
+
 Dump parseDump(const uint8_t* data, size_t size, const std::string& filename)
 {
     Dump d;
@@ -457,22 +545,41 @@ Dump parseDump(const uint8_t* data, size_t size, const std::string& filename)
             } else {
                 ++d.numUnknown;
             }
+        } else if (isPatternExtras(r, n)) {
+            m.extras = true;   // put on its pattern below (it comes after it)
         } else {
             ++d.numUnknown;
         }
         d.messages.push_back(std::move(m));
         i = j + 1;
     }
+    for (const auto& m : d.messages) {
+        if (!m.extras) continue;
+        int pos = -1;
+        Pattern probe;
+        if (!decodePatternExtras(m.raw.data(), m.raw.size(), pos, probe)) continue;
+        for (auto it = d.patterns.rbegin(); it != d.patterns.rend(); ++it)
+            if (it->position == pos) {
+                std::memcpy(it->cond, probe.cond, sizeof(probe.cond));
+                std::memcpy(it->micro, probe.micro, sizeof(probe.micro));
+                std::memcpy(it->retrig, probe.retrig, sizeof(probe.retrig));
+                break;
+            }
+    }
     return d;
 }
 
-std::vector<uint8_t> encodeDump(const Dump& d)
+std::vector<uint8_t> encodeDump(const Dump& d, bool withExtras)
 {
     std::vector<uint8_t> out;
     for (const auto& m : d.messages) {
         std::vector<uint8_t> bytes;
+        if (m.extras) continue;   // written again after its pattern (from the pattern, so edits take effect)
         if (m.kitIndex >= 0) bytes = encodeKit(d.kits[size_t(m.kitIndex)]);
-        else if (m.patternIndex >= 0) bytes = encodePattern(d.patterns[size_t(m.patternIndex)]);
+        else if (m.patternIndex >= 0) {
+            bytes = encodePattern(d.patterns[size_t(m.patternIndex)]);
+            if (withExtras) { const auto x = encodePatternExtras(d.patterns[size_t(m.patternIndex)]); bytes.insert(bytes.end(), x.begin(), x.end()); }
+        }
         else if (m.songIndex >= 0) bytes = encodeSong(d.songs[size_t(m.songIndex)]);
         else bytes = m.raw;
         out.insert(out.end(), bytes.begin(), bytes.end());

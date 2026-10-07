@@ -139,6 +139,7 @@ inline juce::String knobTip(const juce::String& label, int page, const juce::Str
         {"SEQ", "Sequencer on / off"}, {"PTN", "The pattern"}, {"MODE", "PATTERN or SONG"}, {"SONG", "The song SONG mode plays"},
         {"LEN", "Pattern length"}, {"SPD", "Pattern speed"}, {"SWNG", "Swing amount"}, {"ACC", "Accent amount"}, {"KIT", "The pattern's kit"},
         {"GRID", "Keys as steps (G)"}, {"PAGE", "The page GRID shows"},
+        {"XTRA", "Trig conditions, micro-timing, retrigs (GRID: C T R; F: fill)"},
     };
     if (page == 0)
         if (const char* w = text::machineWords(family.toRawUTF8(), label.toRawUTF8())) return w;

@@ -121,6 +121,11 @@ public:
     // Resample (as an Elektron's): track t's sound, trigged on its own and rendered offline (its effects, the master
     // effects' sends as the kit has them), into a ROM slot. Message thread; takes a moment (the render).
     juce::String resampleTrack(int t, int slot, double seconds = 2.0);
+    // EXTRAS: trig conditions, micro-timing and retrigs played (the EXTRAS switch); FILL mode (the FILL condition), held
+    // or latched from the editor
+    bool extrasOn() const { return m_extras && m_extras->load() >= 0.5f; }
+    void setFill(bool on) { m_fill.store(on); }
+    bool fill() const { return m_fill.load(); }
     double ramSeconds(int ram) const;   // the length of RAM-R(ram + 1)'s recording now (0: none)
     static bool isAudioFile(const juce::String& path);   // a format loadSample reads (wav, aiff, flac, ogg, ...)
     int firstEmptyRomSlot() const;                        // in ROM-01..48 order; -1 when every ROM slot holds a sample
@@ -374,6 +379,7 @@ private:
         double origin = 0;          // the clock its first step starts at
         int64_t steps = -1;         // how many steps it plays (-1: until a change)
         uint16_t mutes = 0;         // a song row's muted tracks (bit t)
+        uint32_t seed = 0;          // the extras' probabilities (a new roll each time it starts)
         double endClock() const { return origin + double(steps) * player.clocksPerStep(); }
     };
     Segment m_seg, m_prevSeg;
@@ -450,6 +456,9 @@ private:
     std::atomic<bool> m_ctrlIn{true};
     std::atomic<float>* m_extended = nullptr;   // CLASSIC (0) / EXTENDED (1)
     bool extendedMode() const { return !m_extended || m_extended->load() >= 0.5f; }
+    std::atomic<float>* m_extras = nullptr;     // EXTRAS off (0) / on (1)
+    std::atomic<bool> m_fill{false};
+    juce::Random m_dice;                        // audio thread: the segments' seeds
     std::array<std::atomic<int16_t>, 128> m_noteAction{};
     // pattern notes (audio thread): the held note, the pattern MOMENTARY brings back (-1 = stop), a pattern to start at
     // once, the sequencer halted by STOP / a GATE note-off, a pattern the parameter is still to catch up with

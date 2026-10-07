@@ -294,7 +294,13 @@ void MdProcessor::getStateInformation(juce::MemoryBlock& destData)
         if (bank) {
             juce::MemoryBlock syx;
             for (int s = 0; s < 64; ++s) if (bank->hasKit[size_t(s)]) { const auto m = mnm::mddump::encodeKit(bank->kits[size_t(s)]); syx.append(m.data(), m.size()); }
-            for (int s = 0; s < 128; ++s) if (bank->hasPattern[size_t(s)]) { const auto m = mnm::mddump::encodePattern(*bank->patterns[size_t(s)]); syx.append(m.data(), m.size()); }
+            for (int s = 0; s < 128; ++s)
+                if (bank->hasPattern[size_t(s)]) {
+                    const auto m = mnm::mddump::encodePattern(*bank->patterns[size_t(s)]);
+                    const auto x = mnm::mddump::encodePatternExtras(*bank->patterns[size_t(s)]);   // the plugin's extras
+                    syx.append(m.data(), m.size());
+                    if (!x.empty()) syx.append(x.data(), x.size());
+                }
             for (int s = 0; s < 32; ++s) if (bank->hasSong[size_t(s)]) { const auto m = mnm::mddump::encodeSong(bank->songs[size_t(s)]); syx.append(m.data(), m.size()); }
             juce::ValueTree b("BANK");
             b.setProperty("project", m_bankProjectId, nullptr);

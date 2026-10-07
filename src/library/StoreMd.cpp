@@ -139,7 +139,8 @@ juce::Result Store::exportMdVersion(const juce::String& projectId, int n, const 
     Dump d;
     if (!readVersion(versionDir(projectId, n), src) || !loadMdVersion(projectId, n, d)) return juce::Result::fail("No such version");
     const bool whole = kits == nullptr && patterns == nullptr;
-    const auto bytes = whole ? encodeDump(d) : mnm::mdproject::encodeSlots(d, kits ? *kits : std::vector<int>{}, patterns ? *patterns : std::vector<int>{});
+    // pure MD (the plugin's pattern extras stay in the library)
+    const auto bytes = whole ? encodeDump(d, false) : mnm::mdproject::encodeSlots(d, kits ? *kits : std::vector<int>{}, patterns ? *patterns : std::vector<int>{});
     if (bytes.empty()) return juce::Result::fail("Nothing to export");
     if (!dest.replaceWithData(bytes.data(), bytes.size())) return juce::Result::fail("Could not write " + dest.getFullPathName());
     ProjectInfo p;

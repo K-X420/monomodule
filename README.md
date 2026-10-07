@@ -81,6 +81,7 @@ patterns along.
 | Learn a note map entry | MIDI SETTINGS: **click** a note cell (a track, FROM, START, STOP), then play the note. Click again or Esc: cancel |
 | Samples | MENU > SAMPLES: the 48 ROM slots. Rename (Enter / double-click), clear (Delete), **RAM 1-4 >** copies a RAM machine's recording into the selected slot (the RAM machines start empty after, as on the MD) |
 | CLASSIC / EXTENDED | OUT tab, **EXT**: CLASSIC plays patterns without their locks (kept) and without their kits, as the MD's CLASSIC mode |
+| Extras: trig conditions, micro-timing, retrigs | Not on a real MD; off until PTN tab **XTRA** is on. Then in GRID, **C / T / R** open the CONDITION / TIME / RETRIG windows. **Click** a trig to give it the last value (click again: clear; drag to paint). **Wheel** over it changes the value (RETRIG: Shift+wheel sets its length). Conditions: 1-99%, FILL / !FILL, PRE / !PRE, NEI / !NEI, 1ST / !1ST, A:B. Hold **F** for fill, **Shift+F** latches it. Extras are saved with the set and in the Library; .syx exports leave them out |
 | Use the MD as a sound module | MIDI SETTINGS > **CTRL IN OFF**: Ableton's play / stop don't run the sequencer (PLAY does, at Ableton's tempo; LFOs and delay stay in time) |
 | Keep your edits | Saved with the Ableton set; MENU > SAVE PATTERNS + SONGS TO LIBRARY puts them in the Library project |
 | MIDI channel, note map, program change, MIDI out | MENU > MIDI SETTINGS |

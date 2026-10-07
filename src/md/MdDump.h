@@ -63,7 +63,34 @@ struct Pattern {
     // all-tracks marks too when every track is copied) and the locks. src must be another object than this one.
     void copySteps(const Pattern& src, int from, int to, int count, int track, int dstTrack);
     void clearSteps(int from, int count, int track);   // track -1: every track and the all-tracks marks
+
+    // Monomodule's extras: the plugin's own, a real MD has no room for them. Per track and step:
+    //   cond    the trig condition, 0 none (conditionName)
+    //   micro   a nudge of -23..+23 24ths of a step (early / late)
+    //   retrig  0 off, else bits 0-2 the rate (retrigHits) and bits 3-5 the steps it lasts, less one
+    // encodePattern leaves them out; they travel in a message of their own (encodePatternExtras). copySteps and
+    // clearSteps take them with the trig; a trig taken off clears its own (clearStepExtras).
+    uint8_t cond[kTracks][64] = {};
+    int8_t micro[kTracks][64] = {};
+    uint8_t retrig[kTracks][64] = {};
+    bool hasExtras() const;
+    void clearStepExtras(int track, int step);
 };
+
+// Trig conditions (as Elektron's later machines): 0 none; 1-21 a probability; FILL, !FILL, PRE, !PRE (the track's
+// last conditional trig played / didn't), NEI, !NEI (the same of the track before), 1ST, !1ST (the first pass); then
+// A:B, the A-th pass of every B (1:2 .. 8:8)
+constexpr int kConditions = 65;
+enum : uint8_t { kCondFill = 22, kCondNotFill, kCondPre, kCondNotPre, kCondNei, kCondNotNei, kCondFirst, kCondNotFirst, kCondRatio };
+std::string conditionName(int cond);               // "" for none
+int conditionPercent(int cond);                    // a probability's percent, else -1
+bool conditionRatio(int cond, int& a, int& b);     // an A:B condition's A and B
+// Retrigs: the hits a step (rate 1..7: 2 3 4 6 8 12 16, i.e. 1/32 .. 1/256) and the steps they last (1..8)
+inline int retrigRate(uint8_t r) { return r & 7; }
+inline int retrigSteps(uint8_t r) { return ((r >> 3) & 7) + 1; }
+inline uint8_t makeRetrig(int rate, int steps) { return rate < 1 ? 0 : uint8_t((rate > 7 ? 7 : rate) | (((steps < 1 ? 1 : steps > 8 ? 8 : steps) - 1) << 3)); }
+int retrigHits(uint8_t r);                         // hits a step, 0 off
+std::string retrigName(uint8_t r);                 // "1/32", "1/64x2" (two steps), "" off
 
 struct SongRow {
     uint8_t bytes[10] = {};                            // pattern, kit, loops, jump, mutes (2), tempo (2), start, end
@@ -103,6 +130,7 @@ struct Message {
     std::vector<uint8_t> raw;                          // F0 .. F7
     int kitIndex = -1, patternIndex = -1, songIndex = -1;
     bool damaged = false;                              // a known message that failed its checksum or layout (kept raw only)
+    bool extras = false;                               // a pattern's extras (encodeDump writes them after their pattern)
 };
 
 struct Dump {
@@ -131,8 +159,15 @@ bool decodeSong(const uint8_t* msg, size_t n, Song& song);
 std::vector<uint8_t> encodeKit(const Kit& kit);
 std::vector<uint8_t> encodePattern(const Pattern& pat);
 std::vector<uint8_t> encodeSong(const Song& song);
+// A pattern's extras as a message of their own (empty when it has none): F0 7D 'M' 'N' 'X' <version 1> <position>
+// then an entry per step with any (track, step, cond, micro + 64, retrig) F7. 7D is MIDI's non-commercial ID: a real
+// MD ignores the message. parseDump puts them back on the pattern of that position.
+std::vector<uint8_t> encodePatternExtras(const Pattern& pat);
+bool decodePatternExtras(const uint8_t* msg, size_t n, int& position, Pattern& pat);   // only the extras fields
+bool isPatternExtras(const uint8_t* msg, size_t n);
 // Re-encodes every decoded kit / pattern / song from its struct (so edits take effect) and copies every other message
-// verbatim; for an unedited dump the result is the source file.
-std::vector<uint8_t> encodeDump(const Dump& dump);
+// verbatim; for an unedited dump the result is the source file. A pattern's extras follow it (withExtras false: a
+// pure MD dump, as one sent to the unit or exported).
+std::vector<uint8_t> encodeDump(const Dump& dump, bool withExtras = true);
 
 } // namespace mnm::mddump

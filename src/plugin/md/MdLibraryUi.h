@@ -46,7 +46,7 @@ public:
     static constexpr int kS = 2, kLcdH = 15;
     struct State {
         bool beat = false;   // the first half of each quarter note (the playing page's dot lights)
-        int mark = 0;        // GRID's edit window: 0 trigs, 1 ACC, 2 SLD, 3 SWG (the GRID button says which)
+        int mark = 0;        // GRID's edit window: 0 trigs, 1 ACC, 2 SLD, 3 SWG, 4 COND, 5 TIME, 6 RTRG (the GRID button says which)
         bool playing = false, hostPlaying = false, grid = false, mix = false, empty = true, muted = false, rec = false, recording = false, seqOff = false;
         juce::String flash;   // a short confirmation in the STEP box ("COPIED PAGE 1")
         int track = 0, pattern = 0, length = 16, page = 0, step = -1, row = -1;

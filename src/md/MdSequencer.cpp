@@ -62,19 +62,91 @@ SeqTrig PatternPlayer::trigAt(int64_t stepIndex, int t) const
     return e;
 }
 
-void PatternPlayer::trigs(double from, double to, std::vector<SeqTrig>& out, int64_t maxSteps) const
+namespace {
+uint32_t mix(uint32_t x)   // a hash: the probabilities' dice, the same for the same seed, step and track
+{
+    x ^= x >> 16; x *= 0x7FEB352Du; x ^= x >> 15; x *= 0x846CA68Bu; x ^= x >> 16;
+    return x;
+}
+bool refersBack(int c) { return c == mddump::kCondPre || c == mddump::kCondNotPre || c == mddump::kCondNei || c == mddump::kCondNotNei; }
+}
+
+bool PatternPlayer::plainCondition(int64_t k, int t, const TrigContext& ctx) const
+{
+    const int c = m_p.cond[t][stepOf(k)];
+    if (c == 0) return true;
+    if (const int pct = mddump::conditionPercent(c); pct > 0)
+        return int(mix(ctx.seed ^ mix(uint32_t(k) * 16u + uint32_t(t) + 0x9E3779B9u)) % 100u) < pct;
+    const int64_t pass = k / m_span;
+    switch (c) {
+        case mddump::kCondFill: return ctx.fill;
+        case mddump::kCondNotFill: return !ctx.fill;
+        case mddump::kCondFirst: return pass == 0;
+        case mddump::kCondNotFirst: return pass != 0;
+        default: break;
+    }
+    int a = 0, b = 0;
+    if (mddump::conditionRatio(c, a, b)) return pass % b == a - 1;
+    return true;
+}
+
+bool PatternPlayer::lastCondition(int64_t k, int t, bool inclusive, const TrigContext& ctx) const
+{
+    if (t < 0 || t > 15) return false;
+    const int64_t stop = std::max<int64_t>(0, k - 64);
+    for (int64_t j = inclusive ? k : k - 1; j >= stop; --j) {
+        const int s = stepOf(j), c = m_p.cond[t][s];
+        if (hasTrig(t, s) && c != 0 && !refersBack(c)) return plainCondition(j, t, ctx);
+    }
+    return false;
+}
+
+bool PatternPlayer::conditionPlays(int64_t k, int t, const TrigContext& ctx) const
+{
+    const int c = m_p.cond[t][stepOf(k)];
+    switch (c) {
+        case mddump::kCondPre: return lastCondition(k, t, false, ctx);
+        case mddump::kCondNotPre: return !lastCondition(k, t, false, ctx);
+        case mddump::kCondNei: return lastCondition(k, t - 1, true, ctx);   // the track before plays first
+        case mddump::kCondNotNei: return !lastCondition(k, t - 1, true, ctx);
+        default: return plainCondition(k, t, ctx);
+    }
+}
+
+void PatternPlayer::trigs(double from, double to, std::vector<SeqTrig>& out, int64_t maxSteps, const TrigContext& ctx) const
 {
     if (to <= from) return;
     const size_t first = out.size();
-    // a step's trigs are at its start, or a swing delay later
-    int64_t k = std::max<int64_t>(0, int64_t(std::floor((from - m_swing) / m_step)));
-    for (; double(k) * m_step < to && (maxSteps < 0 || k < maxSteps); ++k) {
+    // a step's trigs are at its start, or a swing delay later (extras: a micro-timing nudge, retrigs up to 8 steps on)
+    const double reach = m_swing + (ctx.extras ? m_step * 8.0 + m_step : 0.0);
+    int64_t k = std::max<int64_t>(0, int64_t(std::floor((from - reach) / m_step)));
+    for (; double(k) * m_step < to + (ctx.extras ? m_step : 0.0) && (maxSteps < 0 || k < maxSteps); ++k) {
         const int step = stepOf(k);
         for (int t = 0; t < 16; ++t) {
             if (!hasTrig(t, step)) continue;
-            const double c = double(k) * m_step + (swung(t, step) ? m_swing : 0.0);
-            if (c < from || c >= to) continue;
-            out.push_back(trigAt(k, t));
+            double c = double(k) * m_step + (swung(t, step) ? m_swing : 0.0);
+            if (!ctx.extras) {
+                if (c < from || c >= to) continue;
+                out.push_back(trigAt(k, t));
+                continue;
+            }
+            c = std::max(0.0, c + microClocks(t, step));   // (a nudge early on the very first step: at the start)
+            const uint8_t r = m_p.retrig[t][step];
+            const int hits = mddump::retrigHits(r) * (r ? mddump::retrigSteps(r) : 1);
+            const double gap = r ? double(m_step) / mddump::retrigHits(r) : 0.0;
+            const double last = c + gap * std::max(0, hits - 1);
+            if (last < from || c >= to) continue;
+            if (!conditionPlays(k, t, ctx)) continue;
+            const SeqTrig e = trigAt(k, t);
+            for (int h = 0; h < std::max(1, hits); ++h) {
+                const double at = c + gap * h;
+                if (at < from || at >= to) continue;
+                SeqTrig x = e;
+                x.clock = at;
+                x.retrig = h > 0;
+                if (h > 0) x.slideMask = 0;
+                out.push_back(x);
+            }
         }
     }
     std::stable_sort(out.begin() + std::ptrdiff_t(first), out.end(), [](const SeqTrig& a, const SeqTrig& b) { return a.clock < b.clock; });

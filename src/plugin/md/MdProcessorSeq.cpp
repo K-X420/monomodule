@@ -55,7 +55,11 @@ mnm::mddump::Dump MdProcessor::bankDump() const
     if (bank) {
         auto add = [&](const std::vector<uint8_t>& m) { bytes.insert(bytes.end(), m.begin(), m.end()); };
         for (int s = 0; s < 64; ++s) if (bank->hasKit[size_t(s)]) add(mnm::mddump::encodeKit(bank->kits[size_t(s)]));
-        for (int s = 0; s < 128; ++s) if (bank->hasPattern[size_t(s)]) add(mnm::mddump::encodePattern(*bank->patterns[size_t(s)]));
+        for (int s = 0; s < 128; ++s)
+            if (bank->hasPattern[size_t(s)]) {
+                add(mnm::mddump::encodePattern(*bank->patterns[size_t(s)]));
+                add(mnm::mddump::encodePatternExtras(*bank->patterns[size_t(s)]));   // (none: nothing)
+            }
         for (int s = 0; s < 32; ++s) if (bank->hasSong[size_t(s)]) add(mnm::mddump::encodeSong(bank->songs[size_t(s)]));
     }
     return mnm::mddump::parseDump(bytes.data(), bytes.size(), "bank");
@@ -201,6 +205,7 @@ void MdProcessor::seqStart(Segment& seg, int slot, int start, int end, int64_t s
     seg.origin = origin;
     seg.steps = steps;
     seg.mutes = mutes;
+    seg.seed = uint32_t(m_dice.nextInt());
     // an empty slot (or no bank) plays as an empty pattern, as on the unit: 16 steps at 1x, nothing on them
     static const mnm::mddump::Pattern empty = [] {
         mnm::mddump::Pattern p;
@@ -320,7 +325,11 @@ void MdProcessor::seqGenerate(const Segment& seg, double from, double to, double
 {
     if (!seg.valid || to <= from) return;
     const size_t first = m_seqTrigs.size();
-    seg.player.trigs(from - seg.origin, to - seg.origin, m_seqTrigs, seg.steps);
+    mnm::md::TrigContext ctx;
+    ctx.extras = extrasOn();
+    ctx.fill = m_fill.load();
+    ctx.seed = seg.seed;
+    seg.player.trigs(from - seg.origin, to - seg.origin, m_seqTrigs, seg.steps, ctx);
     for (size_t i = first; i < m_seqTrigs.size(); ++i) {
         auto& s = m_seqTrigs[i];
         s.clock += seg.origin;

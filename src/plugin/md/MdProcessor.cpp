@@ -56,6 +56,7 @@ MdProcessor::MdProcessor()
     m_accent = apvts.getRawParameterValue(accentId());
     m_seqOn = apvts.getRawParameterValue(seqId());
     m_extended = apvts.getRawParameterValue(extendedId());
+    m_extras = apvts.getRawParameterValue(extrasId());
     m_patternParam = apvts.getRawParameterValue(patternId());
     m_seqMode = apvts.getRawParameterValue(seqModeId());
     m_songParam = apvts.getRawParameterValue(songId());
@@ -439,7 +440,7 @@ void MdProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffe
         const auto* ok = m_kitOverride.load();
         const int id = ok ? overrideMachine(*ok, t) : machineIdOf(t);
         const int pos = juce::jlimit(0, juce::jmax(0, n - 1), int(std::lround(enginePos / ratio)));
-        trigLocks(t, s, pos);
+        if (!(s && s->retrig)) trigLocks(t, s, pos);   // (a retrig's later hits: the locks are set already)
         if (isMidMachine(id)) { midTrig(t, pos); m_engine->groupTrig(t); }
         else if (isCtrMachine(id)) { m_engine->groupTrig(t); ctrTrig = true; }
         else m_engine->trig(t, id, accent);

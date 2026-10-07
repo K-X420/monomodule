@@ -71,8 +71,12 @@ public:
         bool on = false;
         int page = 0, length = 16, play = -1, held = -1;
         uint64_t trigs = 0, accent = 0, slide = 0, swing = 0, locks = 0;
-        int mark = 0;   // 0 the trigs; 1 ACCENT, 2 SLIDE, 3 SWING: the keys show / flip that mark (as the MD's edit windows)
-        bool operator==(const Grid& o) const { return mark == o.mark && on == o.on && page == o.page && length == o.length && play == o.play && held == o.held && trigs == o.trigs && accent == o.accent && slide == o.slide && swing == o.swing && locks == o.locks; }
+        int mark = 0;   // 0 the trigs; 1 ACCENT, 2 SLIDE, 3 SWING: the keys show / flip that mark (as the MD's edit windows);
+                        // EXTRAS: 4 CONDITION, 5 MICRO-TIMING, 6 RETRIG: the keys show the selected track's value
+        std::array<uint8_t, 64> cond{}, retrig{};
+        std::array<int8_t, 64> micro{};
+        bool operator==(const Grid& o) const { return mark == o.mark && on == o.on && page == o.page && length == o.length && play == o.play && held == o.held && trigs == o.trigs && accent == o.accent && slide == o.slide && swing == o.swing && locks == o.locks && cond == o.cond && retrig == o.retrig && micro == o.micro; }
+        int extra(int s) const { return mark == 4 ? cond[size_t(s)] : mark == 5 ? micro[size_t(s)] : mark == 6 ? retrig[size_t(s)] : 0; }
     };
     void setGrid(const Grid& g) { if (!(g == m_grid)) { m_grid = g; repaint(); } }
     std::function<juce::String(int step)> stepLocks;   // GRID: a step's locks as text for its tooltip ("" none)
@@ -80,6 +84,10 @@ public:
     std::function<void(int step, bool on, bool first)> onPaint;   // GRID click / drag: set a step's trig (first = a new stroke)
     std::function<void(int step, int flag)> onFlag;               // GRID: a step's A / S / W button (0 accent, 1 slide, 2 swing)
     std::function<void(int step, int flag, bool on, bool first)> onMarkPaint;   // an edit window: click / drag sets the mark
+    // an extras window (kind 0 condition, 1 micro-timing, 2 retrig): click / drag sets the last value or clears it;
+    // the wheel over a step changes its value (alt: Shift, a retrig's length)
+    std::function<void(int step, int kind, bool on, bool first)> onExtraPaint;
+    std::function<void(int step, int kind, int delta, bool alt)> onExtraWheel;
     std::function<void(int step)> onStepMenu;
     std::function<void(int track)> onSelect, onMuteKey;   // Ctrl / Cmd + click: select; Alt + click: mute (as FUNC + trig)
     int devSeqStep() const { return m_seqStep; }   // dev/tests
@@ -97,6 +105,8 @@ private:
     void mouseMove(const juce::MouseEvent&) override;
     void mouseDrag(const juce::MouseEvent&) override;
     void mouseUp(const juce::MouseEvent&) override { m_painting = false; }
+    void mouseWheelMove(const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
+    uint32_t m_lastWheel = 0;
     bool m_painting = false, m_paintOn = false;
     uint16_t m_muteQueue = 0;
     int m_paintLast = -1;
@@ -179,6 +189,9 @@ public:
     void devPerTrack(int f) { togglePerTrack(f); }
     void devMarkMode(int m) { m_markMode = m; refreshGrid(); }
     void devMarkPaint(int s, int f, bool on, bool first) { if (m_keys.onMarkPaint) m_keys.onMarkPaint(s, f, on, first); }
+    void devExtraPaint(int s, int kind, bool on, bool first) { if (m_keys.onExtraPaint) m_keys.onExtraPaint(s, kind, on, first); }
+    void devExtraWheel(int s, int kind, int delta, bool alt) { if (m_keys.onExtraWheel) m_keys.onExtraWheel(s, kind, delta, alt); }
+    int devMarkModeNow() const { return m_markMode; }
     void devUndoKit() { undoKit(); }
     void devSelectTrack(int t) { selectTrack(t); }
     void devCopyMachine() { copyMachine(); }
@@ -268,7 +281,9 @@ private:
     juce::String importMidiClip(const juce::File& f, int onlyTrack);   // a clip dropped in (onlyTrack: a key's track, -1 the pattern)
     static bool isMidiFile(const juce::String& path);
     void flipStepFlag(int step, int flag);   // a step's accent / slide / swing mark (the all-tracks mask or the track's own)
-    int m_markMode = 0;                      // GRID's edit window: 0 trigs, 1 accent, 2 slide, 3 swing
+    int m_markMode = 0;                      // GRID's edit window: 0 trigs, 1 accent, 2 slide, 3 swing, (EXTRAS) 4 condition, 5 micro, 6 retrig
+    std::array<int, 3> m_lastExtra{11, 6, mnm::mddump::makeRetrig(3, 1)};   // what a click sets: 50%, +6/24, 1/64
+    bool m_fillLatch = false;                // Shift+F: FILL stays on
     void togglePerTrack(int flag);           // A / S / W keys: that mark between all tracks and per track
     // Kit tools (as the MD's UNDO KIT / kit reload / copy, paste, clear machine)
     struct KitUndo { bool valid = false; mnm::mddump::Kit kit; juce::String key, name; };

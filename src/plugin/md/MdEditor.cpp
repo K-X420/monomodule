@@ -205,7 +205,7 @@ void MdEditor::bindOutPage(int tab)
     static const char* const kSpd[8] = {"1X", "2X", "3/4X", "3/2X", "1/2X", "1/4X", "1/8X", "3X"};   // 4-7: the plugin's extras
     static const char* const kPages[4] = {"1", "2", "3", "4"};
     const spec::Param params[8] = {readout("LEN", names.lenP.data(), 64, 15), readout("SPD", kSpd, 8), readout("SWNG", names.swingP.data(), 31), numeric("ACC", 64),
-                                   readout("KIT", names.kitP.data(), 64), toggle("GRID", kSeqNames), readout("PAGE", kPages, 4), readout("PTN", kPatternNames, 128)};
+                                   readout("KIT", names.kitP.data(), 64), toggle("GRID", kSeqNames), readout("PAGE", kPages, 4), toggle("XTRA", kSeqNames)};
     m_out.bindCustom(params,
         [this](int k) {
             const auto p = m_proc.bankPattern(editSlot());
@@ -217,16 +217,16 @@ void MdEditor::bindOutPage(int tab)
                 case 4: return p ? juce::jlimit(0, 63, int(p->kit)) : 0;
                 case 5: return m_gridOn ? 1 : 0;
                 case 6: return m_gridPage;
-                default: return editSlot();
+                default: return m_proc.extrasOn() ? 1 : 0;
             }
         },
         [this](int k, int v) {
             if (k == 5) { m_gridOn = v != 0; if (!m_gridOn) holdStep(-1); refreshGrid(); return; }
             if (k == 6) { m_gridPage = v; refreshGrid(); return; }
-            if (k == 7) {
-                if (auto* a = m_proc.apvts.getParameter(patternId())) a->setValueNotifyingHost(a->convertTo0to1(float(v)));
-                holdStep(-1);
-                refreshGrid();
+            if (k == 7) {   // EXTRAS on / off (off: back to the trigs)
+                if (auto* a = m_proc.apvts.getParameter(extrasId())) { a->beginChangeGesture(); a->setValueNotifyingHost(v ? 1.0f : 0.0f); a->endChangeGesture(); }
+                if (!v && m_markMode >= 4) m_markMode = 0;
+                flash(v ? "EXTRAS: C T R" : "EXTRAS OFF");
                 return;
             }
             static const char* const what[5] = {"length", "speed", "swing", "accent", "kit"};
@@ -242,7 +242,6 @@ void MdEditor::bindOutPage(int tab)
             });
             refreshGrid();
         });
-    m_out.setValuesSource(7, [this] { return m_ptnNamePtrs.data(); });
 }
 
 void MdEditor::setTooltipsOn(bool on)
@@ -340,6 +339,7 @@ void MdEditor::refreshGrid()
         s.seqOff = m_proc.apvts.getRawParameterValue(seqId())->load() < 0.5f;
         if (m_flash.isNotEmpty() && juce::Time::getMillisecondCounter() > m_flashUntil) m_flash.clear();
         s.flash = m_flash;
+        if (s.flash.isEmpty() && m_proc.fill()) s.flash = "FILL";
         m_seqBar.setState(s);
     }
     MdTrackKeys::Grid g;
@@ -358,6 +358,7 @@ void MdEditor::refreshGrid()
             g.accent = p->accentEditAll ? p->accent : p->accentPerTrack[t];
             g.slide = p->slideEditAll ? p->slide : p->slidePerTrack[t];
             g.swing = p->swingEditAll ? p->swing : p->swingPerTrack[t];
+            for (int s = 0; s < 64; ++s) { g.cond[size_t(s)] = p->cond[t][s]; g.micro[size_t(s)] = p->micro[t][s]; g.retrig[size_t(s)] = p->retrig[t][s]; }
             for (int q = 0; q < 24; ++q) {
                 const int row = p->lockRow(t, q);
                 if (row < 0) continue;
@@ -559,6 +560,12 @@ void MdEditor::timerCallback()
     if (--m_skinPoll <= 0) {   // a skin chosen in another Monomodule window
         m_skinPoll = 40;
         if (!m_skinDialog.isVisible()) if (const auto s = skin::load(); s != skin::current()) { skin::apply(s); skinChanged(); }
+    }
+    {   // EXTRAS: FILL while F is held (Shift+F latches it); off: no extras windows, no fill
+        const bool on = m_proc.extrasOn();
+        if (!on) { m_fillLatch = false; if (m_markMode >= 4) m_markMode = 0; }
+        const bool held = on && hasKeyboardFocus(true) && juce::KeyPress::isKeyCurrentlyDown('F') && !juce::ModifierKeys::currentModifiers.isAnyModifierKeyDown();
+        m_proc.setFill(on && (held || m_fillLatch));
     }
     // machines: the block, the keys, and the SYNTHESIS page when the selected track's machine changed
     for (int t = 0; t < kTracks; ++t) {

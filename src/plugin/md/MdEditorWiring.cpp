@@ -5,6 +5,22 @@
 
 namespace mnm::plugin::md {
 
+namespace {
+// a step's extra (kind 0 condition, 1 micro-timing, 2 retrig) and how the STEP box says it
+void setStepExtra(mnm::mddump::Pattern& x, int t, int s, int kind, int v)
+{
+    if (kind == 0) x.cond[t][s] = uint8_t(v);
+    else if (kind == 1) x.micro[t][s] = int8_t(v);
+    else x.retrig[t][s] = uint8_t(v);
+}
+juce::String extraText(int kind, int v)
+{
+    if (kind == 0) return v ? juce::String(mnm::mddump::conditionName(v)) : juce::String("NO COND");   // (the box fits ~8)
+    if (kind == 1) return juce::String(v > 0 ? "+" : "") + juce::String(v) + "/24";
+    return v ? juce::String(mnm::mddump::retrigName(uint8_t(v))) : juce::String("NO RTRG");
+}
+}
+
 // The kit strip: the kit / sound arrows, lists and SAVE
 void MdEditor::wireStrip()
 {
@@ -90,7 +106,7 @@ void MdEditor::wireKeys()
         const int t = m_track;
         bool removed = false;
         doEdit(editSlot(), "step " + juce::String(s + 1), [&](mnm::mddump::Pattern& p) {
-            if ((p.trigs[t] >> s) & 1) { p.trigs[t] &= ~(1ull << s); p.clearStepLocks(t, s); removed = true; }
+            if ((p.trigs[t] >> s) & 1) { p.trigs[t] &= ~(1ull << s); p.clearStepLocks(t, s); p.clearStepExtras(t, s); removed = true; }
             else p.trigs[t] |= 1ull << s;
         });
         if (removed && s == m_heldStep) holdStep(-1);
@@ -101,7 +117,7 @@ void MdEditor::wireKeys()
         const int t = m_track;
         doEdit(editSlot(), on ? "paint steps" : "erase steps", [&](mnm::mddump::Pattern& p) {
             if (on) p.trigs[t] |= 1ull << s;
-            else { p.trigs[t] &= ~(1ull << s); p.clearStepLocks(t, s); }
+            else { p.trigs[t] &= ~(1ull << s); p.clearStepLocks(t, s); p.clearStepExtras(t, s); }
         }, 20000 + (m_paintStroke & 0xFFFF));
         if (!on && s == m_heldStep) holdStep(-1);
         refreshGrid();
@@ -119,6 +135,33 @@ void MdEditor::wireKeys()
             uint64_t& m = *(all[f] ? global[f] : own[f]);
             if (on) m |= 1ull << s; else m &= ~(1ull << s);
         }, 20000 + (m_paintStroke & 0xFFFF));
+        refreshGrid();
+    };
+    m_keys.onExtraPaint = [this](int s, int kind, bool on, bool first) {   // one stroke = one undo step
+        if (first) ++m_paintStroke;
+        const int t = m_track;
+        const auto p = m_proc.bankPattern(editSlot());
+        if (!p || !((p->trigs[t] >> s) & 1)) { if (first) flash("NO TRIG"); return; }   // extras belong to a trig
+        static const char* const names[3] = {"condition", "micro-timing", "retrig"};
+        const int v = on ? m_lastExtra[size_t(kind)] : 0;
+        doEdit(editSlot(), names[kind], [&](mnm::mddump::Pattern& x) { setStepExtra(x, t, s, kind, v); }, 20000 + (m_paintStroke & 0xFFFF));
+        refreshGrid();
+    };
+    m_keys.onExtraWheel = [this](int s, int kind, int delta, bool alt) {   // the value, as a knob turned on a held trig
+        const int t = m_track;
+        const auto p = m_proc.bankPattern(editSlot());
+        if (!p || !((p->trigs[t] >> s) & 1)) { flash("NO TRIG"); return; }
+        namespace dd = mnm::mddump;
+        int v = kind == 0 ? p->cond[t][s] : kind == 1 ? p->micro[t][s] : p->retrig[t][s];
+        if (kind == 0) v = v == 0 ? m_lastExtra[0] : juce::jlimit(0, dd::kConditions - 1, v + delta);
+        else if (kind == 1) v = juce::jlimit(-23, 23, v + delta);
+        else if (v == 0) v = m_lastExtra[2];
+        else if (alt) v = dd::makeRetrig(dd::retrigRate(uint8_t(v)), dd::retrigSteps(uint8_t(v)) + delta);   // Shift: its length
+        else v = dd::makeRetrig(juce::jlimit(0, 7, dd::retrigRate(uint8_t(v)) + delta), dd::retrigSteps(uint8_t(v)));
+        if (v != 0) m_lastExtra[size_t(kind)] = v;   // the next click sets this
+        static const char* const names[3] = {"condition", "micro-timing", "retrig"};
+        doEdit(editSlot(), names[kind], [&](dd::Pattern& x) { setStepExtra(x, t, s, kind, v); }, 40000 + kind * 64 + s);
+        flash(extraText(kind, v));
         refreshGrid();
     };
     m_keys.onSelect = [this](int t) { selectTrack(t); };

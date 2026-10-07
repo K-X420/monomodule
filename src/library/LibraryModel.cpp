@@ -183,7 +183,8 @@ juce::Result LibraryModel::saveMdPatterns(const juce::String& projectId, const m
         return juce::Result::fail("The project is no longer in the library.");
     for (const auto& pat : bank.patterns) {
         const auto* old = d.patternAt(pat.position);
-        if (old && mnm::mddump::encodePattern(*old) == mnm::mddump::encodePattern(pat)) continue;
+        if (old && mnm::mddump::encodePattern(*old) == mnm::mddump::encodePattern(pat)
+            && mnm::mddump::encodePatternExtras(*old) == mnm::mddump::encodePatternExtras(pat)) continue;
         if (!old && pat.empty()) continue;
         mnm::mdproject::putPattern(d, pat.position, pat);
         changes.add("Pattern " + juce::String(mnm::mddump::patternSlotName(pat.position)) + (old ? " edited" : " added") + " in the plugin");

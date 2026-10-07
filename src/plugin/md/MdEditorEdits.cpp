@@ -46,7 +46,7 @@ void MdEditor::stepMenu(int s)
         doEdit(slot, names[juce::jlimit(0, 7, r)], [&](mnm::mddump::Pattern& p) {
             auto flip = [&](uint32_t editAll, uint64_t& global, uint64_t& perTrack) { (editAll ? global : perTrack) ^= 1ull << s; };
             switch (r) {
-                case 1: if ((p.trigs[t] >> s) & 1) { p.trigs[t] &= ~(1ull << s); p.clearStepLocks(t, s); } else p.trigs[t] |= 1ull << s; break;
+                case 1: if ((p.trigs[t] >> s) & 1) { p.trigs[t] &= ~(1ull << s); p.clearStepLocks(t, s); p.clearStepExtras(t, s); } else p.trigs[t] |= 1ull << s; break;
                 case 2: flip(p.accentEditAll, p.accent, p.accentPerTrack[t]); break;
                 case 3: flip(p.slideEditAll, p.slide, p.slidePerTrack[t]); break;
                 case 4: flip(p.swingEditAll, p.swing, p.swingPerTrack[t]); break;
@@ -150,6 +150,20 @@ bool MdEditor::keyPressed(const juce::KeyPress& k)
             return true;
         }
         if (code == juce::KeyPress::escapeKey && m_markMode) { m_markMode = 0; refreshGrid(); return true; }
+        const int x = !m_proc.extrasOn() ? -1 : code == 'C' || code == 'c' ? 0 : code == 'T' || code == 't' ? 1 : code == 'R' || code == 'r' ? 2 : -1;
+        if (x >= 0) {   // EXTRAS: the CONDITION / MICRO-TIMING / RETRIG edit window (again: back to the trigs)
+            static const char* const names[3] = {"COND", "MICRO", "RETRIG"};
+            m_markMode = m_markMode == x + 4 ? 0 : x + 4;
+            flash(m_markMode ? juce::String(names[x]) : juce::String("TRIGS"));
+            refreshGrid();
+            return true;
+        }
+    }
+    if (m_proc.extrasOn() && (k.getKeyCode() == 'F' || k.getKeyCode() == 'f') && !mods.isCtrlDown() && !mods.isCommandDown() && !mods.isAltDown()) {
+        if (mods.isShiftDown()) { m_fillLatch = !m_fillLatch; flash(m_fillLatch ? "FILL ON" : "FILL OFF"); }   // latched
+        m_proc.setFill(m_fillLatch || !mods.isShiftDown());   // held: the timer lets it go with the key
+        refreshGrid();
+        return true;
     }
     if (m_gridOn && mods.isShiftDown() && !mods.isCtrlDown() && !mods.isCommandDown() && !mods.isAltDown()) {   // all tracks <-> this track
         const int code = k.getKeyCode();

@@ -63,7 +63,8 @@ DumpDiff diffDumps(const Dump& a, const Dump& b)
         const bool ua = patternInUse(a, i), ub = patternInUse(b, i);
         if (!ua && !ub) continue;
         ++diff.patternsCompared;
-        if (ua && ub && sameBytes(encodePattern(*a.patternAt(i)), encodePattern(*b.patternAt(i)))) ++diff.patternsSame;
+        if (ua && ub && sameBytes(encodePattern(*a.patternAt(i)), encodePattern(*b.patternAt(i)))
+            && sameBytes(encodePatternExtras(*a.patternAt(i)), encodePatternExtras(*b.patternAt(i)))) ++diff.patternsSame;
         else diff.patterns.push_back(i);
     }
     return diff;
