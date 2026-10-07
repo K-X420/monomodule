@@ -119,7 +119,7 @@ target_link_libraries(MnmMd PRIVATE mdcore mnmlibrary juce::juce_audio_utils juc
 
 # Headless check of Monomodule MD (a development tool, not installed)
 juce_add_console_app(MnmMdTest PRODUCT_NAME "md-plugintest")
-target_sources(MnmMdTest PRIVATE md/MdPluginTest.cpp ${MNM_MD_PROC_SOURCES} ${MNM_MD_UI_SOURCES})
+target_sources(MnmMdTest PRIVATE md/MdPluginTest.cpp md/test/MdTestSeq.cpp md/test/MdTestEdit.cpp md/test/MdTestMidi.cpp md/test/MdTestEngine.cpp ${MNM_MD_PROC_SOURCES} ${MNM_MD_UI_SOURCES})
 target_include_directories(MnmMdTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/md)
 target_compile_definitions(MnmMdTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=0
   JucePlugin_Name="Monomodule MD" JUCE_STANDALONE_APPLICATION=1)
