@@ -261,6 +261,9 @@ private:
     void redo();
     void toggleMute(int t);
     void deletePage(int page);
+    // the constructor's wiring, a part each (MdEditorWiring.cpp)
+    void wireStrip(); void wireLibrary(); void wireKeys(); void wireAltTurn(); void wireSeqBar();
+    void wireMixer(); void wireSamplePanel(); void wireMidiPanel(); void wireSongEditor();
     void dragOutClip(bool trackOnly);   // the pattern / the track as a MIDI clip dragged out
     juce::String importMidiClip(const juce::File& f, int onlyTrack);   // a clip dropped in (onlyTrack: a key's track, -1 the pattern)
     static bool isMidiFile(const juce::String& path);
