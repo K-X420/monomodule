@@ -451,6 +451,24 @@ int main(int argc, char** argv)
             med->devUndoKit(); proc.syncMachineSideEffects();
             med->devSelectTrack(0);
         }
+        {   // the A / S / W buttons and keys: a step's marks, all tracks <-> per track
+            proc.editPattern(0, [](mnm::mddump::Pattern& x) { x.accent = 0; x.slide = 0; x.accentEditAll = x.slideEditAll = x.swingEditAll = 1; });
+            med->devFlag(3, 0); med->devFlag(3, 1);
+            auto pp = proc.bankPattern(0);
+            check(pp && ((pp->accent >> 3) & 1) && ((pp->slide >> 3) & 1), "A and S on step 4: accent and slide (all tracks)");
+            med->devPerTrack(0);
+            pp = proc.bankPattern(0);
+            check(pp && pp->accentEditAll == 0 && ((pp->accentPerTrack[5] >> 3) & 1), "the A key: accent per track (every track keeps step 4's mark)");
+            med->devFlag(3, 0);
+            pp = proc.bankPattern(0);
+            check(pp && !((pp->accentPerTrack[0] >> 3) & 1) && ((pp->accentPerTrack[5] >> 3) & 1), "A on step 4 now flips only the track's own mark");
+            med->devPerTrack(0);
+        }
+        {   // every knob has a tooltip
+            bool all = true;
+            for (int k = 0; k < 8; ++k) all = all && med->devSynPage().devTip(k).isNotEmpty();
+            check(all && med->devSynPage().devTip(0).contains("Alt+turn"), "the SYNTHESIS knobs have tooltips: " + med->devSynPage().devTip(1).substring(0, 60));
+        }
         med->devBarClick(MdSeqBar::Pages, 0, juce::ModifierKeys(juce::ModifierKeys::shiftModifier));   // the bar says "COPIED PAGE 1"
         if (argc > 3) {
             med->devHold(4); med->refresh();

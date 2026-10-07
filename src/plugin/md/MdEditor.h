@@ -25,7 +25,7 @@ namespace mnm::plugin::md {
 namespace spec = mnm::uispec;
 
 // The machine block: an inverted block with the machine's family and name, then the picker arrow.
-class MdMachineBlock : public juce::Component {
+class MdMachineBlock : public juce::Component, public juce::SettableTooltipClient {
 public:
     static constexpr int kLcdH = 26;
     MdMachineBlock();
@@ -77,6 +77,7 @@ public:
     std::function<juce::String(int step)> stepLocks;   // GRID: a step's locks as text for its tooltip ("" none)
     std::function<void(int step)> onStep, onHold;
     std::function<void(int step, bool on, bool first)> onPaint;   // GRID click / drag: set a step's trig (first = a new stroke)
+    std::function<void(int step, int flag)> onFlag;               // GRID: a step's A / S / W button (0 accent, 1 slide, 2 swing)
     std::function<void(int step)> onStepMenu;
     std::function<void(int track)> onSelect, onMuteKey;   // Ctrl / Cmd + click: select; Alt + click: mute (as FUNC + trig)
     int devSeqStep() const { return m_seqStep; }   // dev/tests
@@ -87,6 +88,7 @@ public:
     }
 private:
     juce::Rectangle<int> keyRect(int t) const;   // LCD px
+    juce::Rectangle<int> flagBox(int key, int f) const { const auto r = keyRect(key); return {r.getX() + 2 + f * 8, r.getBottom() - 9, 7, 7}; }   // GRID A S W
     juce::Rectangle<int> lockBox(int t) const { const auto r = keyRect(t); return {r.getX() + 2, r.getBottom() - 11, 9, 9}; }
     juce::Rectangle<int> muteBox(int t) const { const auto r = keyRect(t); return {r.getRight() - 11, r.getBottom() - 11, 9, 9}; }
     void mouseMove(const juce::MouseEvent&) override;
@@ -170,6 +172,8 @@ public:
     void devStep(int s) { if (m_keys.onStep) m_keys.onStep(s); }
     void devHold(int s) { holdStep(s); }
     void devShiftTrack(int dir) { shiftTrack(dir); }
+    void devFlag(int s, int f) { flipStepFlag(s, f); }
+    void devPerTrack(int f) { togglePerTrack(f); }
     void devUndoKit() { undoKit(); }
     void devSelectTrack(int t) { selectTrack(t); }
     void devCopyMachine() { copyMachine(); }
@@ -250,6 +254,8 @@ private:
     void redo();
     void toggleMute(int t);
     void deletePage(int page);
+    void flipStepFlag(int step, int flag);   // a step's accent / slide / swing mark (the all-tracks mask or the track's own)
+    void togglePerTrack(int flag);           // A / S / W keys: that mark between all tracks and per track
     // Kit tools (as the MD's UNDO KIT / kit reload / copy, paste, clear machine)
     struct KitUndo { bool valid = false; mnm::mddump::Kit kit; juce::String key, name; };
     KitUndo m_kitUndo;   // the kit before the last kit load (undo swaps them)

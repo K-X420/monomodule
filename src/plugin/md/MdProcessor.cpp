@@ -194,7 +194,7 @@ void MdProcessor::refreshParameters()
         auto& p = e.params;
         for (int k = 0; k < 24; ++k) p[size_t(k)] = uint8_t(seqParam(t, k));
         e.level = ok ? uint8_t(juce::jlimit(0, 127, int(ok->levels[t]))) : val(tr.mix[13]);
-        static const int lfoMax[5] = {15, 23, 7, 7, 2};
+        static const int lfoMax[5] = {15, 23, 5, 5, 2};
         for (int k = 0; k < 5; ++k) e.lfoConfig[size_t(k)] = ok ? uint8_t(juce::jlimit(0, lfoMax[k], int(ok->lfos[t][k]))) : val(tr.lfo[k]);
         e.route = juce::jlimit(0, kNumRoutes - 1, int(std::lround(tr.route->load())));
         e.muteGroup = muteGroupOf(t);
@@ -1611,8 +1611,8 @@ int MdProcessor::applyKit(const mnm::md::Kit& kit)
         const auto& lfo = kit.lfos[size_t(t)];
         set(lfoId(t, 0), float(juce::jlimit(0, 15, int(lfo[0]))));
         set(lfoId(t, 1), float(juce::jlimit(0, 23, int(lfo[1]))));
-        set(lfoId(t, 2), float(juce::jlimit(0, 7, int(lfo[2]))));
-        set(lfoId(t, 3), float(juce::jlimit(0, 7, int(lfo[3]))));
+        set(lfoId(t, 2), float(juce::jlimit(0, 5, int(lfo[2]))));
+        set(lfoId(t, 3), float(juce::jlimit(0, 5, int(lfo[3]))));
         set(lfoId(t, 4), float(juce::jlimit(0, 2, int(lfo[4]))));
         set(lfoId(t, 5), float(p[21]));
         set(lfoId(t, 6), float(p[22]));
@@ -1751,8 +1751,8 @@ bool MdProcessor::loadSound(int t, const juce::String& key, const mnm::mdcatalog
     if (s.lfoOnSelf()) lfo[0] = uint8_t(t);   // an LFO on its own track follows the sound
     set(lfoId(t, 0), float(juce::jlimit(0, 15, int(lfo[0]))));
     set(lfoId(t, 1), float(juce::jlimit(0, 23, int(lfo[1]))));
-    set(lfoId(t, 2), float(juce::jlimit(0, 7, int(lfo[2]))));
-    set(lfoId(t, 3), float(juce::jlimit(0, 7, int(lfo[3]))));
+    set(lfoId(t, 2), float(juce::jlimit(0, 5, int(lfo[2]))));
+    set(lfoId(t, 3), float(juce::jlimit(0, 5, int(lfo[3]))));
     set(lfoId(t, 4), float(juce::jlimit(0, 2, int(lfo[4]))));
     set(lfoId(t, 5), float(s.params[21])); set(lfoId(t, 6), float(s.params[22])); set(lfoId(t, 7), float(s.params[23]));
     m_kitLfos[size_t(t)] = lfo;

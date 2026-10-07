@@ -59,7 +59,11 @@ public:
     std::function<void(Part, int page, const juce::ModifierKeys&)> onEditClick;
     void setState(const State& s) { if (!(s == m_s)) { m_s = s; repaint(); } }
     // the header's columns over the bar (bar LCD px): MIX goes under SYNC, STEP under MENU
-    struct Anchors { int syncX = 0, syncW = 0, menuX = 0, menuW = 0; bool operator!=(const Anchors& o) const { return syncX != o.syncX || syncW != o.syncW || menuX != o.menuX || menuW != o.menuW; } };
+    // and under the kit strip: PLAY..GRID span the KIT selector (to its save icon), TRK..M the sound selector
+    struct Anchors {
+        int syncX = 0, syncW = 0, menuX = 0, menuW = 0, kitL = 0, kitR = 0, sndL = 0, sndR = 0;
+        bool operator!=(const Anchors& o) const { return syncX != o.syncX || syncW != o.syncW || menuX != o.menuX || menuW != o.menuW || kitL != o.kitL || kitR != o.kitR || sndL != o.sndL || sndR != o.sndR; }
+    };
     void setAnchors(const Anchors& a) { if (a != m_anchors) { m_anchors = a; resized(); repaint(); } }
     void paint(juce::Graphics&) override;
     void resized() override;
@@ -79,7 +83,7 @@ private:
 // START..END (END exclusive, -- = the whole pattern) REP times with its MUTES; a LOOP row jumps back TO a row TIMES times
 // (INF = forever); END ends the song; TEMPO (-- = unchanged) goes with the song to the unit. Drag a value (or wheel it),
 // click a mute, double-click a tempo for --; right-click a row or use the buttons below for rows.
-class MdSongEditor : public juce::Component {
+class MdSongEditor : public juce::Component, public juce::SettableTooltipClient {
 public:
     static constexpr int kS = 3;   // LCD scale (one::kScale)
     std::function<std::shared_ptr<const mnm::mddump::Song>()> getSong;
@@ -113,7 +117,7 @@ private:
 // MIDI settings, over the pages, as the unit's global MIDI page: BASE CHANNEL, PRG CHANGE, MIDI OUT and each track's
 // trig note (drag a value or wheel it). DEFAULT MAP puts the standard note map back; FROM PROJECT loads the channel,
 // the map and the program change mode from one of the bank project's globals.
-class MdMidiPanel : public juce::Component {
+class MdMidiPanel : public juce::Component, public juce::SettableTooltipClient {
 public:
     static constexpr int kS = 3;
     // note -1 = none; pcChannel 0 AUTO. PATTERN NOTES: mode 0 GATE 1 MOMENTARY 2 QUEUE; from = the white key that plays
@@ -144,7 +148,7 @@ private:
 // The mixer, over the pages: the 16 tracks side by side, each with its machine, PAN, LEVEL (with its meter), MUTE and
 // SOLO. Drag (or wheel) a fader or a pan, double-click one for its default; click a track's name to select it.
 // Shift + click MUTE / SOLO: that track alone (the others unmuted / unsoloed).
-class MdMixer : public juce::Component {
+class MdMixer : public juce::Component, public juce::SettableTooltipClient {
 public:
     static constexpr int kS = 3;
     enum What { Level, Pan, Mute, Solo, Select };

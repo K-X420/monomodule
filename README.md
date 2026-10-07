@@ -54,6 +54,7 @@ patterns along.
 |---|---|
 | Place steps | **GRID** (or the **G** key) on, then click the keys (drag across keys to paint steps on or off; the keys show the track, e.g. T3 SD) (they are the selected track's steps). **TRK < >** picks the track |
 | Lock parameters on a step | **Shift+click** the step, turn knobs (they are that step's locks); double-click a knob to clear its lock; Shift+click again to release |
+| Accent / slide / swing on a step | GRID: click the step's round **A / S / W** buttons. Keys **A / S / W** switch that mark between all tracks and the selected track |
 | Step menu (accent, slide, swing, clear locks) | Right-click a step |
 | Select / mute a track in GRID | **Ctrl+click** / **Alt+click** a key (key n = track n), or **M** on the bar |
 | Pages (17-64) | The page dots: click to show a page (the playing page blinks on the beat). **DEL** removes the shown page |

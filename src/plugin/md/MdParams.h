@@ -245,8 +245,8 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
         for (auto* n : kLfoTypes) types.add(n);
         g->addChild(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{lfoId(t, 0), 1}, pre + "LFO TRK", tracks, t));
         g->addChild(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{lfoId(t, 1), 1}, pre + "LFO PARAM", lfoParams, 0));
-        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{lfoId(t, 2), 1}, pre + "LFO SHP1", 0, 7, 0));
-        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{lfoId(t, 3), 1}, pre + "LFO SHP2", 0, 7, 0));
+        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{lfoId(t, 2), 1}, pre + "LFO SHP1", 0, 5, 0));   // the MD's six shapes
+        g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{lfoId(t, 3), 1}, pre + "LFO SHP2", 0, 5, 0));
         g->addChild(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID{lfoId(t, 4), 1}, pre + "LFO TYPE", types, 0));
         g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{lfoId(t, 5), 1}, pre + "LFO SPD", 0, 127, 64));
         g->addChild(std::make_unique<juce::AudioParameterInt>(juce::ParameterID{lfoId(t, 6), 1}, pre + "LFO DEP", 0, 127, 0));

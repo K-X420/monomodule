@@ -40,6 +40,22 @@ void KnobCell::mouseUp(const juce::MouseEvent& e)
         onKnobClick();
 }
 
+void KnobCell::mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& w)
+{
+    if (m_toggle || getMaximum() - getMinimum() > 32.0) { Slider::mouseWheelMove(e, w); return; }
+    // a short list (a few names or icons): each notch one value; a smooth wheel / trackpad steps once per 0.1 of travel
+    const float d = (std::abs(w.deltaY) >= std::abs(w.deltaX) ? w.deltaY : -w.deltaX) * (w.isReversed ? -1.0f : 1.0f);
+    int steps = 0;
+    if (w.isSmooth) {
+        m_wheelAcc += d;
+        while (m_wheelAcc >= 0.1f) { ++steps; m_wheelAcc -= 0.1f; }
+        while (m_wheelAcc <= -0.1f) { --steps; m_wheelAcc += 0.1f; }
+    } else if (d != 0.0f) {
+        steps = d > 0.0f ? 1 : -1;
+    }
+    if (steps != 0) setValue(juce::jlimit(getMinimum(), getMaximum(), getValue() + double(steps)), juce::sendNotificationSync);
+}
+
 void KnobCell::mouseDoubleClick(const juce::MouseEvent& e)
 {
     if (m_valueArea.contains(e.getPosition())) return;   // double-click on the value is editing, not reset
@@ -192,6 +208,7 @@ void KnobPage::bindCustom(const spec::Param* params8, std::function<int(int)> ge
         cell.onValueChange = [this, k] { repaint(); if (!m_pulling && m_set) m_set(k, int(std::lround(m_cells[size_t(k)].getValue()))); };
         cell.onReset = [this, k] { if (!m_reset) return false; m_reset(k); pull(); repaint(); return true; };
         cell.onKnobClick = [this, k] { if (m_set) { m_set(k, int(std::lround(m_cells[size_t(k)].getValue()))); repaint(); } };   // locks the value as it is
+        cell.setTooltip(tipFor && !blank ? tipFor(k, juce::String(params8[k].label)) : juce::String());
     }
     m_pulling = false;
     endEdit(false);
@@ -229,6 +246,7 @@ void KnobPage::bind(const spec::Param* params8, const std::function<juce::String
         };
         cell.onReset = nullptr;
         cell.onKnobClick = nullptr;
+        cell.setTooltip(tipFor && params8[k].display != spec::Display::Blank ? tipFor(k, juce::String(params8[k].label)) : juce::String());
         m_attach[size_t(k)].reset();
         m_params[size_t(k)] = params8[k];
         const auto d = params8[k].display;

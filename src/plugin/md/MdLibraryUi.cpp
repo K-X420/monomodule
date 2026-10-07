@@ -92,28 +92,38 @@ void MdSeqBar::resized()
     x += 1 + gap;
     take(PtnPrev, arrowW); take(Ptn, 42); take(PtnNext, arrowW);
     x += 1 + gap;
-    const int afterPtn = x;
     take(Pages, 4 + 4 * 10 + 1);
     x += 1 + gap;
-    take(Edit, 20);
+    take(Edit, 22);
     x += 1 + gap;
-    take(DelPg, 20);
+    take(DelPg, 23);
     x += 1 + gap;
     take(Mix, 25);
     x += 1 + gap;
     take(Step, juce::jmax(40, getWidth() / kS - x));
+    if (m_anchors.sndR > m_anchors.sndL && m_anchors.kitR > m_anchors.kitL) {   // the left side in the kit strip's columns
+        x = m_anchors.kitL;
+        take(Play, 33); take(Rec, 26);   // PLAY and REC joined
+        x += 1 + gap;
+        take(Grid, juce::jmax(24, m_anchors.kitR - x));   // GRID ends under the kit's save icon
+        x = m_anchors.sndL;   // TRK's left arrow under the sound selector's
+        take(TrkPrev, arrowW); take(Trk, 40); take(TrkNext, arrowW); take(Mute, 13);
+        x += 1 + 4;
+        take(PtnPrev, arrowW); take(Ptn, 42); take(PtnNext, arrowW);
+    }
     if (m_anchors.menuW > 0) {   // MIX under SYNC, STEP under MENU; DEL / X2 / the pages packed right to left before MIX
         m_rects[size_t(Step)] = {m_anchors.menuX, 0, m_anchors.menuW, kLcdH};
         m_rects[size_t(Mix)] = {m_anchors.syncX, 0, m_anchors.syncW, kLcdH};
-        const int g2 = 4;   // a tighter gap inside this group
+        const int g2 = 3;   // a tighter gap inside this group
         int right = m_anchors.syncX - gap;
         for (Part p : {DelPg, Edit, Pages}) {
             const int pw = m_rects[size_t(p)].getWidth();
             m_rects[size_t(p)] = {right - pw, 0, pw, kLcdH};
             right -= pw + g2;
         }
-        if (right < afterPtn - gap) {   // too narrow: back to packing left to right
-            x = afterPtn;
+        const int ptnEnd = m_rects[size_t(PtnNext)].getRight() + gap;   // where the PTN group ends (in whichever layout it got)
+        if (right < ptnEnd - gap) {   // too narrow: back to packing left to right
+            x = ptnEnd;
             for (Part p : {Pages, Edit, DelPg}) { const int pw = m_rects[size_t(p)].getWidth(); m_rects[size_t(p)] = {x, 0, pw, kLcdH}; x += pw + gap; }
         }
     }
@@ -156,15 +166,15 @@ void MdSeqBar::paint(juce::Graphics& g)
     auto labelled = [&](Part p, const char* label, const juce::String& text) {
         const auto r = box(p, false);
         cv.text(spec::kFontTiny3x5, label, r.getX() + 4, r.getY() + 5, true);
-        const int lw = LcdCanvas::textWidth(spec::kFontTiny3x5, label);
-        cv.text(spec::kFontBold8, fit(spec::kFontBold8, text, r.getRight() - (r.getX() + 8 + lw) - 3).toRawUTF8(), r.getX() + 8 + lw, r.getY() + 4, true);
+        const int lw = LcdCanvas::textWidth(spec::kFontTiny3x5, label), tx = r.getX() + (*label ? 8 + lw : 4);
+        cv.text(spec::kFontBold8, fit(spec::kFontBold8, text, r.getRight() - tx - 3).toRawUTF8(), tx, r.getY() + 4, true);
     };
     arrows(TrkPrev, TrkNext);
     {   // MUTE of the selected track: a speaker (crossed out and solid while muted)
         const auto r = box(Mute, m_s.muted);
         pixelIcon(cv, m_s.muted ? kIconMuted : kIconSpeaker, 7, r.getX() + 3, r.getY() + 4, !m_s.muted);
     }
-    labelled(Trk, "TRK", "T" + juce::String(m_s.track + 1) + " " + m_s.machine);
+    labelled(Trk, "", "T" + juce::String(m_s.track + 1) + " " + m_s.machine);   // "T1 BD" says it is the track
     arrows(PtnPrev, PtnNext);
     if (m_s.chain.isNotEmpty()) labelled(Ptn, "CHN", m_s.chain);
     else labelled(Ptn, "PTN", juce::String(kPatternNames[juce::jlimit(0, 127, m_s.pattern)]) + (m_s.empty ? "-" : ""));
@@ -183,19 +193,15 @@ void MdSeqBar::paint(juce::Graphics& g)
     }
     {   // X2: the pattern doubled (two pages, x2)
         const auto r = box(Edit, false);
-        pixelIcon(cv, kIconDouble, 5, r.getX() + 3, r.getY() + 2, true);
-        cv.text(spec::kFontTiny3x5, "X2", r.getX() + 6, r.getY() + 8, true);
+        cv.text(spec::kFontBold8, "X2", r.getX() + 4, r.getY() + 4, true);
     }
     {   // DEL PG: the shown page removed (the pages after it move up)
         const auto r = box(DelPg, false);
-        pixelIcon(cv, kIconDelPage, 5, r.getX() + 5, r.getY() + 2, true);
-        cv.text(spec::kFontTiny3x5, "DEL", r.getX() + 4, r.getY() + 8, true);
+        cv.textCentred(spec::kFontBold8, "DEL", r.getX(), r.getWidth(), r.getY() + 4, true);
     }
     {   // MIX: solid while the mixer is open
         const auto r = box(Mix, m_s.mix);
-        const int tw = LcdCanvas::textWidth(spec::kFontBold8, "MIX"), x0 = r.getX() + (r.getWidth() - 9 - 3 - tw) / 2;
-        pixelIcon(cv, kIconFaders, 9, x0, r.getY() + 3, !m_s.mix);
-        cv.text(spec::kFontBold8, "MIX", x0 + 12, r.getY() + 4, !m_s.mix);
+        cv.textCentred(spec::kFontBold8, "MIX", r.getX(), r.getWidth(), r.getY() + 4, !m_s.mix);
     }
     {
         juce::String s = m_s.flash.isNotEmpty() ? m_s.flash : m_s.seqOff ? juce::String("SEQ OFF")

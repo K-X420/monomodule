@@ -1,4 +1,5 @@
 #include "MdEditor.h"
+#include <map>
 #include "MdMachineText.h"
 #include <cmath>
 #include "ShnolkLogo.h"
@@ -16,6 +17,8 @@ using one::drawLcdText;
 using one::wrapLcdText;
 
 namespace {
+
+juce::String knobTip(const juce::String& label, int page);   // a knob's tooltip (below)
 
 // "TRX-BD" -> "TRX" / "BD"; "P-I-BD" -> "P-I" / "BD"; "GND---" -> "GND" / "---"
 juce::String familyOf(int index)
@@ -51,8 +54,8 @@ constexpr spec::Param blank() { return {"", spec::Display::Blank, false, 0, 127,
 
 constexpr const char* kTrackNames[kTracks] = {"T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11", "T12", "T13", "T14", "T15", "T16"};
 // The LFO shapes (manual: triangle, saw, square, linear decay, exponential decay, random; SHP2 = the inverted ones)
-constexpr const char* kShape1Names[8] = {"TRI", "SAW", "SQR", "LIN", "EXP", "RND", "6", "7"};
-constexpr const char* kShape2Names[8] = {"ITRI", "ISAW", "ISQR", "ILIN", "IEXP", "IRND", "6", "7"};
+constexpr const char* kShape1Names[6] = {"TRI", "SAW", "SQR", "LIN", "EXP", "RND"};
+constexpr const char* kShape2Names[6] = {"ITRI", "ISAW", "ISQR", "ILIN", "IEXP", "IRND"};
 constexpr spec::Param withIcons(spec::Param p, spec::Icons i) { p.icons = i; return p; }
 constexpr const char* kVelNames[2] = {"VOLUME", "ACCENT"};
 
@@ -61,8 +64,8 @@ const spec::Param kFxParams[8] = {numeric("AMD", 0), numeric("AMF", 0), numeric(
 const spec::Param kRoutingParams[8] = {numeric("DIST", 0), numeric("VOL", 100), bipolar("PAN"), numeric("DEL", 0),
                                        numeric("REV", 0), readout("OUT", kRouteNames, kNumRoutes, kNumRoutes - 1), readout("TRGG", kGroupNames, 17), readout("MUTG", kGroupNames, 17)};
 const spec::Param kLfoParams[8] = {readout("TRK", kTrackNames, kTracks), withIcons(readout("PARAM", kLfoParamNames, 24), spec::Icons::MdLfoParam),
-                                   withIcons(readout("SHP1", kShape1Names, 8), spec::Icons::MdWave1),
-                                   withIcons(readout("SHP2", kShape2Names, 8), spec::Icons::MdWave2), readout("TYPE", kLfoTypes, 3), numeric("SPD", 64), numeric("DEP", 0), numeric("MIX", 0)};
+                                   withIcons(readout("SHP1", kShape1Names, 6), spec::Icons::MdWave1),
+                                   withIcons(readout("SHP2", kShape2Names, 6), spec::Icons::MdWave2), readout("TYPE", kLfoTypes, 3), numeric("SPD", 64), numeric("DEP", 0), numeric("MIX", 0)};
 constexpr const char* kSeqNames[2] = {"OFF", "ON"};
 constexpr const char* kModeNames[2] = {"PATTERN", "SONG"};
 const spec::Param kOutParams[8] = {numeric("VOL", 80), toggle("VEL", kVelNames), numeric("ACNT", 64), blank(),
@@ -244,11 +247,20 @@ void MdTrackKeys::paintGrid(LcdCanvas& cv)
             const juce::String tag = "T" + juce::String(m_selected + 1) + " " + (shortOf(mi) == "---" ? familyOf(mi) : shortOf(mi));
             cv.text(spec::kFontTiny3x5, one::fit(spec::kFontTiny3x5, tag, r.getWidth() - 5).toRawUTF8(), r.getX() + 3, r.getY() + 14, ink);
         }
-        int fx = r.getX() + 3;   // the step's flags along the bottom
-        auto flag = [&](const char* c, bool on) { if (on) cv.text(spec::kFontTiny3x5, c, fx, r.getBottom() - 8, ink); fx += 6; };
-        flag("A", (gr.accent >> s) & 1);
-        flag("S", (gr.slide >> s) & 1);
-        flag("W", (gr.swing >> s) & 1);
+        {   // the step's ACCENT / SLIDE / SWING as round game-pad buttons: hollow off, solid on (click to flip)
+            static const char* const disc[7] = {"..###..", ".#####.", "#######", "#######", "#######", ".#####.", "..###.."};
+            static const char* const ring[7] = {"..###..", ".#...#.", "#.....#", "#.....#", "#.....#", ".#...#.", "..###.."};
+            static const char* const letters[3][5] = {{".#.", "#.#", "###", "#.#", "#.#"}, {".##", "#..", ".#.", "..#", "##."}, {"#.#", "#.#", "#.#", "###", "#.#"}};
+            const uint64_t masks[3] = {gr.accent, gr.slide, gr.swing};
+            for (int f = 0; f < 3; ++f) {
+                const auto b = flagBox(i, f);
+                const bool on = (masks[f] >> s) & 1;
+                for (int y = 0; y < 7; ++y)
+                    for (int x = 0; x < 7; ++x)
+                        if (disc[y][x] == '#') cv.set(b.getX() + x, b.getY() + y, ring[y][x] == '#' || on ? ink : !ink);
+                for (int y = 0; y < 5; ++y) for (int x = 0; x < 3; ++x) if (letters[f][y][x] == '#') cv.set(b.getX() + 2 + x, b.getY() + 1 + y, on ? !ink : ink);
+            }
+        }
         if (((gr.locks >> s) & 1) && s != gr.held) {   // locked: a crit burst in the corner
             static const char* const burst[7] = {"#..#..#", ".#.#.#.", "..###..", "#######", "..###..", ".#.#.#.", "#..#..#"};
             for (int y = 0; y < 7; ++y) for (int x = 0; x < 7; ++x) if (burst[y][x] == '#') cv.set(r.getRight() - 9 + x, r.getY() + 2 + y, ink);
@@ -307,7 +319,10 @@ void MdTrackKeys::paint(juce::Graphics& g)
                         cv.set(b.getX() + x, b.getY() + y, ring[y][x] == '#' ? c : fill ? c : !c);
                     }
                 if (queued) cv.fillRect(b.getX() + 2, b.getY() + 1, 5, 7, !c);
-                cv.text(spec::kFontTiny3x5, letter, b.getX() + 3, b.getY() + 2, on ? !c : c);
+                static const char* const glyphL[5] = {"#....", "#....", "#....", "#....", "#####"};
+                static const char* const glyphM[5] = {"#...#", "##.##", "#.#.#", "#...#", "#...#"};
+                const auto* g = letter[0] == 'M' ? glyphM : glyphL;
+                for (int y = 0; y < 5; ++y) for (int x = 0; x < 5; ++x) if (g[y][x] == '#') cv.set(b.getX() + 2 + x, b.getY() + 2 + y, on ? !c : c);
             };
             button(lockBox(t), "L", m_locked[size_t(t)]);
             button(muteBox(t), "M", m_muted[size_t(t)], ((m_muteQueue >> t) & 1) != 0);
@@ -327,6 +342,11 @@ void MdTrackKeys::mouseDown(const juce::MouseEvent& e)
         for (int i = 0; i < kTracks; ++i) {
             if (!keyRect(i).contains(p)) continue;
             const int s = m_grid.page * 16 + i;
+            if (!e.mods.isAnyModifierKeyDown() && s < m_grid.length && onFlag) {   // an A / S / W button
+                bool hit = false;
+                for (int f = 0; f < 3 && !hit; ++f) if (flagBox(i, f).expanded(1, 0).contains(p)) { onFlag(s, f); hit = true; }
+                if (hit) return;
+            }
             if (e.mods.isPopupMenu()) { if (onStepMenu && s < m_grid.length) onStepMenu(s); }
             else if (e.mods.isAltDown()) { if (onMuteKey) onMuteKey(i); }
             else if (e.mods.isCommandDown() || e.mods.isCtrlDown()) { if (onSelect) onSelect(i); }
@@ -371,13 +391,25 @@ void MdTrackKeys::mouseMove(const juce::MouseEvent& e)
         const int key = trackAt(e.getPosition());
         const int step = m_grid.page * 16 + juce::jmax(0, key);
         const auto locks = key >= 0 && stepLocks ? stepLocks(step) : juce::String();
+        const auto pp = e.getPosition() / kScale;
+        for (int f = 0; f < 3 && key >= 0; ++f)
+            if (flagBox(key, f).expanded(1, 0).contains(pp)) {
+                static const char* const what[3] = {"ACCENT: this step plays accented (the A key: all tracks / this track)",
+                                                    "SLIDE: the locked values glide to the next trig's (the S key: all tracks / this track)",
+                                                    "SWING: this step is delayed by SWNG (the W key: all tracks / this track)"};
+                setTooltip(what[f]);
+                return;
+            }
         setTooltip("Step " + juce::String(step + 1) + (locks.isNotEmpty() ? ". LOCKS: " + locks : juce::String())
                    + ". Click: trig on/off. Shift+click: hold for locks (turn the track's knobs; double-click one to clear its lock). Ctrl+click: select that track. Alt+click: mute that track. Right-click: step menu. Ctrl+Z: undo.");
         return;
     }
-    for (int t = 0; t < kTracks; ++t)
-        if (lockBox(t).expanded(1).contains(p)) tip = "Lock: keep this track's sound when a kit is loaded";
-        else if (muteBox(t).expanded(1).contains(p)) tip = "Mute: ignore this track's trigs";
+    for (int t = 0; t < kTracks; ++t) {
+        if (!keyRect(t).contains(p)) continue;
+        if (lockBox(t).expanded(1).contains(p)) tip = "L (LOCK): keep this track's sound when a kit is loaded";
+        else if (muteBox(t).expanded(1).contains(p)) tip = "M (MUTE): this track's trigs don't play. Shift+click several: they flip together when you let go of Shift";
+        else tip = "Track " + juce::String(t + 1) + ": click to play and select it; Ctrl+click: select it without a sound";
+    }
     setTooltip(tip);
 }
 
@@ -766,6 +798,7 @@ MdEditor::MdEditor(MdProcessor& p)
         refreshGrid();
     };
     m_keys.onHold = [this](int s) { holdStep(s == m_heldStep ? -1 : s); };
+    m_keys.onFlag = [this](int s, int f) { flipStepFlag(s, f); };
     m_keys.onSelect = [this](int t) { selectTrack(t); };
     m_keys.onMuteKey = [this](int t) { toggleMute(t); };
     m_keys.onMuteQueue = [this](int t) { m_muteQueue ^= uint16_t(1u << t); m_keys.setMuteQueue(m_muteQueue); };
@@ -836,6 +869,23 @@ MdEditor::MdEditor(MdProcessor& p)
     };
     addChildComponent(m_songEd);
     setTooltipsOn(loadSharedSetting("tooltips", "1") != "0");
+    {   // tooltips for the knobs, the header
+        int pi = 0;
+        for (auto* pg : {&m_syn, &m_fx, &m_routing, &m_lfo, &m_master, &m_out}) {
+            const int page = pi++;
+            pg->tipFor = [this, page, pg](int, const juce::String& label) { return knobTip(label, page == 5 && pg->currentTab() == 1 ? 6 : page); };
+        }
+        m_bpm.setTooltip("The tempo (drag or wheel). With SYNC on it follows Ableton");
+        m_bpmSync.setTooltip("SYNC: the tempo follows Ableton's; off: the BPM here");
+        m_menuButton.setTooltip("Kits, songs, MIDI settings, the mixer, undo, kit tools, tooltips on / off, the OS file");
+        m_level.setTooltip("The selected track's LEVEL, with its meter");
+        m_machineBlock.setTooltip("The selected track's machine: click to choose another");
+        bindOutPage(m_outTab);      // (bound before the tips were set)
+        bindMasterFx(m_masterTab);
+    }
+    m_mixer.setTooltip("The mixer: drag or wheel a fader / pan (double-click: default), M mutes, S solos (Shift+click: only that track), click a name to select it. Esc or M closes");
+    m_songEd.setTooltip("The song: drag or wheel a value, click a mute, double-click a tempo for --; right-click a row or use the buttons for rows. Esc closes");
+    m_midiPanel.setTooltip("MIDI settings: drag or wheel a value. Pattern notes: FROM is the white key that plays pattern 01 of BNK, the next white keys 02-16");
     addChildComponent(m_mixer);
     m_mixer.setWantsKeyboardFocus(true);
     m_mixer.strip = [this](int t) {
@@ -1179,6 +1229,38 @@ void MdEditor::stepMenu(int s)
     });
 }
 
+namespace {
+// What each knob does (the manual's words, short), by its label; the machine's own SYNTHESIS knobs get a general line
+juce::String knobTip(const juce::String& label, int page)
+{
+    static const std::map<juce::String, const char*> words = {
+        {"AMD", "Amplitude modulation depth"}, {"AMF", "Amplitude modulation frequency"}, {"EQF", "EQ frequency"}, {"EQG", "EQ gain (centre = flat)"},
+        {"FLTF", "Filter base frequency"}, {"FLTW", "Filter width (127 = open)"}, {"FLTQ", "Filter resonance"}, {"SRR", "Sample rate reduction"},
+        {"DIST", "Distortion"}, {"VOL", page == 5 ? "The plugin's output level" : "Track volume (before the effects sends)"}, {"PAN", "Pan in the stereo mix"},
+        {"DEL", "Send to the master delay"}, {"REV", "Send to the master reverb"}, {"OUT", "Output: MAIN or the individual outputs A-F (no master effects there)"},
+        {"TRGG", "TRIG GROUP: a trig of this track also trigs that track"}, {"MUTG", "MUTE GROUP: a trig of this track silences that track until its own next trig"},
+        {"TRK", "LFO: the track it modulates (the same or a later track)"}, {"PARAM", "LFO: the parameter it modulates"},
+        {"SHP1", "LFO shape 1"}, {"SHP2", "LFO shape 2 (the inverted shapes)"}, {"TYPE", "LFO: FREE runs on, TRIG restarts at each trig, HOLD samples and holds at each trig"},
+        {"SPD", page == 6 ? "Speed: 1X 2X 3/4X 3/2X as on the MD, plus 1/2X 1/4X 1/8X 3X" : "LFO speed, synced to the tempo"}, {"DEP", "LFO depth"},
+        {"MIX", "LFO: SHP1 (0) to SHP2 (127)"}, {"VEL", "Incoming note velocity: VOLUME (level) or ACCENT (accent from 112 up)"},
+        {"ACNT", "Accent amount for notes played in"}, {"SEQ", "The sequencer on / off (Ableton's play runs it)"}, {"PTN", "The pattern played and edited"},
+        {"MODE", "PATTERN loops a pattern; SONG plays a song's rows"}, {"SONG", "The song SONG mode plays"}, {"LEN", "Pattern length in steps"},
+        {"SWNG", "Swing amount (on the swing steps, W)"}, {"ACC", "Accent amount of the pattern"}, {"KIT", "The kit the pattern loads"},
+        {"GRID", "GRID: the keys become the selected track's steps (G)"}, {"PAGE", "The page GRID shows (or the page dots)"},
+        {"DVOL", "Reverb: the delay's level into it"}, {"PRED", "Reverb pre-delay"}, {"DEC", "Decay"}, {"DAMP", "Reverb damping"}, {"HP", "High-pass"},
+        {"LP", "Low-pass"}, {"GATE", "Reverb gate (127 = open)"}, {"LEV", "Effect output level"}, {"TIME", "Delay time, synced to the tempo (64 = two beats)"},
+        {"FB", "Delay feedback"}, {"MOD", "Delay modulation depth"}, {"MFRQ", "Delay modulation rate"},
+    };
+    juce::String s;
+    if (const auto it = words.find(label); it != words.end()) s = it->second;
+    else if (page == 0) s = label + ": a SYNTHESIS parameter of this machine";
+    else s = label;
+    s << ". Drag or wheel; double-click: default";
+    if (page <= 3) s << ". Alt+turn: every track. GRID with a step held (Shift+click): a turn locks it there, a click locks the value as it is, a double-click clears that lock";
+    return s;
+}
+}
+
 void MdEditor::setTooltipsOn(bool on)
 {
     if (on && !m_tips) m_tips = std::make_unique<juce::TooltipWindow>(this, 700);
@@ -1314,6 +1396,11 @@ bool MdEditor::keyPressed(const juce::KeyPress& k)
     if (!mods.isAnyModifierKeyDown() && (k.getKeyCode() == 'G' || k.getKeyCode() == 'g')) { toggleGrid(); return true; }   // GRID on / off
     if (!mods.isAnyModifierKeyDown() && (k.getKeyCode() == 'M' || k.getKeyCode() == 'm')) { toggleMixer(); return true; }   // the mixer
     const int page = juce::jlimit(0, 3, m_gridPage);
+    if (m_gridOn && !mods.isAnyModifierKeyDown()) {   // A / S / W: accent / slide / swing marks for all tracks <-> per track
+        const int code = k.getKeyCode();
+        const int f = code == 'A' || code == 'a' ? 0 : code == 'S' || code == 's' ? 1 : code == 'W' || code == 'w' ? 2 : -1;
+        if (f >= 0) { togglePerTrack(f); return true; }
+    }
     if (m_gridOn && (k.getKeyCode() == juce::KeyPress::leftKey || k.getKeyCode() == juce::KeyPress::rightKey)) {
         const int dir = k.getKeyCode() == juce::KeyPress::leftKey ? -1 : 1;
         if (mods.isShiftDown()) { shiftTrack(dir); return true; }   // the MD's FUNCTION + LEFT / RIGHT
@@ -1462,6 +1549,35 @@ void MdEditor::clearMachine()
     }
     flash("CLEAR T" + juce::String(m_track + 1));
     timerCallback();
+}
+
+void MdEditor::flipStepFlag(int step, int f)
+{
+    static const char* const names[3] = {"accent", "slide", "swing"};
+    const int t = m_track;
+    doEdit(editSlot(), names[f], [&](mnm::mddump::Pattern& p) {
+        uint32_t all[3] = {p.accentEditAll, p.slideEditAll, p.swingEditAll};
+        uint64_t* global[3] = {&p.accent, &p.slide, &p.swing};
+        uint64_t* own[3] = {&p.accentPerTrack[t], &p.slidePerTrack[t], &p.swingPerTrack[t]};
+        *(all[f] ? global[f] : own[f]) ^= 1ull << step;
+    });
+    refreshGrid();
+}
+
+void MdEditor::togglePerTrack(int f)
+{
+    static const char* const names[3] = {"ACCENT", "SLIDE", "SWING"};
+    bool nowAll = true;
+    const int t = m_track;
+    doEdit(editSlot(), "per-track marks", [&](mnm::mddump::Pattern& p) {
+        uint32_t* all[3] = {&p.accentEditAll, &p.slideEditAll, &p.swingEditAll};
+        uint64_t* global[3] = {&p.accent, &p.slide, &p.swing};
+        uint64_t* own[3] = {p.accentPerTrack, p.slidePerTrack, p.swingPerTrack};
+        if (*all[f]) { for (int u = 0; u < 16; ++u) own[f][u] = *global[f]; *all[f] = 0; nowAll = false; }   // the marks carry over
+        else { *global[f] = own[f][t]; *all[f] = 1; nowAll = true; }
+    });
+    flash(juce::String(names[f]) + (nowAll ? ": ALL" : ": T" + juce::String(t + 1)));
+    refreshGrid();
 }
 
 void MdEditor::toggleMute(int t)
@@ -1699,7 +1815,7 @@ void MdEditor::refreshGrid()
             g.trigs = p->trigs[t];
             g.accent = p->accentEditAll ? p->accent : p->accentPerTrack[t];
             g.slide = p->slideEditAll ? p->slide : p->slidePerTrack[t];
-            g.swing = p->swingAmount == 0 ? 0 : p->swingEditAll ? p->swing : p->swingPerTrack[t];   // W only while it swings
+            g.swing = p->swingEditAll ? p->swing : p->swingPerTrack[t];
             for (int q = 0; q < 24; ++q) {
                 const int row = p->lockRow(t, q);
                 if (row < 0) continue;
@@ -2307,8 +2423,10 @@ void MdEditor::resized()
     {   // the sequencer bar: under the kit strip, from the machine block to the right edge
         const int x0 = m_machineBlock.getRight() + 12;
         m_seqBar.setBounds(x0, m_strip.getBottom() + 6, (r.getRight() - x0) / MdSeqBar::kS * MdSeqBar::kS, MdSeqBar::kLcdH * MdSeqBar::kS);
+        auto col = [&](MdKitStrip::Part p, bool right) { const auto b = m_strip.partBounds(p) + m_strip.getPosition(); return ((right ? b.getRight() : b.getX()) - x0) / MdSeqBar::kS; };
         m_seqBar.setAnchors({(m_bpmSync.getX() - x0) / MdSeqBar::kS, m_bpmSync.getWidth() / MdSeqBar::kS,
-                             (m_menuButton.getX() - x0) / MdSeqBar::kS, (m_menuButton.getRight() - x0) / MdSeqBar::kS - (m_menuButton.getX() - x0) / MdSeqBar::kS});
+                             (m_menuButton.getX() - x0) / MdSeqBar::kS, (m_menuButton.getRight() - x0) / MdSeqBar::kS - (m_menuButton.getX() - x0) / MdSeqBar::kS,
+                             col(MdKitStrip::KitPrev, false), col(MdKitStrip::KitSave, true), col(MdKitStrip::SoundPrev, false), col(MdKitStrip::Library, true)});
     }
     r.removeFromTop(6);
 

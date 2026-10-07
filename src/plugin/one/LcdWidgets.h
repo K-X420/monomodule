@@ -30,9 +30,11 @@ public:
     void mouseMove(const juce::MouseEvent& e) override;
     void mouseUp(const juce::MouseEvent& e) override;
     void mouseDoubleClick(const juce::MouseEvent& e) override;
+    void mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& w) override;   // lists: a value a notch
     void startedDragging() override { notifyPage(); }
     void stoppedDragging() override { notifyPage(); }
 private:
+    float m_wheelAcc = 0.0f;
     void notifyPage() { if (auto* p = getParentComponent()) p->repaint(); }
     juce::Rectangle<int> m_valueArea;
     juce::MouseCursor m_valueCursor{juce::MouseCursor::IBeamCursor};
@@ -72,8 +74,11 @@ public:
     bool isCustom() const { return m_custom; }
     void devTurn(int k, int v) { m_cells[size_t(k)].setValue(double(v), juce::sendNotificationSync); }   // dev/tests: a turn
     void devClick(int k) { if (m_cells[size_t(k)].onKnobClick) m_cells[size_t(k)].onKnobClick(); }      // dev/tests: a click
+    juce::String devTip(int k) { return m_cells[size_t(k)].getTooltip(); }                      // dev/tests
     // Alt + a knob turned by the mouse (parameter bound pages): k and the new value, for "every track" (the MD's FUNCTION + knob)
     std::function<void(int k, int value)> onAltTurn;
+    // the cells' tooltips: (cell, its label) -> text, applied when the page is bound
+    std::function<juce::String(int k, const juce::String& label)> tipFor;
     void devReset(int k) { auto& c = m_cells[size_t(k)]; if (c.onReset) c.onReset(); }                  // dev/tests: a double-click
     bool devMarked(int k) const { return m_custom && m_marked && m_marked(k); }
     void paint(juce::Graphics&) override;
