@@ -71,7 +71,8 @@ public:
         bool on = false;
         int page = 0, length = 16, play = -1, held = -1;
         uint64_t trigs = 0, accent = 0, slide = 0, swing = 0, locks = 0;
-        bool operator==(const Grid& o) const { return on == o.on && page == o.page && length == o.length && play == o.play && held == o.held && trigs == o.trigs && accent == o.accent && slide == o.slide && swing == o.swing && locks == o.locks; }
+        int mark = 0;   // 0 the trigs; 1 ACCENT, 2 SLIDE, 3 SWING: the keys show / flip that mark (as the MD's edit windows)
+        bool operator==(const Grid& o) const { return mark == o.mark && on == o.on && page == o.page && length == o.length && play == o.play && held == o.held && trigs == o.trigs && accent == o.accent && slide == o.slide && swing == o.swing && locks == o.locks; }
     };
     void setGrid(const Grid& g) { if (!(g == m_grid)) { m_grid = g; repaint(); } }
     std::function<juce::String(int step)> stepLocks;   // GRID: a step's locks as text for its tooltip ("" none)
@@ -175,6 +176,7 @@ public:
     void devShiftTrack(int dir) { shiftTrack(dir); }
     void devFlag(int s, int f) { flipStepFlag(s, f); }
     void devPerTrack(int f) { togglePerTrack(f); }
+    void devMarkMode(int m) { m_markMode = m; refreshGrid(); }
     void devUndoKit() { undoKit(); }
     void devSelectTrack(int t) { selectTrack(t); }
     void devCopyMachine() { copyMachine(); }
@@ -256,6 +258,7 @@ private:
     void toggleMute(int t);
     void deletePage(int page);
     void flipStepFlag(int step, int flag);   // a step's accent / slide / swing mark (the all-tracks mask or the track's own)
+    int m_markMode = 0;                      // GRID's edit window: 0 trigs, 1 accent, 2 slide, 3 swing
     void togglePerTrack(int flag);           // A / S / W keys: that mark between all tracks and per track
     // Kit tools (as the MD's UNDO KIT / kit reload / copy, paste, clear machine)
     struct KitUndo { bool valid = false; mnm::mddump::Kit kit; juce::String key, name; };

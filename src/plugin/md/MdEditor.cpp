@@ -238,35 +238,23 @@ void MdTrackKeys::paintGrid(LcdCanvas& cv)
             for (int c = 0; c < 3; ++c) { cv.set(r.getX() + c, r.getY(), true); cv.set(r.getRight() - 1 - c, r.getY(), true); cv.set(r.getX() + c, r.getBottom() - 1, true); cv.set(r.getRight() - 1 - c, r.getBottom() - 1, true); }
             continue;
         }
-        const bool trig = (gr.trigs >> s) & 1;
+        // the trigs, or in an edit window (ACCENT / SLIDE / SWING) that mark, with a small dot where the trigs are
+        const uint64_t markMask = gr.mark == 1 ? gr.accent : gr.mark == 2 ? gr.slide : gr.swing;
+        const bool hasTrig = (gr.trigs >> s) & 1;
+        const bool trig = gr.mark > 0 ? ((markMask >> s) & 1) != 0 : hasTrig;
         if (trig) cv.fillRect(r.getX(), r.getY(), r.getWidth(), r.getHeight(), true);
         else dottedFrame(cv, r.getX(), r.getY(), r.getWidth(), r.getHeight());
         const bool ink = !trig;
         cv.text(spec::kFontBold8, juce::String(s + 1).toRawUTF8(), r.getX() + 3, r.getY() + 3, ink);
-        {   // which track the keys are: "T3 SD"
-            const int mi = juce::jlimit(0, kNumMachines - 1, m_machine[size_t(juce::jlimit(0, kTracks - 1, m_selected))]);
-            cv.text(spec::kFontTiny3x5, ("T" + juce::String(m_selected + 1)).toRawUTF8(), r.getX() + 3, r.getY() + 14, ink);
-            cv.text(spec::kFontTiny3x5, (shortOf(mi) == "---" ? familyOf(mi) : shortOf(mi)).substring(0, 3).toRawUTF8(), r.getX() + 3, r.getY() + 21, ink);
-        }
-        {   // the step's ACCENT / SLIDE / SWING as round game-pad buttons: hollow off, solid on (click to flip)
-            static const char* const disc[9] = {"..#####..", ".#######.", "#########", "#########", "#########", "#########", "#########", ".#######.", "..#####.."};
-            static const char* const ring[9] = {"..#####..", ".#.....#.", "#.......#", "#.......#", "#.......#", "#.......#", "#.......#", ".#.....#.", "..#####.."};
-            static const char* const letters[3][5] = {{".###.", "#...#", "#####", "#...#", "#...#"},    // A
-                                                      {".####", "#....", ".###.", "....#", "####."},    // S
-                                                      {"#...#", "#...#", "#.#.#", "##.##", "#...#"}};   // W
-            const uint64_t masks[3] = {gr.accent, gr.slide, gr.swing};
-            for (int f = 0; f < 3; ++f) {
-                const auto b = flagBox(i, f);
-                const bool on = (masks[f] >> s) & 1;
-                for (int y = 0; y < 9; ++y)
-                    for (int x = 0; x < 9; ++x)
-                        if (disc[y][x] == '#') cv.set(b.getX() + x, b.getY() + y, ring[y][x] == '#' || on ? ink : !ink);
-                for (int y = 0; y < 5; ++y) for (int x = 0; x < 5; ++x) if (letters[f][y][x] == '#') cv.set(b.getX() + 2 + x, b.getY() + 2 + y, on ? !ink : ink);
-            }
+        if (gr.mark > 0 && hasTrig) cv.fillRect(r.getCentreX() - 2, r.getBottom() - 8, 4, 4, ink);
+        if (i == m_selected) {   // which track the steps are: its machine on its own key (T3: key 3), the others blank
+            const int mi = juce::jlimit(0, kNumMachines - 1, m_machine[size_t(m_selected)]);
+            cv.textCentred(spec::kFontTiny3x5, familyOf(mi).toRawUTF8(), r.getX() + 1, r.getWidth() - 1, r.getY() + 13, ink);
+            cv.textCentred(spec::kFontTiny3x5, shortOf(mi).toRawUTF8(), r.getX() + 1, r.getWidth() - 1, r.getY() + 19, ink);
         }
         if (((gr.locks >> s) & 1) && s != gr.held) {   // locked: a crit burst in the corner
             static const char* const burst[7] = {"#..#..#", ".#.#.#.", "..###..", "#######", "..###..", ".#.#.#.", "#..#..#"};
-            for (int y = 0; y < 7; ++y) for (int x = 0; x < 7; ++x) if (burst[y][x] == '#') cv.set(r.getX() + 3 + x, r.getBottom() - 9 + y, ink);
+            for (int y = 0; y < 7; ++y) for (int x = 0; x < 7; ++x) if (burst[y][x] == '#') cv.set(r.getRight() - 9 + x, r.getY() + 2 + y, ink);
         }
         if (s == gr.held) {   // held for locks: paper, a heavy frame, LOCK
             cv.fillRect(r.getX(), r.getY(), r.getWidth(), r.getHeight(), false);
@@ -322,10 +310,12 @@ void MdTrackKeys::paint(juce::Graphics& g)
                         cv.set(b.getX() + x, b.getY() + y, ring[y][x] == '#' ? c : fill ? c : !c);
                     }
                 if (queued) cv.fillRect(b.getX() + 2, b.getY() + 1, 5, 7, !c);
-                static const char* const glyphL[5] = {"#....", "#....", "#....", "#....", "#####"};
-                static const char* const glyphM[5] = {"#...#", "##.##", "#.#.#", "#...#", "#...#"};
-                const auto* g = letter[0] == 'M' ? glyphM : glyphL;
-                for (int y = 0; y < 5; ++y) for (int x = 0; x < 5; ++x) if (g[y][x] == '#') cv.set(b.getX() + 2 + x, b.getY() + 2 + y, on ? !c : c);
+                static const char* const glyphL[5] = {".#..", ".#..", ".#..", ".#..", ".###"};   // (3 wide, centred)
+                static const char* const glyphM[5] = {"#...#", "##.##", "#.#.#", "#...#", "#...#"};   // 5 wide: a 3-wide M reads as H
+                const bool m = letter[0] == 'M';
+                for (int y = 0; y < 5; ++y)
+                    for (int x = 0; x < (m ? 5 : 4); ++x)
+                        if ((m ? glyphM : glyphL)[y][x] == '#') cv.set(b.getX() + 2 + x, b.getY() + 2 + y, on ? !c : c);
             };
             button(lockBox(t), "L", m_locked[size_t(t)]);
             button(muteBox(t), "M", m_muted[size_t(t)], ((m_muteQueue >> t) & 1) != 0);
@@ -345,10 +335,9 @@ void MdTrackKeys::mouseDown(const juce::MouseEvent& e)
         for (int i = 0; i < kTracks; ++i) {
             if (!keyRect(i).contains(p)) continue;
             const int s = m_grid.page * 16 + i;
-            if (!e.mods.isAnyModifierKeyDown() && s < m_grid.length && onFlag) {   // an A / S / W button
-                bool hit = false;
-                for (int f = 0; f < 3 && !hit; ++f) if (flagBox(i, f).expanded(1, 0).contains(p)) { onFlag(s, f); hit = true; }
-                if (hit) return;
+            if (m_grid.mark > 0 && !e.mods.isAnyModifierKeyDown() && !e.mods.isPopupMenu()) {   // an edit window: the mark flips
+                if (s < m_grid.length && onFlag) onFlag(s, m_grid.mark - 1);
+                return;
             }
             if (e.mods.isPopupMenu()) { if (onStepMenu && s < m_grid.length) onStepMenu(s); }
             else if (e.mods.isAltDown()) { if (onMuteKey) onMuteKey(i); }
@@ -394,15 +383,6 @@ void MdTrackKeys::mouseMove(const juce::MouseEvent& e)
         const int key = trackAt(e.getPosition());
         const int step = m_grid.page * 16 + juce::jmax(0, key);
         const auto locks = key >= 0 && stepLocks ? stepLocks(step) : juce::String();
-        const auto pp = e.getPosition() / kScale;
-        for (int f = 0; f < 3 && key >= 0; ++f)
-            if (flagBox(key, f).expanded(1, 0).contains(pp)) {
-                static const char* const what[3] = {"ACCENT: this step plays accented (the A key: all tracks / this track)",
-                                                    "SLIDE: the locked values glide to the next trig's (the S key: all tracks / this track)",
-                                                    "SWING: this step is delayed by SWNG (the W key: all tracks / this track)"};
-                setTooltip(what[f]);
-                return;
-            }
         setTooltip("Step " + juce::String(step + 1) + (locks.isNotEmpty() ? ". LOCKS: " + locks : juce::String())
                    + ". Click: trig on/off. Shift+click: hold for locks (turn the track's knobs; double-click one to clear its lock). Ctrl+click: select that track. Alt+click: mute that track. Right-click: step menu. Ctrl+Z: undo.");
         return;
@@ -1400,6 +1380,18 @@ bool MdEditor::keyPressed(const juce::KeyPress& k)
     if (m_gridOn && !mods.isAnyModifierKeyDown()) {   // A / S / W: accent / slide / swing marks for all tracks <-> per track
         const int code = k.getKeyCode();
         const int f = code == 'A' || code == 'a' ? 0 : code == 'S' || code == 's' ? 1 : code == 'W' || code == 'w' ? 2 : -1;
+        if (f >= 0) {   // the ACCENT / SLIDE / SWING edit window (again: back to the trigs)
+            static const char* const names[3] = {"ACCENT EDIT", "SLIDE EDIT", "SWING EDIT"};
+            m_markMode = m_markMode == f + 1 ? 0 : f + 1;
+            flash(m_markMode ? juce::String(names[f]) : juce::String("TRIGS"));
+            refreshGrid();
+            return true;
+        }
+        if (code == juce::KeyPress::escapeKey && m_markMode) { m_markMode = 0; refreshGrid(); return true; }
+    }
+    if (m_gridOn && mods.isShiftDown() && !mods.isCtrlDown() && !mods.isCommandDown() && !mods.isAltDown()) {   // all tracks <-> this track
+        const int code = k.getKeyCode();
+        const int f = code == 'A' || code == 'a' ? 0 : code == 'S' || code == 's' ? 1 : code == 'W' || code == 'w' ? 2 : -1;
         if (f >= 0) { togglePerTrack(f); return true; }
     }
     if (m_gridOn && (k.getKeyCode() == juce::KeyPress::leftKey || k.getKeyCode() == juce::KeyPress::rightKey)) {
@@ -1778,6 +1770,7 @@ void MdEditor::refreshGrid()
         s.playing = m_proc.seqPlaying() || m_proc.internalPlay();
         s.hostPlaying = m_proc.hostPlaying();
         s.grid = m_gridOn;
+        s.mark = m_gridOn ? m_markMode : 0;
         s.beat = m_proc.beatPhase() < 0.5f;
         {   // the chain, as the PTN box shows it
             const auto ch = m_proc.chain();
@@ -1805,6 +1798,8 @@ void MdEditor::refreshGrid()
     }
     MdTrackKeys::Grid g;
     g.on = m_gridOn;
+    if (!m_gridOn) m_markMode = 0;
+    g.mark = m_markMode;
     if (m_gridOn) {
         const int slot = editSlot(), t = m_track;
         const auto p = m_proc.bankPattern(slot);

@@ -46,12 +46,13 @@ public:
     static constexpr int kS = 2, kLcdH = 15;
     struct State {
         bool beat = false;   // the first half of each quarter note (the playing page's dot lights)
+        int mark = 0;        // GRID's edit window: 0 trigs, 1 ACC, 2 SLD, 3 SWG (the GRID button says which)
         bool playing = false, hostPlaying = false, grid = false, mix = false, empty = true, muted = false, rec = false, recording = false, seqOff = false;
         juce::String flash;   // a short confirmation in the STEP box ("COPIED PAGE 1")
         int track = 0, pattern = 0, length = 16, page = 0, step = -1, row = -1;
         juce::String machine;
         juce::String chain;   // a pattern chain: "A01>A02>A03" (shown in PTN)
-        bool operator==(const State& o) const { return beat == o.beat && playing == o.playing && mix == o.mix && flash == o.flash && seqOff == o.seqOff && rec == o.rec && recording == o.recording && muted == o.muted && hostPlaying == o.hostPlaying && grid == o.grid && empty == o.empty && track == o.track && pattern == o.pattern && length == o.length && page == o.page && step == o.step && row == o.row && machine == o.machine && chain == o.chain; }
+        bool operator==(const State& o) const { return mark == o.mark && beat == o.beat && playing == o.playing && mix == o.mix && flash == o.flash && seqOff == o.seqOff && rec == o.rec && recording == o.recording && muted == o.muted && hostPlaying == o.hostPlaying && grid == o.grid && empty == o.empty && track == o.track && pattern == o.pattern && length == o.length && page == o.page && step == o.step && row == o.row && machine == o.machine && chain == o.chain; }
     };
     std::function<void(Part)> onPart;
     std::function<void(int)> onPage;

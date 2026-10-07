@@ -79,10 +79,9 @@ inline const Bitmap* icon(Icons f, int i)
     case Icons::LfoDest: return i >= 0 && i < 8 ? kIconLfoDest[i] : nullptr;
     case Icons::MdWave1: return i >= 0 && i < 16 ? extIcons()[0][size_t(i)] : nullptr;
     case Icons::MdWave2: return i >= 0 && i < 16 ? extIcons()[1][size_t(i)] : nullptr;
-    case Icons::MdLfoParam: {   // the MD's PARAM by group, in the Monomachine's LFO page icons (SYNT EFFX FILT AMP LFO1)
-        static const int page[24] = {1, 1, 1, 1, 1, 1, 1, 1, 4, 4, 4, 4, 3, 3, 3, 4, 2, 2, 2, 2, 2, 5, 5, 5};
-        return i >= 0 && i < 24 ? kIconLfoPage[page[i]] : nullptr;
-    }
+    case Icons::MdLfoParam:   // the MD's PARAM in the Monomachine's page icons: the arrow a line further down each value,
+                              // from the top again at each group (SYN1-8, AMD-SRR, DIST-LFOM)
+        return i >= 0 && i < 24 ? kIconLfoPage[i % 8] : nullptr;
     default: return nullptr;
     }
 }
