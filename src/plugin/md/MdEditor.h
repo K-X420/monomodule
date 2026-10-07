@@ -6,6 +6,7 @@
 //               LFO (TRK PARAM SHP1 SHP2 TYPE SPD DEP MIX)  MASTER FX (REV DEL EQ DYN tabs)  OUTPUT (VOL VEL ACNT)
 //   track keys  the MD's 16 tracks: number, activity LED, machine; click = select + audition
 #pragma once
+#include <optional>
 #include <array>
 #include <memory>
 #include <string>
@@ -46,6 +47,8 @@ public:
     MdTrackKeys();
     std::function<void(int)> onPress;   // select + audition
     std::function<void(int)> onMute, onLock;   // toggle
+    std::function<void(int)> onMuteQueue;      // Shift + M: queued, applied when Shift is let go
+    void setMuteQueue(uint16_t q) { if (q != m_muteQueue) { m_muteQueue = q; repaint(); } }
     void setFlags(int t, bool muted, bool locked)
     {
         if (m_muted[size_t(t)] != muted || m_locked[size_t(t)] != locked) { m_muted[size_t(t)] = muted; m_locked[size_t(t)] = locked; repaint(); }
@@ -90,6 +93,7 @@ private:
     void mouseDrag(const juce::MouseEvent&) override;
     void mouseUp(const juce::MouseEvent&) override { m_painting = false; }
     bool m_painting = false, m_paintOn = false;
+    uint16_t m_muteQueue = 0;
     int m_paintLast = -1;
     int m_selected = 0;
     std::array<int, kTracks> m_machine{};
@@ -165,6 +169,18 @@ public:
     // dev/tests: the GRID as clicks drive it
     void devStep(int s) { if (m_keys.onStep) m_keys.onStep(s); }
     void devHold(int s) { holdStep(s); }
+    void devShiftTrack(int dir) { shiftTrack(dir); }
+    void devUndoKit() { undoKit(); }
+    void devSelectTrack(int t) { selectTrack(t); }
+    void devCopyMachine() { copyMachine(); }
+    void devPasteMachine() { pasteMachine(); }
+    void devClearMachine() { clearMachine(); }
+    void devLoadKitData(const mnm::mddump::Kit& k, const juce::String& name) { m_kitUndo = {true, m_proc.captureMdKit(), m_proc.loadedKitKey(), m_proc.kitName()}; m_proc.loadMdKit({}, k, name); }
+    void devCopyNote(int s) { copyNote(s); }
+    void devPasteNote(int s) { pasteNote(s); }
+    void devQueueMute(int t) { if (m_keys.onMuteQueue) m_keys.onMuteQueue(t); }
+    void devApplyMuteQueue() { applyMuteQueue(); }
+    void applyMuteQueue();
     void devPaint(int s, bool on, bool first) { if (m_keys.onPaint) m_keys.onPaint(s, on, first); }
     void devDeletePage(int page) { deletePage(page); }
     void devSetPage(int page) { m_gridPage = page; }
@@ -234,6 +250,20 @@ private:
     void redo();
     void toggleMute(int t);
     void deletePage(int page);
+    // Kit tools (as the MD's UNDO KIT / kit reload / copy, paste, clear machine)
+    struct KitUndo { bool valid = false; mnm::mddump::Kit kit; juce::String key, name; };
+    KitUndo m_kitUndo;   // the kit before the last kit load (undo swaps them)
+    void undoKit();
+    void reloadKit();
+    std::optional<mnm::mdcatalog::Sound> m_soundClip;
+    juce::String m_soundClipName;
+    void copyMachine();
+    void pasteMachine();
+    void clearMachine();
+    void shiftTrack(int dir);      // the selected track's trigs (and their locks / marks) one step later / earlier, wrapping
+    void copyNote(int step);       // the held step: its trig, marks and locks
+    void pasteNote(int step);
+    uint16_t m_muteQueue = 0;      // Shift + M: mutes to flip when Shift is let go
     int m_paintStroke = 0;
     struct UndoStep {
         int slot = 0; std::shared_ptr<const mnm::mddump::Pattern> before, after; juce::String label;
@@ -250,7 +280,7 @@ private:
     std::vector<UndoStep> m_undo, m_redo;
     int m_lastCoalesce = -1;
     juce::int64 m_lastEditMs = 0;
-    struct Clip { int kind = 0; bool all = false; int track = 0, page = 0; mnm::mddump::Pattern pat; };   // kind 1 page, 2 track, 3 pattern
+    struct Clip { int kind = 0; bool all = false; int track = 0, page = 0; mnm::mddump::Pattern pat; };   // kind 1 page, 2 track, 3 pattern, 4 note (page = its step)
     Clip m_clip;
     void refreshGrid();
     void bindMasterFx(int fx);

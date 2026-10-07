@@ -18,6 +18,7 @@ public:
     KnobCell();
     std::function<void()> onValueClick;
     std::function<bool()> onReset;   // a double-click on the knob: true = handled (not the default value)
+    std::function<void()> onKnobClick;   // a single click on the knob that did not turn it
     // A two-state switch (a Readout of two values with the Toggle icon): a click flips it, no drag, no value list
     void setToggle(bool on) { m_toggle = on; }
     void mouseDown(const juce::MouseEvent& e) override;
@@ -70,6 +71,9 @@ public:
     void pull();
     bool isCustom() const { return m_custom; }
     void devTurn(int k, int v) { m_cells[size_t(k)].setValue(double(v), juce::sendNotificationSync); }   // dev/tests: a turn
+    void devClick(int k) { if (m_cells[size_t(k)].onKnobClick) m_cells[size_t(k)].onKnobClick(); }      // dev/tests: a click
+    // Alt + a knob turned by the mouse (parameter bound pages): k and the new value, for "every track" (the MD's FUNCTION + knob)
+    std::function<void(int k, int value)> onAltTurn;
     void devReset(int k) { auto& c = m_cells[size_t(k)]; if (c.onReset) c.onReset(); }                  // dev/tests: a double-click
     bool devMarked(int k) const { return m_custom && m_marked && m_marked(k); }
     void paint(juce::Graphics&) override;

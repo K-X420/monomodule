@@ -166,7 +166,8 @@ void MdSeqBar::paint(juce::Graphics& g)
     }
     labelled(Trk, "TRK", "T" + juce::String(m_s.track + 1) + " " + m_s.machine);
     arrows(PtnPrev, PtnNext);
-    labelled(Ptn, "PTN", juce::String(kPatternNames[juce::jlimit(0, 127, m_s.pattern)]) + (m_s.empty ? "-" : ""));
+    if (m_s.chain.isNotEmpty()) labelled(Ptn, "CHN", m_s.chain);
+    else labelled(Ptn, "PTN", juce::String(kPatternNames[juce::jlimit(0, 127, m_s.pattern)]) + (m_s.empty ? "-" : ""));
     {   // the pages: a ring each (a point past the length), solid when playing, underlined when GRID shows it
         const auto r = box(Pages, false);
         const int pages = (juce::jlimit(1, 64, m_s.length) + 15) / 16, playing = m_s.step >= 0 ? m_s.step / 16 : -1;
@@ -230,7 +231,7 @@ void MdSeqBar::mouseDown(const juce::MouseEvent& e)
             }
         return;
     }
-    if (edit && (p == Trk || p == Ptn)) { if (onEditClick) onEditClick(p, -1, e.mods); return; }
+    if (edit && (p == Trk || p == Ptn || p == PtnPrev || p == PtnNext)) { if (onEditClick) onEditClick(p, -1, e.mods); return; }
     if (p != None && onPart) onPart(p);
 }
 
@@ -240,8 +241,8 @@ void MdSeqBar::mouseMove(const juce::MouseEvent& e)
     if (p != m_hover) { m_hover = p; repaint(); }
     switch (p) {
         case Play: setTooltip(m_s.hostPlaying ? "The host's transport is running: the pattern follows it" : "Play / stop the pattern on the plugin's own clock (while the host is stopped)"); break;
-        case Rec: setTooltip("REC: while the pattern plays, the trigs you play (MIDI notes, the track keys) go onto its nearest steps, "
-                             "and knobs turned meanwhile lock their values on the trigs that pass. Ctrl+Z takes a run back"); break;
+        case Rec: setTooltip("REC: while the pattern plays, the trigs you play (MIDI notes, the track keys) go onto the step playing, "
+                             "and a knob turned during a step locks its value on the next step's trig. Ctrl+Z takes a run back"); break;
         case Grid: setTooltip(m_s.grid ? "GRID (G): the keys are the selected track's steps (click a step to place a trig). Click to get the tracks back"
                                        : "GRID (G): click to place steps with the keys (the selected track's steps; TRK < > picks the track)"); break;
         case Mute: setTooltip(m_s.muted ? "The track is muted: its trigs don't play. Click to unmute (Alt+click a key in GRID: that key's track)"
@@ -249,7 +250,7 @@ void MdSeqBar::mouseMove(const juce::MouseEvent& e)
         case TrkPrev: case TrkNext: setTooltip("The track whose steps GRID shows and edits"); break;
         case Trk: setTooltip("The track GRID edits. Shift+click: copy it. Ctrl+click: paste onto it. Alt+click: clear it"); break;
         case Ptn: setTooltip("The pattern. Shift+click: copy it. Ctrl+click: paste onto it. Alt+click: clear its steps"); break;
-        case PtnPrev: case PtnNext: setTooltip("The pattern (PTN): played by SEQ, edited by GRID (\"-\" = an empty slot)"); break;
+        case PtnPrev: case PtnNext: setTooltip("The pattern (PTN): played by SEQ, edited by GRID (\"-\" = an empty slot). Shift+click >: add the next pattern to a chain; Shift+click <: take the last one off"); break;
         case Pages: setTooltip("Pages of 16 steps: solid = playing, underlined = shown by GRID. Click: show it. Shift+click: copy it (all tracks). "
                                "Ctrl+click: paste onto it. Alt+click: clear it. Keys: Ctrl+C / Ctrl+V / Delete on the shown page"); break;
         case Step: setTooltip(m_s.seqOff ? "SEQ is OFF (OUT tab): the pattern does not play. PLAY, a placed step or REC turns it on" : "The playing step / the pattern's length"); break;

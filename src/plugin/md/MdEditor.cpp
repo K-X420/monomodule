@@ -299,16 +299,18 @@ void MdTrackKeys::paint(juce::Graphics& g)
             const bool c = !(sel != lit);   // the contrast colour (ink on a paper key)
             static const char* const disc[9] = {"..#####..", ".#######.", "#########", "#########", "#########", "#########", "#########", ".#######.", "..#####.."};
             static const char* const ring[9] = {"..#####..", ".#.....#.", "#.......#", "#.......#", "#.......#", "#.......#", "#.......#", ".#.....#.", "..#####.."};
-            auto button = [&](juce::Rectangle<int> b, const char* letter, bool on) {
+            auto button = [&](juce::Rectangle<int> b, const char* letter, bool on, bool queued = false) {
                 for (int y = 0; y < 9; ++y)
                     for (int x = 0; x < 9; ++x) {
                         if (disc[y][x] != '#') continue;
-                        cv.set(b.getX() + x, b.getY() + y, on ? c : (ring[y][x] == '#' ? c : !c));
+                        const bool fill = queued ? ((x + y) & 1) != 0 : on;   // queued: a checkered button (it flips when Shift is let go)
+                        cv.set(b.getX() + x, b.getY() + y, ring[y][x] == '#' ? c : fill ? c : !c);
                     }
+                if (queued) cv.fillRect(b.getX() + 2, b.getY() + 1, 5, 7, !c);
                 cv.text(spec::kFontTiny3x5, letter, b.getX() + 3, b.getY() + 2, on ? !c : c);
             };
             button(lockBox(t), "L", m_locked[size_t(t)]);
-            button(muteBox(t), "M", m_muted[size_t(t)]);
+            button(muteBox(t), "M", m_muted[size_t(t)], ((m_muteQueue >> t) & 1) != 0);
         }
         if (t == m_dropTarget) {   // a sound from the library would land here: an inner frame
             cv.invertRect(r.getX() + 1, r.getY() + 1, r.getWidth() - 2, 1); cv.invertRect(r.getX() + 1, r.getBottom() - 2, r.getWidth() - 2, 1);
@@ -343,7 +345,7 @@ void MdTrackKeys::mouseDown(const juce::MouseEvent& e)
     for (int t = 0; t < kTracks; ++t) {
         if (!keyRect(t).contains(p)) continue;
         if (lockBox(t).expanded(1).contains(p)) { if (onLock) onLock(t); }
-        else if (muteBox(t).expanded(1).contains(p)) { if (onMute) onMute(t); }
+        else if (muteBox(t).expanded(1).contains(p)) { if (e.mods.isShiftDown() && onMuteQueue) onMuteQueue(t); else if (onMute) onMute(t); }
         else if ((e.mods.isCommandDown() || e.mods.isCtrlDown()) && onSelect) onSelect(t);   // select without a sound
         else if (onPress) onPress(t);
         return;
@@ -766,6 +768,26 @@ MdEditor::MdEditor(MdProcessor& p)
     m_keys.onHold = [this](int s) { holdStep(s == m_heldStep ? -1 : s); };
     m_keys.onSelect = [this](int t) { selectTrack(t); };
     m_keys.onMuteKey = [this](int t) { toggleMute(t); };
+    m_keys.onMuteQueue = [this](int t) { m_muteQueue ^= uint16_t(1u << t); m_keys.setMuteQueue(m_muteQueue); };
+    {   // Alt + turn: the parameter on every track (as the MD's FUNCTION + knob; not MID, RAM-R or CTR tracks)
+        auto everyTrack = [this](std::function<juce::String(int, int)> id) {
+            return [this, id](int k, int v) {
+                for (int u = 0; u < kTracks; ++u) {
+                    const int mid = m_proc.machineIdOf(u);
+                    if (u == m_track || isMidMachine(mid) || isCtrMachine(mid) || mid == 160 || mid == 161 || mid == 165 || mid == 166) continue;
+                    if (auto* p = m_proc.apvts.getParameter(id(u, k))) p->setValueNotifyingHost(p->convertTo0to1(float(v)));
+                }
+                flash("ALL TRACKS");
+            };
+        };
+        m_syn.onAltTurn = everyTrack([](int u, int k) { return knobId(u, k); });
+        m_fx.onAltTurn = everyTrack([](int u, int k) { return fxId(u, k); });
+        m_routing.onAltTurn = everyTrack([](int u, int k) {
+            static juce::String (* const ids[6])(int) = {distId, volId, panId, delId, revId, routeId};
+            return k < 6 ? ids[k](u) : juce::String();
+        });
+        m_lfo.onAltTurn = everyTrack([](int u, int k) { return lfoId(u, k); });
+    }
     m_keys.stepLocks = [this](int step) {   // "PTCH 90, DEC 40": the selected track's locks on that step
         const auto p = m_proc.bankPattern(editSlot());
         juce::String s;
@@ -923,6 +945,18 @@ MdEditor::MdEditor(MdProcessor& p)
     m_songEd.defaultPattern = [this] { return editSlot(); };
     m_songEd.patternLength = [this](int p) { const auto pat = m_proc.bankPattern(p); return pat ? juce::jlimit(1, 64, int(pat->length)) : 16; };
     m_seqBar.onEditClick = [this](MdSeqBar::Part p, int page, const juce::ModifierKeys& mods) {
+        if (p == MdSeqBar::PtnPrev || p == MdSeqBar::PtnNext) {   // Shift + the PTN arrows: the chain grows / shrinks
+            if (!mods.isShiftDown()) return;
+            auto ch = m_proc.chain();
+            if (ch.empty()) ch.push_back(editSlot());
+            if (p == MdSeqBar::PtnNext) ch.push_back((ch.back() + 1) % 128);
+            else if (!ch.empty()) ch.pop_back();
+            if (ch.size() > 16) ch.resize(16);
+            seqOn();
+            m_proc.setChain(ch);
+            flash(ch.size() > 1 ? "CHAIN " + juce::String(int(ch.size())) : juce::String("NO CHAIN"));
+            return;
+        }
         const int op = mods.isAltDown() ? 2 : (mods.isCommandDown() || mods.isCtrlDown()) ? 1 : 0;   // Alt clear, Ctrl paste, Shift copy
         if (p == MdSeqBar::Pages) pageOp(op, page);
         else if (p == MdSeqBar::Trk) trackOp(op);
@@ -1280,6 +1314,33 @@ bool MdEditor::keyPressed(const juce::KeyPress& k)
     if (!mods.isAnyModifierKeyDown() && (k.getKeyCode() == 'G' || k.getKeyCode() == 'g')) { toggleGrid(); return true; }   // GRID on / off
     if (!mods.isAnyModifierKeyDown() && (k.getKeyCode() == 'M' || k.getKeyCode() == 'm')) { toggleMixer(); return true; }   // the mixer
     const int page = juce::jlimit(0, 3, m_gridPage);
+    if (m_gridOn && (k.getKeyCode() == juce::KeyPress::leftKey || k.getKeyCode() == juce::KeyPress::rightKey)) {
+        const int dir = k.getKeyCode() == juce::KeyPress::leftKey ? -1 : 1;
+        if (mods.isShiftDown()) { shiftTrack(dir); return true; }   // the MD's FUNCTION + LEFT / RIGHT
+        const auto p = m_proc.bankPattern(editSlot());
+        const int pages = p ? (juce::jlimit(1, 64, int(p->length)) + 15) / 16 : 1;
+        m_gridPage = juce::jlimit(0, pages - 1, m_gridPage + dir);
+        m_pagePinned = m_proc.seqPlaying();
+        refreshGrid();
+        return true;
+    }
+    if (m_heldStep >= 0 && (k.getKeyCode() == juce::KeyPress::deleteKey || k.getKeyCode() == juce::KeyPress::backspaceKey)) {   // the held step's locks
+        const int t = m_track, s = m_heldStep;
+        doEdit(editSlot(), "clear note locks", [&](mnm::mddump::Pattern& x) { x.clearStepLocks(t, s); });
+        flash("LOCKS CLEARED");
+        for (auto* pg : {&m_syn, &m_fx, &m_routing, &m_lfo}) pg->pull();
+        refreshGrid();
+        return true;
+    }
+    if ((mods.isCommandDown() || mods.isCtrlDown()) && mods.isShiftDown()) {   // the selected track's machine
+        if (k.getKeyCode() == 'C' || k.getKeyCode() == 'c') { copyMachine(); return true; }
+        if (k.getKeyCode() == 'V' || k.getKeyCode() == 'v') { pasteMachine(); return true; }
+        if (k.getKeyCode() == juce::KeyPress::deleteKey || k.getKeyCode() == juce::KeyPress::backspaceKey) { clearMachine(); return true; }
+    }
+    if ((mods.isCommandDown() || mods.isCtrlDown()) && mods.isAltDown() && (k.getKeyCode() == 'Z' || k.getKeyCode() == 'z')) { undoKit(); return true; }
+    if ((mods.isCommandDown() || mods.isCtrlDown()) && !mods.isShiftDown() && (k.getKeyCode() == 'R' || k.getKeyCode() == 'r')) { reloadKit(); return true; }
+    if (m_heldStep >= 0 && (mods.isCommandDown() || mods.isCtrlDown()) && (k.getKeyCode() == 'C' || k.getKeyCode() == 'c')) { copyNote(m_heldStep); return true; }
+    if (m_heldStep >= 0 && (mods.isCommandDown() || mods.isCtrlDown()) && (k.getKeyCode() == 'V' || k.getKeyCode() == 'v')) { pasteNote(m_heldStep); return true; }
     if ((k.getKeyCode() == juce::KeyPress::deleteKey || k.getKeyCode() == juce::KeyPress::backspaceKey) && m_gridOn) { pageOp(2, page); return true; }
     if (!mods.isCommandDown() && !mods.isCtrlDown()) return false;
     const int code = k.getKeyCode();
@@ -1311,6 +1372,96 @@ void MdEditor::deletePage(int page)
     m_gridPage = juce::jmin(page, pages - 2 < 0 ? 0 : pages - 2);
     flash(pages == 1 ? "CLEARED P1" : "DEL P" + juce::String(page + 1));
     refreshGrid();
+}
+
+void MdEditor::shiftTrack(int dir)
+{
+    const int slot = editSlot(), t = m_track;
+    const auto cur = m_proc.bankPattern(slot);
+    if (!cur) { flash("EMPTY"); return; }
+    const int len = juce::jlimit(1, 64, int(cur->length));
+    doEdit(slot, dir > 0 ? "shift track right" : "shift track left", [&](mnm::mddump::Pattern& x) {
+        const auto src = x;
+        for (int s = 0; s < len; ++s) x.copySteps(src, s, (s + dir + len) % len, 1, t, t);
+    }, 30000 + t);
+    flash(dir > 0 ? "T" + juce::String(t + 1) + " >>" : "<< T" + juce::String(t + 1));
+    refreshGrid();
+}
+
+void MdEditor::copyNote(int step)
+{
+    const auto p = m_proc.bankPattern(editSlot());
+    if (!p || !((p->trigs[m_track] >> step) & 1)) { flash("NO NOTE"); return; }
+    m_clip = {4, false, m_track, step, *p};
+    flash("COPY NOTE " + juce::String(step + 1));
+}
+
+void MdEditor::pasteNote(int step)
+{
+    if (m_clip.kind != 4) { flash("NO NOTE"); return; }
+    const auto clip = m_clip;
+    const int t = m_track;
+    doEdit(editSlot(), "paste note", [&](mnm::mddump::Pattern& x) { x.copySteps(clip.pat, clip.page, step, 1, clip.track, t); });
+    flash("PASTE NOTE " + juce::String(step + 1));
+    for (auto* pg : {&m_syn, &m_fx, &m_routing, &m_lfo}) pg->pull();
+    refreshGrid();
+}
+
+void MdEditor::applyMuteQueue()
+{
+    for (int t = 0; t < kTracks; ++t) if ((m_muteQueue >> t) & 1) toggleMute(t);
+    m_muteQueue = 0;
+    m_keys.setMuteQueue(0);
+}
+
+void MdEditor::undoKit()
+{
+    if (!m_kitUndo.valid) { flash("NO KIT UNDO"); return; }
+    const KitUndo back = m_kitUndo;
+    m_kitUndo = {true, m_proc.captureMdKit(), m_proc.loadedKitKey(), m_proc.kitName()};   // undo again = redo
+    m_proc.loadMdKit(back.key, back.kit, back.name);
+    flash("KIT UNDONE");
+    selectTrack(m_track);
+    timerCallback();
+}
+
+void MdEditor::reloadKit()
+{
+    const auto key = m_proc.loadedKitKey();
+    mnm::mddump::Kit kit;
+    if (key.isEmpty() || !m_lib->loadKit(key, kit)) { flash("NO SAVED KIT"); return; }
+    m_kitUndo = {true, m_proc.captureMdKit(), key, m_proc.kitName()};
+    m_proc.loadMdKit(key, kit, m_proc.kitName());
+    flash("KIT RELOADED");
+    selectTrack(m_track);
+    timerCallback();
+}
+
+void MdEditor::copyMachine()
+{
+    m_soundClip = m_proc.captureSound(m_track);
+    m_soundClipName = m_proc.loadedSoundName(m_track).isNotEmpty() ? m_proc.loadedSoundName(m_track) : "T" + juce::String(m_track + 1) + " COPY";
+    flash("COPY T" + juce::String(m_track + 1));
+}
+
+void MdEditor::pasteMachine()
+{
+    if (!m_soundClip) { flash("NOTHING COPIED"); return; }
+    if (!m_proc.loadSound(m_track, {}, *m_soundClip, m_soundClipName)) { flash("NO SUCH MACHINE"); return; }
+    flash("PASTE T" + juce::String(m_track + 1));
+    bindTrackPages();
+    timerCallback();
+}
+
+void MdEditor::clearMachine()
+{
+    if (auto* p = m_proc.apvts.getParameter(machineId(m_track))) {
+        p->beginChangeGesture();
+        p->setValueNotifyingHost(p->convertTo0to1(float(machineIndexOf(0))));   // GND---: the empty machine
+        p->endChangeGesture();
+    }
+    flash("CLEAR T" + juce::String(m_track + 1));
+    timerCallback();
 }
 
 void MdEditor::toggleMute(int t)
@@ -1511,6 +1662,12 @@ void MdEditor::refreshGrid()
         s.hostPlaying = m_proc.hostPlaying();
         s.grid = m_gridOn;
         s.beat = m_proc.beatPhase() < 0.5f;
+        {   // the chain, as the PTN box shows it
+            const auto ch = m_proc.chain();
+            juce::String c;
+            for (size_t i = 0; i < ch.size(); ++i) c << (i ? ">" : "") << kPatternNames[juce::jlimit(0, 127, ch[i])];
+            s.chain = c;
+        }
         s.mix = m_mixer.isVisible();
         s.track = m_track;
         s.muted = m_proc.apvts.getRawParameterValue(muteId(m_track))->load() >= 0.5f;
@@ -1647,6 +1804,12 @@ void MdEditor::showMenu()
     m.addSubMenu("PLUGIN OUTPUTS", outputs);
     m.addItem(16, "MIXER  (M)", true, m_mixer.isVisible());
     m.addItem(17, "TOOLTIPS", true, m_tips != nullptr);
+    m.addSeparator();
+    m.addItem(18, "UNDO KIT CHANGE  (CTRL+ALT+Z)", m_kitUndo.valid);
+    m.addItem(19, "RELOAD KIT  (CTRL+R)", m_proc.loadedKitKey().isNotEmpty());
+    m.addItem(20, "COPY T" + juce::String(m_track + 1) + " MACHINE  (CTRL+SHIFT+C)");
+    m.addItem(21, "PASTE MACHINE ONTO T" + juce::String(m_track + 1) + "  (CTRL+SHIFT+V)", m_soundClip.has_value());
+    m.addItem(22, "CLEAR T" + juce::String(m_track + 1) + " MACHINE  (CTRL+SHIFT+DEL)");
     m.addItem(11, "MIDI SETTINGS...");
     m.addSeparator();
     {
@@ -1666,6 +1829,11 @@ void MdEditor::showMenu()
     m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&m_menuButton), [this](int r) {
         if (r == 11) { openMidiPanel(); return; }
         if (r == 16) { toggleMixer(); return; }
+        if (r == 18) { undoKit(); return; }
+        if (r == 19) { reloadKit(); return; }
+        if (r == 20) { copyMachine(); return; }
+        if (r == 21) { pasteMachine(); return; }
+        if (r == 22) { clearMachine(); return; }
         if (r == 17) { setTooltipsOn(m_tips == nullptr); saveSharedSetting("tooltips", m_tips ? "1" : "0"); return; }
         if (r == 12) { openSongEditor(); return; }
         if (r == 13) { saveBankToLibrary(); return; }
@@ -1864,6 +2032,7 @@ void MdEditor::loadKit(const KitEntry& e)
         juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Load Kit", "The kit " + e.name + " is no longer in the library.");
         return;
     }
+    m_kitUndo = {true, m_proc.captureMdKit(), m_proc.loadedKitKey(), m_proc.kitName()};
     const int emptied = m_proc.loadMdKit(e.key, kit, e.name);
     // a project's kit: its patterns become the pattern bank (SEQ / PTN)
     if (e.sourceId.isNotEmpty() && e.sourceId != "saved")
@@ -2021,6 +2190,7 @@ void MdEditor::sampleMenu()
 
 void MdEditor::timerCallback()
 {
+    if (m_muteQueue != 0 && !juce::ModifierKeys::currentModifiers.isShiftDown()) applyMuteQueue();   // Shift let go: the queued mutes flip together
     // the LCD artwork follows the Monomachine OS file the other Monomodule plugins use
     if (const auto path = loadSharedOsPath(); path != m_artPath) {
         m_artPath = path;

@@ -550,8 +550,15 @@ void MdProcessor::seqStart(Segment& seg, int slot, int start, int end, int64_t s
 // plays as an empty pattern.
 void MdProcessor::seqNext(double origin, const SeqBank* bank, const std::shared_ptr<const SeqBank>& hold, double atEnginePos, bool song)
 {
-    if (!song) {   // PATTERN: the queued one, else the same one on
-        const int slot = m_seqQueued >= 0 ? m_seqQueued : m_seg.slot;
+    if (!song) {   // PATTERN: the queued one, else the chain's next, else the same one on
+        int slot = m_seqQueued >= 0 ? m_seqQueued : m_seg.slot;
+        if (const int n = juce::jlimit(0, 16, m_chainLen.load()); n > 1 && m_seqQueued < 0 && m_seg.slot >= 0) {
+            if (m_chain[size_t(m_chainPos % n)].load() != m_seg.slot)   // find where the playing pattern is in it
+                for (int i = 0; i < n; ++i) if (m_chain[size_t(i)].load() == m_seg.slot) { m_chainPos = i; break; }
+            m_chainPos = (m_chainPos + 1) % n;
+            slot = m_chain[size_t(m_chainPos)].load();
+            m_patternSeen = slot; m_ptnPending.store(slot); m_programChange.store(slot); triggerAsyncUpdate();   // the PTN follows
+        }
         m_seqQueued = -1;
         seqStart(m_seg, slot, 0, 64, -1, 0, origin, bank, hold, atEnginePos);
         m_seqRowUi.store(-1);
@@ -671,7 +678,12 @@ void MdProcessor::scheduleSequencer(int n, double ratio)
     if (int(song) != m_modeSeen || songSlot != m_songSeen) { m_modeSeen = int(song); m_songSeen = songSlot; relocate = true; }
     if (m_songEdited.exchange(false) && song && !m_seg.valid) relocate = true;   // a song that had ended: rows added
     const int want = juce::jlimit(0, 127, int(std::lround(m_patternParam->load())));
-    if (m_ptnPending.load() < 0 && want != m_patternSeen) { m_patternSeen = want; m_seqQueued = want == m_seg.slot ? -1 : want; }
+    if (m_ptnPending.load() < 0 && want != m_patternSeen) {
+        m_patternSeen = want; m_seqQueued = want == m_seg.slot ? -1 : want;
+        bool inChain = false;   // a pattern chosen another way ends a chain
+        for (int i = 0; i < juce::jlimit(0, 16, m_chainLen.load()); ++i) inChain = inChain || m_chain[size_t(i)].load() == want;
+        if (!inChain) m_chainLen.store(0);
+    }
     if (!m_hostPlaying) m_seqHalted = false;   // a STOP lasts until the transport stops (or a START / pattern note)
     const bool on = m_seqOn->load() >= 0.5f && !m_seqHalted;   // with no bank, the pattern is empty: the steps still run
     if (!on || !m_hostPlaying) {   // stopped: PATTERN shows the next pattern at once; SONG starts over
@@ -728,6 +740,11 @@ void MdProcessor::scheduleSequencer(int n, double ratio)
                 } else if (m_seg.steps < 0) {   // ends at the end of its pass
                     const double len = m_seg.player.lengthClocks();
                     m_seg.steps = int64_t(std::floor((c0 - m_seg.origin) / len) + 1.0) * m_seg.player.span();
+                }
+            } else if (m_chainLen.load() > 1) {   // a chain: each pass ends (at least the pass that is starting)
+                if (m_seg.valid && m_seg.steps < 0) {
+                    const double len = m_seg.player.lengthClocks();
+                    m_seg.steps = juce::jmax<int64_t>(1, int64_t(std::floor((c0 - m_seg.origin) / len) + 1.0)) * m_seg.player.span();
                 }
             } else if (m_seg.steps >= 0 && m_seg.endClock() > c0) {
                 m_seg.steps = -1;   // the queue was taken back: play on
@@ -901,6 +918,21 @@ void MdProcessor::patternNote(int note, bool on)
     choose(act);
     if (running) m_ptnJump = act;
     else { m_seqQueued = act; start(); }
+}
+
+void MdProcessor::setChain(const std::vector<int>& slots)
+{
+    const int n = juce::jmin(16, int(slots.size()));
+    m_chainLen.store(0);
+    for (int i = 0; i < n; ++i) m_chain[size_t(i)].store(int8_t(juce::jlimit(0, 127, slots[size_t(i)])));
+    m_chainLen.store(n > 1 ? n : 0);
+}
+
+std::vector<int> MdProcessor::chain() const
+{
+    std::vector<int> v;
+    for (int i = 0; i < juce::jlimit(0, 16, m_chainLen.load()); ++i) v.push_back(m_chain[size_t(i)].load());
+    return v;
 }
 
 void MdProcessor::recordTrig(int t, double clock, int velocity)

@@ -62,6 +62,14 @@ patterns along.
 | Reverse a ROM / RAM-P sample | Set END lower than STRT (as on the MD) |
 | Copy / paste / clear | **Shift / Ctrl / Alt + click** on a page dot (that page), **TRK** (the track) or **PTN** (the pattern). Keys: Ctrl+C / Ctrl+V / Delete on the shown page |
 | Double the pattern | **X2** or Ctrl+D |
+| Move a track's trigs one step | GRID on: **Shift+Left / Right** (plain Left / Right: previous / next page) |
+| Copy / paste one note with its locks | Hold a step (Shift+click), then **Ctrl+C**, hold another, **Ctrl+V**. **Delete** clears a held step's locks |
+| Lock a knob's value as it is | Hold a step and **click** the knob (no turn needed) |
+| Chain patterns | **Shift+click PTN >** adds the next pattern to a looping chain (CHN A01>A02...), **Shift+click <** takes the last off; picking a pattern ends it |
+| Change a parameter on every track | **Alt+turn** the knob (not MID, RAM-R or CTR tracks) |
+| Mute several tracks at once | **Shift+click** their M buttons, then let go of Shift |
+| Kit undo / reload | **Ctrl+Alt+Z** brings back the kit you replaced; **Ctrl+R** reloads the saved kit (also in MENU) |
+| Copy / paste / clear a machine | **Ctrl+Shift+C / V / Delete** on the selected track (also in MENU) |
 | Undo / redo | Ctrl+Z / Ctrl+Shift+Z (also in MENU) |
 | Live recording | **REC**, then play: notes and track keys go onto the nearest step, knob turns become locks |
 | Length, speed, swing, accent, kit | The OUTPUT panel's **PATTERN** tab |

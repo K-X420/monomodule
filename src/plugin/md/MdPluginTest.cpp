@@ -391,6 +391,66 @@ int main(int argc, char** argv)
             med->devUndo();
             check(proc.bankPattern(0)->length == 48, "undo brings the page back");
         }
+        {   // step editing pack: track shift, note copy / paste, a held step's locks cleared, a knob click locks its value
+            proc.editPattern(0, [](mnm::mddump::Pattern& x) { x.length = 16; x.scale = 0; x.trigs[0] = (1ull << 0) | (1ull << 15); x.setLock(0, 0, 0, 33); });
+            med->devShiftTrack(1);
+            auto pp = proc.bankPattern(0);
+            const int row = pp ? pp->lockRow(0, 0) : -1;
+            check(pp && pp->trigs[0] == ((1ull << 1) | (1ull << 0)) && row >= 0 && pp->locks[row][1] == 33, "Shift+Right: T1's trigs one step later (16 wraps to 1), the lock goes with its trig");
+            med->devShiftTrack(-1);
+            check(proc.bankPattern(0)->trigs[0] == ((1ull << 0) | (1ull << 15)), "Shift+Left: back");
+            med->devCopyNote(0); med->devStep(4); med->devPasteNote(4);
+            pp = proc.bankPattern(0);
+            check(pp && ((pp->trigs[0] >> 4) & 1) && pp->locks[pp->lockRow(0, 0)][4] == 33, "copy note 1, paste onto 5: the trig and its PTCH lock");
+            med->devHold(8);
+            med->devStep(8);   // (a trig there to hold) -- toggles: make sure it is on
+            if (!((proc.bankPattern(0)->trigs[0] >> 8) & 1)) med->devStep(8);
+            med->devHold(8);
+            med->devSynPage().devClick(1);   // DEC as it is: locked on step 9
+            pp = proc.bankPattern(0);
+            check(pp && pp->lockRow(0, 1) >= 0 && pp->locks[pp->lockRow(0, 1)][8] <= 127, "a click on a held step's knob locks its value as it is");
+            med->devHold(-1);
+        }
+        {   // Alt + turn: every other track's same knob (not the edited one twice; MID / CTR / RAM-R skipped)
+            if (med->devSynPage().onAltTurn) med->devSynPage().onAltTurn(0, 99);
+            bool all = true;
+            for (int u = 1; u < 16; ++u) all = all && std::lround(proc.apvts.getRawParameterValue(knobId(u, 0))->load()) == 99;
+            check(all, "Alt + PTCH turn: every track's PTCH to 99");
+        }
+        {   // queued mutes: Shift + M on T2 and T3, nothing yet; Shift let go: both flip together
+            med->devQueueMute(1); med->devQueueMute(2);
+            const bool none = proc.apvts.getRawParameterValue(muteId(1))->load() < 0.5f && proc.apvts.getRawParameterValue(muteId(2))->load() < 0.5f;
+            med->devApplyMuteQueue();
+            check(none && proc.apvts.getRawParameterValue(muteId(1))->load() >= 0.5f && proc.apvts.getRawParameterValue(muteId(2))->load() >= 0.5f, "Shift + M on T2, T3: queued, then both muted together");
+            med->devQueueMute(1); med->devQueueMute(2); med->devApplyMuteQueue();
+        }
+        {   // kit tools: copy / paste / clear a machine; undo a kit change (twice = back again)
+            auto setM = [&](int t, int id) { if (auto* q = proc.apvts.getParameter(machineId(t))) q->setValueNotifyingHost(q->convertTo0to1(float(machineIndexOf(id)))); };
+            setM(0, 17); proc.syncMachineSideEffects();   // the machine first (its defaults land), then DEC
+            if (auto* q = proc.apvts.getParameter(knobId(0, 1))) q->setValueNotifyingHost(q->convertTo0to1(77.0f));
+            proc.syncMachineSideEffects();
+            med->devSelectTrack(0); med->devCopyMachine();
+            med->devSelectTrack(5); med->devPasteMachine();
+            proc.syncMachineSideEffects();
+            check(proc.machineIdOf(5) == 17 && std::lround(proc.apvts.getRawParameterValue(knobId(5, 1))->load()) == 77, "copy T1's machine, paste onto T6: the machine and its DEC (got machine " + juce::String(proc.machineIdOf(5)) + ", DEC " + juce::String(proc.apvts.getRawParameterValue(knobId(5, 1))->load()) + ", T1 " + juce::String(proc.machineIdOf(0)) + ")");
+            med->devClearMachine();
+            proc.syncMachineSideEffects();
+            check(proc.machineIdOf(5) == 0, "clear T6's machine: GND---");
+            auto other = proc.captureMdKit();
+            for (int u = 0; u < 16; ++u) other.models[u] = 1;   // a kit of GND-SN
+            const auto before = proc.machineIdOf(0);
+            med->devLoadKitData(other, "OTHER");
+            proc.syncMachineSideEffects();
+            const bool loaded = proc.machineIdOf(0) == 1;
+            med->devUndoKit();
+            proc.syncMachineSideEffects();
+            const bool back = proc.machineIdOf(0) == before;
+            med->devUndoKit();
+            proc.syncMachineSideEffects();
+            check(loaded && back && proc.machineIdOf(0) == 1, "a kit loaded, UNDO KIT brings the one before back, again: the new one");
+            med->devUndoKit(); proc.syncMachineSideEffects();
+            med->devSelectTrack(0);
+        }
         med->devBarClick(MdSeqBar::Pages, 0, juce::ModifierKeys(juce::ModifierKeys::shiftModifier));   // the bar says "COPIED PAGE 1"
         if (argc > 3) {
             med->devHold(4); med->refresh();
@@ -1074,6 +1134,24 @@ int main(int argc, char** argv)
                 ok = ok && !got.empty() && std::abs(got[0].clock - want[k]) < 1e-9;
             }
             check(ok, "speeds 1x 2x 3/4x 3/2x 1/2x 1/4x 1/8x 3x: step 2 at clocks 6 3 8 4 12 24 48 2");
+        }
+        {   // a chain A01 > A04: a pass each, looping; choosing A06 ends it
+            head.playing = false; run(3);
+            if (auto* a = p.apvts.getParameter(seqModeId())) a->setValueNotifyingHost(0.0f);
+            if (auto* a = p.apvts.getParameter(patternId())) a->setValueNotifyingHost(a->convertTo0to1(0.0f));
+            p.editPattern(0, [](mnm::mddump::Pattern& x) { x.length = 16; x.doubleTempo = 0; });
+            p.editPattern(3, [](mnm::mddump::Pattern& x) { x.length = 16; x.doubleTempo = 0; });
+            run(3);
+            p.setChain({0, 3});
+            head.ppq = 0; head.playing = true;
+            std::vector<int> seen;
+            for (int i = 0; i < 640; ++i) { run(1); const int s = p.seqPattern(); if (seen.empty() || seen.back() != s) seen.push_back(s); }   // 6.4 s: 3+ passes of 2 s
+            juce::String seq; for (int s : seen) seq << s << " ";
+            check(seen.size() >= 4 && seen[0] == 0 && seen[1] == 3 && seen[2] == 0 && seen[3] == 3, "chain A01 > A04 plays them in turn, looping: " + seq);
+            if (auto* a = p.apvts.getParameter(patternId())) a->setValueNotifyingHost(a->convertTo0to1(5.0f));
+            run(3);
+            check(p.chain().empty(), "choosing A06 ends the chain");
+            head.playing = false; run(3);
         }
         std::printf(fails ? "OSCHECK TEST FAILED (%d)\n" : "OSCHECK TEST OK\n", fails);
         return fails ? 1 : 0;

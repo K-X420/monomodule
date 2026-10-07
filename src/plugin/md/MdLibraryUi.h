@@ -50,7 +50,8 @@ public:
         juce::String flash;   // a short confirmation in the STEP box ("COPIED PAGE 1")
         int track = 0, pattern = 0, length = 16, page = 0, step = -1, row = -1;
         juce::String machine;
-        bool operator==(const State& o) const { return beat == o.beat && playing == o.playing && mix == o.mix && flash == o.flash && seqOff == o.seqOff && rec == o.rec && recording == o.recording && muted == o.muted && hostPlaying == o.hostPlaying && grid == o.grid && empty == o.empty && track == o.track && pattern == o.pattern && length == o.length && page == o.page && step == o.step && row == o.row && machine == o.machine; }
+        juce::String chain;   // a pattern chain: "A01>A02>A03" (shown in PTN)
+        bool operator==(const State& o) const { return beat == o.beat && playing == o.playing && mix == o.mix && flash == o.flash && seqOff == o.seqOff && rec == o.rec && recording == o.recording && muted == o.muted && hostPlaying == o.hostPlaying && grid == o.grid && empty == o.empty && track == o.track && pattern == o.pattern && length == o.length && page == o.page && step == o.step && row == o.row && machine == o.machine && chain == o.chain; }
     };
     std::function<void(Part)> onPart;
     std::function<void(int)> onPage;

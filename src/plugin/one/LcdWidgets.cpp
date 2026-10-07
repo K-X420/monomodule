@@ -36,6 +36,8 @@ void KnobCell::mouseUp(const juce::MouseEvent& e)
     if (onValueClick && !e.mouseWasDraggedSinceMouseDown() && e.getNumberOfClicks() == 1
         && m_valueArea.contains(e.getMouseDownPosition()) && m_valueArea.contains(e.getPosition()))
         onValueClick();
+    else if (onKnobClick && !e.mouseWasDraggedSinceMouseDown() && e.getNumberOfClicks() == 1 && !m_valueArea.contains(e.getMouseDownPosition()))
+        onKnobClick();
 }
 
 void KnobCell::mouseDoubleClick(const juce::MouseEvent& e)
@@ -189,6 +191,7 @@ void KnobPage::bindCustom(const spec::Param* params8, std::function<int(int)> ge
         cell.setToggle(params8[k].display == spec::Display::Readout && params8[k].icons == spec::Icons::Toggle && params8[k].valueCount == 2);
         cell.onValueChange = [this, k] { repaint(); if (!m_pulling && m_set) m_set(k, int(std::lround(m_cells[size_t(k)].getValue()))); };
         cell.onReset = [this, k] { if (!m_reset) return false; m_reset(k); pull(); repaint(); return true; };
+        cell.onKnobClick = [this, k] { if (m_set) { m_set(k, int(std::lround(m_cells[size_t(k)].getValue()))); repaint(); } };   // locks the value as it is
     }
     m_pulling = false;
     endEdit(false);
@@ -219,8 +222,13 @@ void KnobPage::bind(const spec::Param* params8, const std::function<juce::String
     m_marked = nullptr;
     for (int k = 0; k < 8; ++k) {
         auto& cell = m_cells[size_t(k)];
-        cell.onValueChange = [this] { repaint(); };   // the page draws the cells
+        cell.onValueChange = [this, k] {   // the page draws the cells; Alt + a mouse turn goes to every track
+            repaint();
+            auto& c = m_cells[size_t(k)];
+            if (onAltTurn && c.isMouseButtonDown() && juce::ModifierKeys::currentModifiers.isAltDown()) onAltTurn(k, int(std::lround(c.getValue())));
+        };
         cell.onReset = nullptr;
+        cell.onKnobClick = nullptr;
         m_attach[size_t(k)].reset();
         m_params[size_t(k)] = params8[k];
         const auto d = params8[k].display;
