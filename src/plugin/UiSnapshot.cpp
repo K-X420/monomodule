@@ -162,6 +162,7 @@ int main(int argc, char** argv)
             for (uint32_t f = 0; f < a->frames; ++f) a->mixL[f] = a->mixR[f] = float(std::sin(2.0 * juce::MathConstants<double>::pi * f / kPeriod));
             a->ready.store(a->frames); a->done.store(true);
             PreviewVoice v;
+            v.prepare(rate);   // as the plugins' prepareToPlay and the Library app's device start do
             v.start(a, -1);
             v.setLoop(true);
             std::vector<float> out;

@@ -2,6 +2,7 @@ add_library(mnmcore STATIC
   firmware/Firmware.cpp
   dsp/DspEngine.cpp
   dsp/Digibank.cpp
+  dsp/Resampler.cpp
   host/HostModel.cpp
   host/Lfo.cpp
   MonoVoice.cpp

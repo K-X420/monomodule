@@ -59,6 +59,7 @@ MnmOneProcessor::MnmOneProcessor(Variant variant)
     m_poly = m_numTracks > 1 ? apvts.getRawParameterValue(polyId()) : nullptr;
     resetPoly();
     m_firmwarePath = loadSharedOsPath();   // never a compiled-in path: fresh installs start unconfigured
+    m_midi.reserve(kMaxPendingMidi);       // the audio thread only fills it up to this capacity
     loadEngine();
 }
 
@@ -85,7 +86,7 @@ void MnmOneProcessor::loadEngine()
             auto v = std::make_unique<MonoVoice>(*fwNew);
             v->host().setMachine(tr->currentMachine);
             v->host().setOutBuses(uint32_t(outBusMask(*tr)));
-            v->host().setKeyTracking(tr->lpKeyTrack->load() >= 0.5f, tr->hpKeyTrack->load() >= 0.5f);
+            v->host().setKeyTracking(keyTracks(tr->lpKeyTrack), keyTracks(tr->hpKeyTrack));
             if (isFxMachine(tr->currentMachine)) { v->host().setRouting(dspInputBits(fxInputOf(*tr))); v->host().noteOn(60); }
             v->warmUp(64);   // every voice runs the same warm-up, so the six frame counters stay in step
             voices.push_back(std::move(v));
@@ -420,7 +421,7 @@ juce::String MnmOneProcessor::statusText() const
         const auto& st = tr->voice->engine().stats();
         if (st.blocks) s += " | " + juce::String(st.totalInstructions / st.blocks) + " instr/block";
     }
-    if (m_needsResample) s += " | host rate " + juce::String(m_hostRate, 0) + " Hz: resampling from 44100 (not 1:1)";
+    if (m_needsResample) s += " | host rate " + juce::String(m_hostRate, 0) + " Hz: converted from the engine's 44100 (latency " + juce::String(getLatencySamples()) + " samples)";
     for (const auto& tr : m_tracks) {
         const int slot = machineSlotOf(*tr);
         if (!machineSupported(slot))
@@ -429,21 +430,62 @@ juce::String MnmOneProcessor::statusText() const
     return s;
 }
 
+// The emulated FX path's own delay, in engine frames: input arrives in 16-frame blocks, and the kernel's THRU impulse
+// response then peaks 7 frames into its block (the same for every FX machine and every position in the block).
+static constexpr int kFxPathFrames = 23;
+
+// What the host is told: the conversion, and for Monomodule FX its path delay too, so a host lines the effect up with
+// the dry signal. The instruments' FX tracks keep that delay unreported (it is the hardware's, relative to the notes).
+int MnmOneProcessor::latencyAt(double rate) const
+{
+    return m_inLag + m_outLag + (isEffect() ? int(std::lround(kFxPathFrames * rate / 44100.0)) : 0);
+}
+
 void MnmOneProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
     m_hostRate = sampleRate;
     m_needsResample = std::abs(sampleRate - 44100.0) > 0.5;
-    const int maxIn = int(std::ceil(samplesPerBlock * 44100.0 / sampleRate)) + 32;
+    m_maxChunk = std::max(1, samplesPerBlock);
+    int historyFrames = 0, historyHost = 0;
+    if (m_needsResample) {
+        m_toHost.design(44100.0, sampleRate);
+        m_toEngine.design(sampleRate, 44100.0);
+        m_engineAt.set(44100.0, sampleRate);
+        m_hostAt.set(sampleRate, 44100.0);
+        m_inLag = m_toEngine.halfTaps();
+        // output m reads engine frames up to floor((m - inLag - outLag) * 44100 / rate) + H; the chunk ending at m has
+        // rendered those up to floor((m - inLag) * 44100 / rate): outLag * 44100 / rate >= H + 1 keeps every read inside
+        m_outLag = int(std::ceil((m_toHost.halfTaps() + 1) * sampleRate / 44100.0));
+        m_maxEngine = int(std::ceil(m_maxChunk * 44100.0 / sampleRate)) + 2;
+        historyFrames = m_maxEngine + 2 * m_toHost.halfTaps() + 64;
+        historyHost = m_maxChunk + 2 * m_inLag + 64;
+        m_taps.assign(size_t(std::max(m_toHost.numTaps(), m_toEngine.numTaps())), 0.f);
+    } else {
+        m_inLag = m_outLag = 0;
+        m_maxEngine = m_maxChunk;
+    }
     m_sideL.assign(size_t(samplesPerBlock), 0.f); m_sideR.assign(size_t(samplesPerBlock), 0.f);
-    for (int b = 0; b < 3; ++b) { m_busL[size_t(b)].assign(size_t(maxIn), 0.f); m_busR[size_t(b)].assign(size_t(maxIn), 0.f); }
-    m_outL.assign(size_t(samplesPerBlock), 0.f); m_outR.assign(size_t(samplesPerBlock), 0.f);
+    m_sideEngL.assign(size_t(m_maxEngine), 0.f); m_sideEngR.assign(size_t(m_maxEngine), 0.f);
+    for (auto& h : m_sideHist) h.prepare(historyHost);
+    for (int b = 0; b < 3; ++b) {
+        m_busL[size_t(b)].assign(size_t(m_maxEngine), 0.f); m_busR[size_t(b)].assign(size_t(m_maxEngine), 0.f);
+        for (auto& h : m_busHist[size_t(b)]) h.prepare(historyFrames);
+    }
+    m_midi.clear();
+    m_midi.reserve(kMaxPendingMidi);
+    m_hostPos = m_enginePos = 0;
+    const int latency = latencyAt(sampleRate);
+    setLatencySamples(latency);
+    m_bypassDelay.setSize(2, latency);
+    m_bypassDelay.clear();
+    m_bypassPos = 0;
+    m_previewVoice.prepare(sampleRate);
     const juce::ScopedLock sl(m_engineLock);
     for (auto& tr : m_tracks) {
         tr->lastFrames = 0;
-        tr->engL.assign(size_t(maxIn), 0.f); tr->engR.assign(size_t(maxIn), 0.f);
-        tr->inL.assign(size_t(maxIn), 0.f); tr->inR.assign(size_t(maxIn), 0.f);
-        tr->hostL.assign(size_t(samplesPerBlock), 0.f); tr->hostR.assign(size_t(samplesPerBlock), 0.f);
-        tr->interpL.reset(); tr->interpR.reset(); tr->interpInL.reset(); tr->interpInR.reset();
+        tr->engL.assign(size_t(m_maxEngine), 0.f); tr->engR.assign(size_t(m_maxEngine), 0.f);
+        tr->inL.assign(size_t(m_maxEngine), 0.f); tr->inR.assign(size_t(m_maxEngine), 0.f);
+        for (auto& h : tr->hist) h.prepare(historyFrames);
         if (tr->voice) { tr->voice->warmUp(16); tr->heldNotes.clear(); }
     }
     m_polyMidi.ensureSize(4096);   // grows on the audio thread only past this
@@ -498,7 +540,7 @@ void MnmOneProcessor::applyParametersToHost(Track& tr)
     // enter through the ADC path (dspInputBits)
     h.setOutBuses(uint32_t(outBusMask(tr)));
     h.setRouting(fx ? dspInputBits(fxInputOf(tr)) : 0u);
-    h.setKeyTracking(tr.lpKeyTrack->load() >= 0.5f, tr.hpKeyTrack->load() >= 0.5f);
+    h.setKeyTracking(keyTracks(tr.lpKeyTrack), keyTracks(tr.hpKeyTrack));
     for (int k = 0; k < 8; ++k) h.setParam(Page::SYN, k, int(tr.syn[k]->load()));   // raw kit bytes, as stored
     for (int p = 1; p < 4; ++p)
         for (int k = 0; k < 8; ++k) h.setParam(Page(p), k, int(tr.pages[p][k]->load()));
@@ -613,30 +655,44 @@ void MnmOneProcessor::allocatePoly(const juce::MidiBuffer& in, juce::MidiBuffer&
     }
 }
 
-// Side-chain input (host rate) -> tr.inL/inR at 44.1 kHz; zeros when the host has no input bus enabled.
-void MnmOneProcessor::fillFxInput(Track& tr, int nEngine, double ratio)
+// Does an FX machine on this track read the side-chain (INP A/B/AB; One's and FX's FX machines always do)?
+bool MnmOneProcessor::readsSideChain(const Track& tr) const
 {
-    if (int(tr.inL.size()) < nEngine) { tr.inL.resize(size_t(nEngine)); tr.inR.resize(size_t(nEngine)); }
-    if (m_sideChannels == 0) {
-        std::fill_n(tr.inL.data(), nEngine, 0.f); std::fill_n(tr.inR.data(), nEngine, 0.f);
+    if (!isFxMachine(machineAt(machineSlotOf(tr)))) return false;
+    const FxInput in = fxInputOf(tr);
+    return in == FxInput::InpA || in == FxInput::InpB || in == FxInput::InpAB;
+}
+
+// The side-chain for the engine frames of this chunk, shared by every FX track that reads it (m_sideEngL/R); zeros
+// when the host has no input bus enabled. At 44.1 kHz the host samples are the frames. Otherwise the host samples
+// join their history and each frame e is the band-limited input at host position e * rate / 44100, whose taps reach
+// only samples that have arrived (the engine trails by the converter's half length, m_inLag).
+void MnmOneProcessor::fillSideChain(int offset, int n, int64_t firstFrame, int nEngine)
+{
+    if (!m_needsResample) {
+        if (m_sideChannels == 0) { std::fill_n(m_sideEngL.data(), nEngine, 0.f); std::fill_n(m_sideEngR.data(), nEngine, 0.f); }
+        else { std::copy_n(m_sideL.data() + offset, nEngine, m_sideEngL.data()); std::copy_n(m_sideR.data() + offset, nEngine, m_sideEngR.data()); }
         return;
     }
-    if (m_needsResample) {
-        tr.interpInL.process(1.0 / ratio, m_sideL.data(), tr.inL.data(), nEngine);
-        tr.interpInR.process(1.0 / ratio, m_sideR.data(), tr.inR.data(), nEngine);
-    } else {
-        std::copy_n(m_sideL.data(), nEngine, tr.inL.data());
-        std::copy_n(m_sideR.data(), nEngine, tr.inR.data());
+    if (m_sideChannels == 0) { m_sideHist[0].pushZeros(n); m_sideHist[1].pushZeros(n); }
+    else { m_sideHist[0].push(m_sideL.data() + offset, n); m_sideHist[1].push(m_sideR.data() + offset, n); }
+    const bool needed = std::any_of(m_tracks.begin(), m_tracks.end(), [this](const auto& tr) { return readsSideChain(*tr); });
+    if (m_sideChannels == 0 || !needed) { std::fill_n(m_sideEngL.data(), nEngine, 0.f); std::fill_n(m_sideEngR.data(), nEngine, 0.f); return; }
+    const int half = m_toEngine.halfTaps(), taps = m_toEngine.numTaps();
+    for (int k = 0; k < nEngine; ++k) {
+        const auto at = m_hostAt.at(firstFrame + k);
+        const float* t = m_toEngine.taps(at, m_taps.data());
+        m_sideEngL[size_t(k)] = m_sideHist[0].dot(at.index - half + 1, t, taps);
+        m_sideEngR[size_t(k)] = m_sideHist[1].dot(at.index - half + 1, t, taps);
     }
 }
 
-// Renders one track into tr.engL/R (44.1 kHz) and mixes it into the OUT BUS buses. Tracks render in index
-// order, so a track reading a mix bus or its neighbour sees exactly the tracks before it (the hardware
-// mixes "in the same order as their index"); a track that reads and writes the same bus replaces the bus
-// content (an insert), as the kernel does.
-void MnmOneProcessor::renderTrack(Track& tr, int nEngine, double ratio, const juce::MidiBuffer& midi)
+// Renders one track's engine frames firstFrame .. firstFrame + nEngine - 1 into tr.engL/R (44.1 kHz) and mixes them
+// into the OUT BUS buses. Tracks render in index order, so a track reading a mix bus or its neighbour sees exactly the
+// tracks before it (the hardware mixes "in the same order as their index"); a track that reads and writes the same bus
+// replaces the bus content (an insert), as the kernel does.
+void MnmOneProcessor::renderTrack(Track& tr, int64_t firstFrame, int nEngine)
 {
-    if (int(tr.engL.size()) < nEngine) { tr.engL.resize(size_t(nEngine)); tr.engR.resize(size_t(nEngine)); }
     float* L = tr.engL.data();
     float* R = tr.engR.data();
     tr.lastFrames = nEngine;
@@ -654,7 +710,6 @@ void MnmOneProcessor::renderTrack(Track& tr, int nEngine, double ratio, const ju
     const float* srcL = nullptr;
     const float* srcR = nullptr;
     if (fx) {
-        if (int(tr.inL.size()) < nEngine) { tr.inL.resize(size_t(nEngine)); tr.inR.resize(size_t(nEngine)); }
         switch (input) {
         case FxInput::Neighbor:
             if (tr.index > 0) { const auto& prev = *m_tracks[size_t(tr.index - 1)]; srcL = prev.engL.data(); srcR = prev.engR.data(); }
@@ -666,19 +721,17 @@ void MnmOneProcessor::renderTrack(Track& tr, int nEngine, double ratio, const ju
             break;
         }
         default:   // INP A / INP B / INP AB from the side-chain; for a mono input the kernel copies that ADC channel to both sides
-            fillFxInput(tr, nEngine, ratio);
-            srcL = tr.inL.data(); srcR = tr.inR.data();
+            srcL = m_sideEngL.data(); srcR = m_sideEngR.data();
             break;
         }
     }
 
-    auto ev = midi.begin();
+    size_t ev = 0;
     int pos = 0;
     while (pos < nEngine) {
         if (tr.voice->framesBuffered() == 0) {
-            // DSP block boundary: apply MIDI events due so far and refresh parameters (as the hardware does)
-            const int hostPos = int(pos / ratio);
-            while (ev != midi.end() && (*ev).samplePosition <= hostPos) { handleMidi(tr, (*ev).getMessage()); ++ev; }
+            // DSP block boundary: apply the MIDI events due by this frame and refresh parameters (as the hardware does)
+            for (; ev < m_midi.size() && m_midi[ev].frame <= firstFrame + pos; ++ev) handleMidi(tr, m_midi[ev].msg);
             applyParametersToHost(tr);
         }
         const int chunk = std::min(nEngine - pos, tr.voice->framesBuffered() > 0 ? tr.voice->framesBuffered() : dsp::DspEngine::kBlockFrames);
@@ -686,7 +739,8 @@ void MnmOneProcessor::renderTrack(Track& tr, int nEngine, double ratio, const ju
         else tr.voice->process(L + pos, R + pos, chunk);
         pos += chunk;
     }
-    while (ev != midi.end()) { handleMidi(tr, (*ev).getMessage()); ++ev; }   // late events take effect at the next boundary
+    // events due after this chunk's last boundary take effect at the next one, which is no earlier than their frame
+    for (; ev < m_midi.size() && m_midi[ev].frame < firstFrame + nEngine; ++ev) handleMidi(tr, m_midi[ev].msg);
 
     float pk = tr.peak.load() * 0.8f;   // fall-off so the meter stays readable between UI polls
     for (int i = 0; i < nEngine; ++i) pk = std::max({pk, std::abs(L[i]), std::abs(R[i])});
@@ -705,39 +759,78 @@ void MnmOneProcessor::renderTrack(Track& tr, int nEngine, double ratio, const ju
     }
 }
 
-// Copies the block's result into the plugin's output buses (host rate). TRACKS: bus n = track n's own
-// output, silent when the track has no OUT BUS (like turning its outputs off on the hardware); a bus the
-// host disabled folds into bus 1. BUSES: buses 1-3 = the mix buses AB/CD/EF (the hardware's 3xSTEREO outs).
-void MnmOneProcessor::writeOutputs(juce::AudioBuffer<float>& buffer, int nEngine, double ratio)
+// Writes the chunk's result into the plugin's output buses (host rate) at `offset`. TRACKS: bus n = track n's own
+// output, silent when the track has no OUT BUS (like turning its outputs off on the hardware); a bus the host disabled
+// folds into bus 1. BUSES: buses 1-3 = the mix buses AB/CD/EF (the hardware's 3xSTEREO outs). At 44.1 kHz the engine
+// frames are the output, bit for bit. Otherwise every track and bus keeps a history, fed whether it is heard or not
+// (switching outputs or routing never meets a gap), and output sample m is the band-limited engine signal at engine
+// time (m - inLag - outLag) * 44100 / rate: one set of taps per sample, shared by every stream.
+void MnmOneProcessor::writeOutputs(juce::AudioBuffer<float>& buffer, int offset, int n, int nEngine)
 {
-    const int n = buffer.getNumSamples();
-    auto emit = [&](int busIdx, const float* L, const float* R, juce::LagrangeInterpolator& iL, juce::LagrangeInterpolator& iR) {
+    struct Stream { const float* engL; const float* engR; const dsp::History* histL; const dsp::History* histR; float* outL; float* outR; };
+    std::array<Stream, size_t(kMaxTracks)> streams;
+    int count = 0;
+    auto add = [&](int busIdx, const float* L, const float* R, const std::array<dsp::History, 2>& h) {
         if (busIdx >= getBusCount(false) || !getBus(false, busIdx)->isEnabled()) busIdx = 0;
-        const float* outL = L;
-        const float* outR = R;
-        if (m_needsResample) {
-            if (int(m_outL.size()) < n) { m_outL.resize(size_t(n)); m_outR.resize(size_t(n)); }
-            iL.process(ratio, L, m_outL.data(), n);
-            iR.process(ratio, R, m_outR.data(), n);
-            outL = m_outL.data(); outR = m_outR.data();
-        }
         auto bus = getBusBuffer(buffer, false, busIdx);
-        if (bus.getNumChannels() > 0) bus.addFrom(0, 0, outL, n);
-        if (bus.getNumChannels() > 1) bus.addFrom(1, 0, outR, n);
+        if (bus.getNumChannels() == 0) return;
+        streams[size_t(count++)] = {L, R, &h[0], &h[1], bus.getWritePointer(0) + offset, bus.getNumChannels() > 1 ? bus.getWritePointer(1) + offset : nullptr};
     };
+    if (m_needsResample) {
+        for (auto& trp : m_tracks) {
+            auto& tr = *trp;
+            if (tr.lastFrames == nEngine) { tr.hist[0].push(tr.engL.data(), nEngine); tr.hist[1].push(tr.engR.data(), nEngine); }
+            else { tr.hist[0].pushZeros(nEngine); tr.hist[1].pushZeros(nEngine); }
+        }
+        for (int b = 0; b < 3; ++b) { m_busHist[size_t(b)][0].push(m_busL[size_t(b)].data(), nEngine); m_busHist[size_t(b)][1].push(m_busR[size_t(b)].data(), nEngine); }
+    }
     const bool buses = m_outputMode && int(std::lround(m_outputMode->load())) == int(OutputMode::Buses);
     if (buses) {
-        for (int b = 0; b < 3; ++b) {
-            auto& tr = *m_tracks[size_t(b)];   // borrow the first three tracks' interpolators for the three buses
-            emit(b, m_busL[size_t(b)].data(), m_busR[size_t(b)].data(), tr.interpL, tr.interpR);
+        for (int b = 0; b < 3; ++b) add(b, m_busL[size_t(b)].data(), m_busR[size_t(b)].data(), m_busHist[size_t(b)]);
+    } else {
+        for (auto& trp : m_tracks) {
+            auto& tr = *trp;
+            if (tr.lastFrames < nEngine || outBusMask(tr) == 0) continue;
+            add(tr.index, tr.engL.data(), tr.engR.data(), tr.hist);
+        }
+    }
+    if (!m_needsResample) {
+        for (int s = 0; s < count; ++s) {
+            const auto& st = streams[size_t(s)];
+            juce::FloatVectorOperations::add(st.outL, st.engL, n);
+            if (st.outR) juce::FloatVectorOperations::add(st.outR, st.engR, n);
         }
         return;
     }
-    for (auto& trp : m_tracks) {
-        auto& tr = *trp;
-        if (tr.lastFrames < nEngine || outBusMask(tr) == 0) continue;
-        emit(tr.index, tr.engL.data(), tr.engR.data(), tr.interpL, tr.interpR);
+    const int half = m_toHost.halfTaps(), taps = m_toHost.numTaps();
+    const int64_t first = m_hostPos - (m_inLag + m_outLag);
+    for (int k = 0; k < n; ++k) {
+        const auto at = m_engineAt.at(first + k);
+        const float* t = m_toHost.taps(at, m_taps.data());
+        for (int s = 0; s < count; ++s) {
+            const auto& st = streams[size_t(s)];
+            st.outL[k] += st.histL->dot(at.index - half + 1, t, taps);
+            if (st.outR) st.outR[k] += st.histR->dot(at.index - half + 1, t, taps);
+        }
     }
+}
+
+// One chunk of a host block: renders the engine frames whose input has fully arrived, then writes the host samples.
+void MnmOneProcessor::processChunk(juce::AudioBuffer<float>& buffer, int offset, int n)
+{
+    const int64_t hostEnd = m_hostPos + n, e0 = m_enginePos;
+    // frames e with e * rate / 44100 + inLag <= hostEnd - 1: their input converter's taps have all arrived
+    const int64_t e1 = !m_needsResample ? hostEnd : hostEnd - 1 - m_inLag >= 0 ? std::max(e0, m_engineAt.floorAt(hostEnd - 1 - m_inLag) + 1) : e0;
+    const int nEngine = int(e1 - e0);
+    fillSideChain(offset, n, e0, nEngine);
+    for (int b = 0; b < 3; ++b) { std::fill_n(m_busL[size_t(b)].data(), nEngine, 0.f); std::fill_n(m_busR[size_t(b)].data(), nEngine, 0.f); }
+    for (auto& tr : m_tracks)   // in track order: NEIBOR and the mix buses carry the tracks before this one
+        if (tr->voice) renderTrack(*tr, e0, nEngine);
+    // every track has applied the events due before e1
+    m_midi.erase(m_midi.begin(), std::find_if(m_midi.begin(), m_midi.end(), [e1](const PendingMidi& p) { return p.frame >= e1; }));
+    writeOutputs(buffer, offset, n, nEngine);
+    m_hostPos = hostEnd;
+    m_enginePos = e1;
 }
 
 void MnmOneProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
@@ -762,12 +855,7 @@ void MnmOneProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiB
         m_previewVoice.process(main.getWritePointer(0), main.getNumChannels() > 1 ? main.getWritePointer(1) : nullptr, main.getNumSamples(), m_hostRate, false);
     const juce::ScopedTryLock sl(m_engineLock);
     if (!sl.isLocked() || !m_engineReady) { midi.clear(); return; }
-    const double ratio = 44100.0 / m_hostRate;     // engine frames per host frame
-    const int nEngine = m_needsResample ? int(std::ceil(n * ratio)) : n;
-    for (int b = 0; b < 3; ++b) {
-        if (int(m_busL[size_t(b)].size()) < nEngine) { m_busL[size_t(b)].resize(size_t(nEngine)); m_busR[size_t(b)].resize(size_t(nEngine)); }
-        std::fill_n(m_busL[size_t(b)].data(), nEngine, 0.f); std::fill_n(m_busR[size_t(b)].data(), nEngine, 0.f);
-    }
+    // POLY (Six): the notes spread over the tracks first (channels 1-6), then queued as any MIDI
     const bool poly = m_poly && m_poly->load() >= 0.5f;
     if (poly != m_wasPoly) {   // switching modes: nothing stays stuck from the other one
         resetPoly();
@@ -776,10 +864,35 @@ void MnmOneProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiB
     }
     if (poly) allocatePoly(midi, m_polyMidi);
     const auto& events = poly ? m_polyMidi : midi;
-    for (auto& tr : m_tracks)   // in track order: NEIBOR and the mix buses carry the tracks before this one
-        if (tr->voice) renderTrack(*tr, nEngine, ratio, events);
-    writeOutputs(buffer, nEngine, ratio);
+    // each event waits for its engine frame: the first at or after host sample s's engine time, s * 44100 / rate
+    for (const auto meta : events) {
+        const auto msg = meta.getMessage();
+        if ((msg.isNoteOnOrOff() || msg.isController()) && m_midi.size() < kMaxPendingMidi)
+            m_midi.push_back({engineFrameOf(m_hostPos + meta.samplePosition), msg});
+    }
+    for (int done = 0; done < n;) {   // blocks longer than prepared are split: no allocation on the audio thread
+        const int c = std::min(m_maxChunk, n - done);
+        processChunk(buffer, done, c);
+        done += c;
+    }
     midi.clear();
+}
+
+// Bypassed: the main input passes through delayed by the latency the plugin reports, so the host's delay compensation
+// keeps it in time (JUCE's default passes it undelayed); every other output is silent.
+void MnmOneProcessor::processBlockBypassed(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
+{
+    const int n = buffer.getNumSamples(), d = m_bypassDelay.getNumSamples();
+    const int inCh = std::min({getMainBusNumInputChannels(), buffer.getNumChannels(), m_bypassDelay.getNumChannels()});
+    if (d > 0) {
+        for (int c = 0; c < inCh; ++c) {
+            float* x = buffer.getWritePointer(c);
+            float* line = m_bypassDelay.getWritePointer(c);
+            for (int i = 0, p = m_bypassPos; i < n; ++i, p = p + 1 == d ? 0 : p + 1) { const float y = line[p]; line[p] = x[i]; x[i] = y; }
+        }
+        m_bypassPos = int((m_bypassPos + juce::int64(n)) % d);
+    }
+    for (int c = inCh; c < buffer.getNumChannels(); ++c) buffer.clear(c, 0, n);
 }
 
 juce::AudioProcessorEditor* MnmOneProcessor::createEditor()
