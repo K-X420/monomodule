@@ -35,6 +35,7 @@ public:
     void stoppedDragging() override { notifyPage(); }
 private:
     float m_wheelAcc = 0.0f;
+    juce::uint32 m_wheelLast = 0;
     void notifyPage() { if (auto* p = getParentComponent()) p->repaint(); }
     juce::Rectangle<int> m_valueArea;
     juce::MouseCursor m_valueCursor{juce::MouseCursor::IBeamCursor};

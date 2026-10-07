@@ -467,7 +467,7 @@ int main(int argc, char** argv)
         {   // every knob has a tooltip
             bool all = true;
             for (int k = 0; k < 8; ++k) all = all && med->devSynPage().devTip(k).isNotEmpty();
-            check(all && med->devSynPage().devTip(0).contains("Alt+turn"), "the SYNTHESIS knobs have tooltips: " + med->devSynPage().devTip(1).substring(0, 60));
+            check(all && med->devSynPage().devTip(1) == "Decay time", "the SYNTHESIS knobs say what they do: " + med->devSynPage().devTip(1));
         }
         med->devBarClick(MdSeqBar::Pages, 0, juce::ModifierKeys(juce::ModifierKeys::shiftModifier));   // the bar says "COPIED PAGE 1"
         if (argc > 3) {

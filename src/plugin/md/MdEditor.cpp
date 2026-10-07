@@ -1,6 +1,7 @@
 #include "MdEditor.h"
 #include <map>
 #include "MdMachineText.h"
+#include "MdParamWords.h"
 #include <cmath>
 #include "ShnolkLogo.h"
 #include "ParamDisplay.h"
@@ -18,7 +19,7 @@ using one::wrapLcdText;
 
 namespace {
 
-juce::String knobTip(const juce::String& label, int page);   // a knob's tooltip (below)
+juce::String knobTip(const juce::String& label, int page, const juce::String& family);   // a knob's tooltip (below)
 
 // "TRX-BD" -> "TRX" / "BD"; "P-I-BD" -> "P-I" / "BD"; "GND---" -> "GND" / "---"
 juce::String familyOf(int index)
@@ -244,26 +245,28 @@ void MdTrackKeys::paintGrid(LcdCanvas& cv)
         cv.text(spec::kFontBold8, juce::String(s + 1).toRawUTF8(), r.getX() + 3, r.getY() + 3, ink);
         {   // which track the keys are: "T3 SD"
             const int mi = juce::jlimit(0, kNumMachines - 1, m_machine[size_t(juce::jlimit(0, kTracks - 1, m_selected))]);
-            const juce::String tag = "T" + juce::String(m_selected + 1) + " " + (shortOf(mi) == "---" ? familyOf(mi) : shortOf(mi));
-            cv.text(spec::kFontTiny3x5, one::fit(spec::kFontTiny3x5, tag, r.getWidth() - 5).toRawUTF8(), r.getX() + 3, r.getY() + 14, ink);
+            cv.text(spec::kFontTiny3x5, ("T" + juce::String(m_selected + 1)).toRawUTF8(), r.getX() + 3, r.getY() + 14, ink);
+            cv.text(spec::kFontTiny3x5, (shortOf(mi) == "---" ? familyOf(mi) : shortOf(mi)).substring(0, 3).toRawUTF8(), r.getX() + 3, r.getY() + 21, ink);
         }
         {   // the step's ACCENT / SLIDE / SWING as round game-pad buttons: hollow off, solid on (click to flip)
-            static const char* const disc[7] = {"..###..", ".#####.", "#######", "#######", "#######", ".#####.", "..###.."};
-            static const char* const ring[7] = {"..###..", ".#...#.", "#.....#", "#.....#", "#.....#", ".#...#.", "..###.."};
-            static const char* const letters[3][5] = {{".#.", "#.#", "###", "#.#", "#.#"}, {".##", "#..", ".#.", "..#", "##."}, {"#.#", "#.#", "#.#", "###", "#.#"}};
+            static const char* const disc[9] = {"..#####..", ".#######.", "#########", "#########", "#########", "#########", "#########", ".#######.", "..#####.."};
+            static const char* const ring[9] = {"..#####..", ".#.....#.", "#.......#", "#.......#", "#.......#", "#.......#", "#.......#", ".#.....#.", "..#####.."};
+            static const char* const letters[3][5] = {{".###.", "#...#", "#####", "#...#", "#...#"},    // A
+                                                      {".####", "#....", ".###.", "....#", "####."},    // S
+                                                      {"#...#", "#...#", "#.#.#", "##.##", "#...#"}};   // W
             const uint64_t masks[3] = {gr.accent, gr.slide, gr.swing};
             for (int f = 0; f < 3; ++f) {
                 const auto b = flagBox(i, f);
                 const bool on = (masks[f] >> s) & 1;
-                for (int y = 0; y < 7; ++y)
-                    for (int x = 0; x < 7; ++x)
+                for (int y = 0; y < 9; ++y)
+                    for (int x = 0; x < 9; ++x)
                         if (disc[y][x] == '#') cv.set(b.getX() + x, b.getY() + y, ring[y][x] == '#' || on ? ink : !ink);
-                for (int y = 0; y < 5; ++y) for (int x = 0; x < 3; ++x) if (letters[f][y][x] == '#') cv.set(b.getX() + 2 + x, b.getY() + 1 + y, on ? !ink : ink);
+                for (int y = 0; y < 5; ++y) for (int x = 0; x < 5; ++x) if (letters[f][y][x] == '#') cv.set(b.getX() + 2 + x, b.getY() + 2 + y, on ? !ink : ink);
             }
         }
         if (((gr.locks >> s) & 1) && s != gr.held) {   // locked: a crit burst in the corner
             static const char* const burst[7] = {"#..#..#", ".#.#.#.", "..###..", "#######", "..###..", ".#.#.#.", "#..#..#"};
-            for (int y = 0; y < 7; ++y) for (int x = 0; x < 7; ++x) if (burst[y][x] == '#') cv.set(r.getRight() - 9 + x, r.getY() + 2 + y, ink);
+            for (int y = 0; y < 7; ++y) for (int x = 0; x < 7; ++x) if (burst[y][x] == '#') cv.set(r.getX() + 3 + x, r.getBottom() - 9 + y, ink);
         }
         if (s == gr.held) {   // held for locks: paper, a heavy frame, LOCK
             cv.fillRect(r.getX(), r.getY(), r.getWidth(), r.getHeight(), false);
@@ -873,7 +876,7 @@ MdEditor::MdEditor(MdProcessor& p)
         int pi = 0;
         for (auto* pg : {&m_syn, &m_fx, &m_routing, &m_lfo, &m_master, &m_out}) {
             const int page = pi++;
-            pg->tipFor = [this, page, pg](int, const juce::String& label) { return knobTip(label, page == 5 && pg->currentTab() == 1 ? 6 : page); };
+            pg->tipFor = [this, page, pg](int, const juce::String& label) { return knobTip(label, page == 5 && pg->currentTab() == 1 ? 6 : page, familyOf(juce::jlimit(0, kNumMachines - 1, m_machineIndex))); };
         }
         m_bpm.setTooltip("The tempo (drag or wheel). With SYNC on it follows Ableton");
         m_bpmSync.setTooltip("SYNC: the tempo follows Ableton's; off: the BPM here");
@@ -883,9 +886,9 @@ MdEditor::MdEditor(MdProcessor& p)
         bindOutPage(m_outTab);      // (bound before the tips were set)
         bindMasterFx(m_masterTab);
     }
-    m_mixer.setTooltip("The mixer: drag or wheel a fader / pan (double-click: default), M mutes, S solos (Shift+click: only that track), click a name to select it. Esc or M closes");
-    m_songEd.setTooltip("The song: drag or wheel a value, click a mute, double-click a tempo for --; right-click a row or use the buttons for rows. Esc closes");
-    m_midiPanel.setTooltip("MIDI settings: drag or wheel a value. Pattern notes: FROM is the white key that plays pattern 01 of BNK, the next white keys 02-16");
+    m_mixer.setTooltip("Mixer: level, pan, mute (M) and solo (S) of every track");
+    m_songEd.setTooltip("Song editor: the song's rows");
+    m_midiPanel.setTooltip("MIDI settings");
     addChildComponent(m_mixer);
     m_mixer.setWantsKeyboardFocus(true);
     m_mixer.strip = [this](int t) {
@@ -1231,33 +1234,31 @@ void MdEditor::stepMenu(int s)
 
 namespace {
 // What each knob does (the manual's words, short), by its label; the machine's own SYNTHESIS knobs get a general line
-juce::String knobTip(const juce::String& label, int page)
+juce::String knobTip(const juce::String& label, int page, const juce::String& family)
 {
     static const std::map<juce::String, const char*> words = {
-        {"AMD", "Amplitude modulation depth"}, {"AMF", "Amplitude modulation frequency"}, {"EQF", "EQ frequency"}, {"EQG", "EQ gain (centre = flat)"},
+        {"AMD", "Amplitude modulation depth"}, {"AMF", "Amplitude modulation rate"}, {"EQF", "EQ frequency"}, {"EQG", "EQ gain (centre = flat)"},
         {"FLTF", "Filter base frequency"}, {"FLTW", "Filter width (127 = open)"}, {"FLTQ", "Filter resonance"}, {"SRR", "Sample rate reduction"},
-        {"DIST", "Distortion"}, {"VOL", page == 5 ? "The plugin's output level" : "Track volume (before the effects sends)"}, {"PAN", "Pan in the stereo mix"},
-        {"DEL", "Send to the master delay"}, {"REV", "Send to the master reverb"}, {"OUT", "Output: MAIN or the individual outputs A-F (no master effects there)"},
-        {"TRGG", "TRIG GROUP: a trig of this track also trigs that track"}, {"MUTG", "MUTE GROUP: a trig of this track silences that track until its own next trig"},
-        {"TRK", "LFO: the track it modulates (the same or a later track)"}, {"PARAM", "LFO: the parameter it modulates"},
-        {"SHP1", "LFO shape 1"}, {"SHP2", "LFO shape 2 (the inverted shapes)"}, {"TYPE", "LFO: FREE runs on, TRIG restarts at each trig, HOLD samples and holds at each trig"},
-        {"SPD", page == 6 ? "Speed: 1X 2X 3/4X 3/2X as on the MD, plus 1/2X 1/4X 1/8X 3X" : "LFO speed, synced to the tempo"}, {"DEP", "LFO depth"},
-        {"MIX", "LFO: SHP1 (0) to SHP2 (127)"}, {"VEL", "Incoming note velocity: VOLUME (level) or ACCENT (accent from 112 up)"},
-        {"ACNT", "Accent amount for notes played in"}, {"SEQ", "The sequencer on / off (Ableton's play runs it)"}, {"PTN", "The pattern played and edited"},
-        {"MODE", "PATTERN loops a pattern; SONG plays a song's rows"}, {"SONG", "The song SONG mode plays"}, {"LEN", "Pattern length in steps"},
-        {"SWNG", "Swing amount (on the swing steps, W)"}, {"ACC", "Accent amount of the pattern"}, {"KIT", "The kit the pattern loads"},
-        {"GRID", "GRID: the keys become the selected track's steps (G)"}, {"PAGE", "The page GRID shows (or the page dots)"},
-        {"DVOL", "Reverb: the delay's level into it"}, {"PRED", "Reverb pre-delay"}, {"DEC", "Decay"}, {"DAMP", "Reverb damping"}, {"HP", "High-pass"},
-        {"LP", "Low-pass"}, {"GATE", "Reverb gate (127 = open)"}, {"LEV", "Effect output level"}, {"TIME", "Delay time, synced to the tempo (64 = two beats)"},
-        {"FB", "Delay feedback"}, {"MOD", "Delay modulation depth"}, {"MFRQ", "Delay modulation rate"},
+        {"DIST", "Distortion"}, {"VOL", "Track volume"}, {"PAN", "Pan"}, {"DEL", "Send to the master delay"}, {"REV", "Send to the master reverb"},
+        {"OUT", "Output: MAIN, or A-F (no master effects there)"}, {"TRGG", "Trig group: a trig here also trigs that track"},
+        {"MUTG", "Mute group: a trig here silences that track"}, {"TRK", "The track the LFO moves"}, {"PARAM", "The parameter the LFO moves"},
+        {"SHP1", "LFO shape"}, {"SHP2", "Second LFO shape (inverted)"}, {"TYPE", "FREE runs on, TRIG restarts each trig, HOLD holds each trig"},
+        {"SPD", "LFO speed (tempo synced)"}, {"DEP", "LFO depth"}, {"MIX", "Blend SHP1 to SHP2"}, {"DVOL", "Delay into the reverb"},
+        {"PRED", "Pre-delay"}, {"DEC", "Decay"}, {"DAMP", "Damping"}, {"HP", "High-pass"}, {"LP", "Low-pass"}, {"GATE", "Gate (127 = open)"},
+        {"LEV", "Output level"}, {"TIME", "Delay time (tempo synced)"}, {"FB", "Feedback"}, {"MOD", "Modulation depth"}, {"MFRQ", "Modulation rate"},
     };
-    juce::String s;
-    if (const auto it = words.find(label); it != words.end()) s = it->second;
-    else if (page == 0) s = label + ": a SYNTHESIS parameter of this machine";
-    else s = label;
-    s << ". Drag or wheel; double-click: default";
-    if (page <= 3) s << ". Alt+turn: every track. GRID with a step held (Shift+click): a turn locks it there, a click locks the value as it is, a double-click clears that lock";
-    return s;
+    static const std::map<juce::String, const char*> out = {
+        {"VOL", "Plugin output level"}, {"VEL", "Note velocity: VOLUME or ACCENT"}, {"ACNT", "Accent amount for played notes"},
+        {"SEQ", "Sequencer on / off"}, {"PTN", "The pattern"}, {"MODE", "PATTERN or SONG"}, {"SONG", "The song SONG mode plays"},
+        {"LEN", "Pattern length"}, {"SPD", "Pattern speed"}, {"SWNG", "Swing amount"}, {"ACC", "Accent amount"}, {"KIT", "The pattern's kit"},
+        {"GRID", "Keys as steps (G)"}, {"PAGE", "The page GRID shows"},
+    };
+    if (page == 0)
+        if (const char* w = text::machineWords(family.toRawUTF8(), label.toRawUTF8())) return w;
+    if (page >= 5)
+        if (const auto it = out.find(label); it != out.end()) return it->second;
+    if (const auto it = words.find(label); it != words.end()) return it->second;
+    return label;
 }
 }
 

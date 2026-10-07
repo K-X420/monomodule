@@ -45,14 +45,11 @@ void KnobCell::mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelD
     if (m_toggle || getMaximum() - getMinimum() > 32.0) { Slider::mouseWheelMove(e, w); return; }
     // a short list (a few names or icons): each notch one value; a smooth wheel / trackpad steps once per 0.1 of travel
     const float d = (std::abs(w.deltaY) >= std::abs(w.deltaX) ? w.deltaY : -w.deltaX) * (w.isReversed ? -1.0f : 1.0f);
+    // a short list: every wheel tick one value (as the knob's arrow goes down the list); a smooth wheel / trackpad sends
+    // a stream, so it steps at most every 60 ms
     int steps = 0;
-    if (w.isSmooth) {
-        m_wheelAcc += d;
-        while (m_wheelAcc >= 0.1f) { ++steps; m_wheelAcc -= 0.1f; }
-        while (m_wheelAcc <= -0.1f) { --steps; m_wheelAcc += 0.1f; }
-    } else if (d != 0.0f) {
-        steps = d > 0.0f ? 1 : -1;
-    }
+    const auto now = juce::Time::getMillisecondCounter();
+    if (d != 0.0f && (!w.isSmooth || now - m_wheelLast >= 60)) { steps = d > 0.0f ? 1 : -1; m_wheelLast = now; }
     if (steps != 0) setValue(juce::jlimit(getMinimum(), getMaximum(), getValue() + double(steps)), juce::sendNotificationSync);
 }
 

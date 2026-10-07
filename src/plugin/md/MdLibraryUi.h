@@ -72,7 +72,7 @@ public:
     void mouseExit(const juce::MouseEvent&) override { if (m_hover != None) { m_hover = None; repaint(); } }
 private:
     Part partAt(juce::Point<int> lcd) const;
-    int dotX(int i) const { return m_rects[size_t(Pages)].getX() + 4 + i * 10; }
+    int dotX(int i) const { return m_rects[size_t(Pages)].getX() + 3 + i * 9; }
     Anchors m_anchors;
     State m_s;
     Part m_hover = None;

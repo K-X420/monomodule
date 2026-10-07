@@ -88,7 +88,8 @@ public:
     }
 private:
     juce::Rectangle<int> keyRect(int t) const;   // LCD px
-    juce::Rectangle<int> flagBox(int key, int f) const { const auto r = keyRect(key); return {r.getX() + 2 + f * 8, r.getBottom() - 9, 7, 7}; }   // GRID A S W
+    // GRID: A S W stacked down the key's right side (round buttons as L / M)
+    juce::Rectangle<int> flagBox(int key, int f) const { const auto r = keyRect(key); return {r.getRight() - 11, r.getY() + 2 + f * 11, 9, 9}; }
     juce::Rectangle<int> lockBox(int t) const { const auto r = keyRect(t); return {r.getX() + 2, r.getBottom() - 11, 9, 9}; }
     juce::Rectangle<int> muteBox(int t) const { const auto r = keyRect(t); return {r.getRight() - 11, r.getBottom() - 11, 9, 9}; }
     void mouseMove(const juce::MouseEvent&) override;

@@ -92,7 +92,7 @@ void MdSeqBar::resized()
     x += 1 + gap;
     take(PtnPrev, arrowW); take(Ptn, 42); take(PtnNext, arrowW);
     x += 1 + gap;
-    take(Pages, 4 + 4 * 10 + 1);
+    take(Pages, 3 + 4 * 9 + 1);
     x += 1 + gap;
     take(Edit, 22);
     x += 1 + gap;
@@ -102,29 +102,33 @@ void MdSeqBar::resized()
     x += 1 + gap;
     take(Step, juce::jmax(40, getWidth() / kS - x));
     if (m_anchors.sndR > m_anchors.sndL && m_anchors.kitR > m_anchors.kitL) {   // the left side in the kit strip's columns
-        x = m_anchors.kitL;
-        take(Play, 33); take(Rec, 26);   // PLAY and REC joined
-        x += 1 + gap;
-        take(Grid, juce::jmax(24, m_anchors.kitR - x));   // GRID ends under the kit's save icon
+        x = m_anchors.kitL;   // PLAY and REC joined, spanning the KIT selector to its save icon
+        const int pr = juce::jmax(52, m_anchors.kitR - x);
+        take(Play, pr / 2 + 1); take(Rec, pr - pr / 2);
         x = m_anchors.sndL;   // TRK's left arrow under the sound selector's
         take(TrkPrev, arrowW); take(Trk, 40); take(TrkNext, arrowW); take(Mute, 13);
         x += 1 + 4;
         take(PtnPrev, arrowW); take(Ptn, 42); take(PtnNext, arrowW);
     }
-    if (m_anchors.menuW > 0) {   // MIX under SYNC, STEP under MENU; DEL / X2 / the pages packed right to left before MIX
+    if (m_anchors.menuW > 0) {   // STEP under MENU; GRID|MIX joined, ending under SYNC; X2|DEL joined; the pages before them
         m_rects[size_t(Step)] = {m_anchors.menuX, 0, m_anchors.menuW, kLcdH};
-        m_rects[size_t(Mix)] = {m_anchors.syncX, 0, m_anchors.syncW, kLcdH};
-        const int g2 = 3;   // a tighter gap inside this group
-        int right = m_anchors.syncX - gap;
-        for (Part p : {DelPg, Edit, Pages}) {
+        int right = m_anchors.syncX + m_anchors.syncW;
+        auto pair = [&](Part a, int aw, Part b, int bw) {   // joined: a shared edge
+            m_rects[size_t(b)] = {right - bw, 0, bw, kLcdH};
+            m_rects[size_t(a)] = {right - bw - aw + 1, 0, aw, kLcdH};
+            right -= aw + bw - 1 + 3;
+        };
+        pair(Grid, 30, Mix, 24);
+        pair(Edit, 22, DelPg, 24);
+        for (Part p : {Pages}) {
             const int pw = m_rects[size_t(p)].getWidth();
             m_rects[size_t(p)] = {right - pw, 0, pw, kLcdH};
-            right -= pw + g2;
+            right -= pw + gap;
         }
         const int ptnEnd = m_rects[size_t(PtnNext)].getRight() + gap;   // where the PTN group ends (in whichever layout it got)
         if (right < ptnEnd - gap) {   // too narrow: back to packing left to right
             x = ptnEnd;
-            for (Part p : {Pages, Edit, DelPg}) { const int pw = m_rects[size_t(p)].getWidth(); m_rects[size_t(p)] = {x, 0, pw, kLcdH}; x += pw + gap; }
+            for (Part p : {Pages}) { const int pw = m_rects[size_t(p)].getWidth(); m_rects[size_t(p)] = {x, 0, pw, kLcdH}; x += pw + gap; }
         }
     }
 }
@@ -145,7 +149,7 @@ void MdSeqBar::paint(juce::Graphics& g)
         const int cx = r.getX() + 5, cy = r.getCentreY();
         if (m_s.playing) cv.fillRect(cx, cy - 3, 7, 7, ink);
         else for (int i = 0; i < 5; ++i) for (int y = -4 + i; y <= 4 - i; ++y) cv.set(cx + i, cy + y, ink);
-        cv.text(spec::kFontTiny3x5, m_s.playing ? "STOP" : "PLAY", r.getX() + 14, r.getY() + 5, ink);
+        cv.text(spec::kFontTiny3x5, m_s.playing ? "STOP" : "PLAY", r.getX() + 12, r.getY() + 5, ink);
         (void) ink;
     }
     {   // REC: a dot, the box solid while armed (the dot blinks while recording)
