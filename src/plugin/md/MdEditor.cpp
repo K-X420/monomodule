@@ -902,6 +902,7 @@ MdEditor::MdEditor(MdProcessor& p)
         s.level = int(std::lround(m_proc.apvts.getRawParameterValue(levelId(t))->load()));
         s.pan = int(std::lround(m_proc.apvts.getRawParameterValue(panId(t))->load()));
         s.mute = m_proc.apvts.getRawParameterValue(muteId(t))->load() >= 0.5f;
+        s.muteGroup = int(std::lround(m_proc.apvts.getRawParameterValue(muteGroupId(t))->load())) - 1;
         s.solo = m_proc.soloed(t);
         s.active = m_proc.trackActivity(t) > 0.012f;
         s.selected = t == m_track;
@@ -911,6 +912,11 @@ MdEditor::MdEditor(MdProcessor& p)
     m_mixer.set = [this](int t, MdMixer::What what, int v) {
         if (what == MdMixer::Select) { selectTrack(t); return; }
         if (what == MdMixer::Solo) { m_proc.setSolo(t, v != 0); return; }
+        if (what == MdMixer::MuteGroup) {   // the same MUTG as the ROUTING page
+            if (auto* p = m_proc.apvts.getParameter(muteGroupId(t))) { p->beginChangeGesture(); p->setValueNotifyingHost(p->convertTo0to1(float(v + 1))); p->endChangeGesture(); }
+            m_routing.pull(); m_routing.repaint();
+            return;
+        }
         auto* p = m_proc.apvts.getParameter(what == MdMixer::Level ? levelId(t) : what == MdMixer::Pan ? panId(t) : muteId(t));
         if (!p) return;
         const float to = what == MdMixer::Mute ? (v != 0 ? 1.0f : 0.0f) : p->convertTo0to1(float(v));

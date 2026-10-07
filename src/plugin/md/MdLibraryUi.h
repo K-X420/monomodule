@@ -152,8 +152,9 @@ private:
 class MdMixer : public juce::Component, public juce::SettableTooltipClient {
 public:
     static constexpr int kS = 3;
-    enum What { Level, Pan, Mute, Solo, Select };
-    struct Strip { juce::String family, machine; int level = 100, pan = 64; bool mute = false, solo = false, active = false, selected = false; float peak = 0; };
+    enum What { Level, Pan, Mute, Solo, Select, MuteGroup };
+    // muteGroup: the track a trig of this one silences (-1 none); MuteGroup sets it (value -1..15)
+    struct Strip { juce::String family, machine; int level = 100, pan = 64, muteGroup = -1; bool mute = false, solo = false, active = false, selected = false; float peak = 0; };
     std::function<Strip(int)> strip;
     std::function<void(int track, What, int value)> set;   // Mute / Solo: value 1 on, 0 off; Select: value unused
     std::function<void(int track, What, bool begin)> gesture;
@@ -174,6 +175,8 @@ private:
     juce::Rectangle<int> panRect(int t) const;
     juce::Rectangle<int> faderRect(int t) const;
     juce::Rectangle<int> buttonRect(int t, bool solo) const;
+    juce::Rectangle<int> groupRect(int t) const;   // MUTE GROUP: above M
+    void stepGroup(int t, int dir);
     int levelAt(int t, int y) const;
     int panAt(int t, int x) const;
     Hit m_drag;

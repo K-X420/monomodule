@@ -458,7 +458,7 @@ juce::Rectangle<int> MdMixer::panRect(int t) const { return {colX(t) + 1, kMxPan
 juce::Rectangle<int> MdMixer::faderRect(int t) const
 {
     const int h = getHeight() / kS;
-    return {colX(t) + 2, kMxFaderY, 7, h - kMxFaderY - 2 * kMxBtnH - 14};
+    return {colX(t) + 2, kMxFaderY, 7, h - kMxFaderY - 3 * kMxBtnH - 16};
 }
 
 juce::Rectangle<int> MdMixer::buttonRect(int t, bool solo) const
@@ -479,6 +479,25 @@ int MdMixer::panAt(int t, int x) const
     return juce::jlimit(0, 127, juce::roundToInt(127.0 * (x - r.getX() - 1) / juce::jmax(1, r.getWidth() - 3)));
 }
 
+juce::Rectangle<int> MdMixer::groupRect(int t) const
+{
+    const auto m = buttonRect(t, false);
+    return m.withY(m.getY() - kMxBtnH - 1);
+}
+
+// MUTE GROUP: -- T1 .. T16 (not itself), a step at a time
+void MdMixer::stepGroup(int t, int dir)
+{
+    if (!strip || !set) return;
+    int g = strip(t).muteGroup;
+    for (int i = 0; i < 17; ++i) {
+        g = g + dir < -1 ? 15 : g + dir > 15 ? -1 : g + dir;
+        if (g != t) break;
+    }
+    set(t, MuteGroup, g);
+    repaint();
+}
+
 MdMixer::Hit MdMixer::hitAt(juce::Point<int> p) const
 {
     for (int t = 0; t < 16; ++t) {
@@ -486,6 +505,7 @@ MdMixer::Hit MdMixer::hitAt(juce::Point<int> p) const
         if (p.y >= kMxNameY && p.y < kMxPanY - 1) return {t, Select};
         if (panRect(t).expanded(0, 1).contains(p)) return {t, Pan};
         if (faderRect(t).withX(colX(t)).withWidth(colW()).expanded(0, 2).contains(p)) return {t, Level};
+        if (groupRect(t).contains(p)) return {t, MuteGroup};
         if (buttonRect(t, false).contains(p)) return {t, Mute};
         if (buttonRect(t, true).contains(p)) return {t, Solo};
         return {};
@@ -538,12 +558,23 @@ void MdMixer::paint(juce::Graphics& g)
             if (db >= 0.0f) cv.fillRect(mx, r.getY(), mw, 2, true);   // the clip light
             cv.text(spec::kFontTiny3x5, juce::String(s.level).toRawUTF8(), x + 2, r.getBottom() + 3, true);
         }
+        {   // MUTE GROUP: the track a trig of this one silences
+            const auto r = groupRect(t);
+            frame(cv, r);
+            const juce::String g = s.muteGroup >= 0 ? "T" + juce::String(s.muteGroup + 1) : juce::String("MG");
+            cv.textCentred(spec::kFontTiny3x5, g.toRawUTF8(), r.getX(), r.getWidth(), r.getY() + 2, true);
+            if (s.muteGroup < 0) for (int x = r.getX() + 2; x < r.getRight() - 2; x += 2) cv.set(x, r.getBottom() - 2, true);   // (none: dotted)
+        }
         for (const bool solo : {false, true}) {
             const auto r = buttonRect(t, solo);
             const bool on = solo ? s.solo : s.mute;
             if (on) cv.fillRect(r.getX(), r.getY(), r.getWidth(), r.getHeight(), true);
             frame(cv, r);
-            cv.text(spec::kFontTiny3x5, solo ? "S" : "M", r.getCentreX() - 1, r.getY() + 2, !on);
+            if (solo) cv.text(spec::kFontTiny3x5, "S", r.getCentreX() - 1, r.getY() + 2, !on);
+            else {   // a 5-wide M (the 3-wide one reads as H)
+                static const char* const glyphM[5] = {"#...#", "##.##", "#.#.#", "#...#", "#...#"};
+                for (int y = 0; y < 5; ++y) for (int x = 0; x < 5; ++x) if (glyphM[y][x] == '#') cv.set(r.getCentreX() - 2 + x, r.getY() + 2 + y, !on);
+            }
         }
     }
     cv.draw(g, 0, 0, kS);
@@ -557,6 +588,7 @@ void MdMixer::mouseDown(const juce::MouseEvent& e)
     if (hit.track < 0 || !strip || !set) return;
     const auto s = strip(hit.track);
     if (hit.what == Select) { set(hit.track, Select, 0); repaint(); return; }
+    if (hit.what == MuteGroup) { stepGroup(hit.track, e.mods.isShiftDown() || e.mods.isPopupMenu() ? -1 : 1); return; }
     if (hit.what == Mute || hit.what == Solo) {
         if (e.mods.isShiftDown()) {   // only this track: the others off
             for (int t = 0; t < 16; ++t) set(t, hit.what, t == hit.track ? 1 : 0);
@@ -596,6 +628,7 @@ void MdMixer::mouseDoubleClick(const juce::MouseEvent& e)
 void MdMixer::mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& d)
 {
     const auto hit = hitAt(e.getPosition() / kS);
+    if (hit.track >= 0 && hit.what == MuteGroup) { stepGroup(hit.track, (d.deltaY != 0 ? d.deltaY : d.deltaX) > 0 ? -1 : 1); return; }
     if (hit.track < 0 || !strip || !set || (hit.what != Level && hit.what != Pan)) return;
     const int dir = (d.deltaY != 0 ? d.deltaY : d.deltaX) > 0 ? 1 : -1;
     const auto s = strip(hit.track);

@@ -3,6 +3,7 @@
 // the editor to a PNG.
 #include "one/RomArt.h"
 #include <cstdio>
+#include <algorithm>
 #include <map>
 #include <cstring>
 #include <juce_audio_formats/juce_audio_formats.h>
@@ -1182,6 +1183,45 @@ int main(int argc, char** argv)
         std::printf(fails ? "OSCHECK TEST FAILED (%d)\n" : "OSCHECK TEST OK\n", fails);
         return fails ? 1 : 0;
     }
+    if (std::getenv("MD_RATE_TEST")) {   // upstream issue #3: no rhythmic clicks at 48 / 96 kHz (a held GND-SN sine, block 512)
+        int fails = 0;
+        auto check = [&](bool ok, const juce::String& what) { std::printf("  %s %s\n", ok ? "ok  " : "FAIL", what.toRawUTF8()); fails += ok ? 0 : 1; };
+        for (double hostRate : {44100.0, 48000.0, 96000.0}) {
+            auto pHeap = std::make_unique<MdProcessor>();
+            auto& p = *pHeap;
+            p.setFirmwarePath(juce::String(argv[1]), false);
+            const int blk = 512;
+            p.prepareToPlay(hostRate, blk);
+            auto kit = p.captureMdKit();
+            kit.models[0] = 1;   // GND-SN: a steady sine (long decay, no sweep)
+            kit.params[0][0] = 40; kit.params[0][1] = 127; kit.params[0][2] = 0; kit.params[0][3] = 0;
+            kit.levels[0] = 100;
+            p.loadMdKit("rate", kit, "RATE");
+            p.syncMachineSideEffects();
+            juce::AudioBuffer<float> buf(2, blk);
+            std::vector<float> y;
+            for (int b2 = 0; b2 < int(hostRate / blk); ++b2) {   // 1 s
+                juce::MidiBuffer midi;
+                if (b2 == 2) midi.addEvent(juce::MidiMessage::noteOn(1, 36, uint8_t(100)), 0);
+                buf.clear(); p.processBlock(buf, midi);
+                for (int i = 0; i < blk; ++i) y.push_back(buf.getSample(0, i));
+            }
+            // the second difference of a clean sine is smooth (it is the sine again, scaled); a dropped or doubled frame
+            // shows as a spike far above its neighbours
+            const size_t from = size_t(0.3 * hostRate), to = size_t(0.9 * hostRate);
+            double peak = 0, typical = 0;
+            std::vector<double> d2;
+            for (size_t i = from; i < to; ++i) d2.push_back(std::abs(double(y[i]) - 2.0 * y[i - 1] + y[i - 2]));
+            std::vector<double> sorted = d2; std::sort(sorted.begin(), sorted.end());
+            typical = sorted[sorted.size() * 99 / 100];
+            peak = sorted.back();
+            double rms = 0; for (size_t i = from; i < to; ++i) rms += double(y[i]) * y[i]; rms = std::sqrt(rms / double(to - from));
+            check(rms > 0.01 && peak < 2.0 * typical + 1e-6, juce::String(hostRate, 0) + " Hz: no clicks (largest 2nd difference " + juce::String(peak, 6)
+                  + " vs 99th percentile " + juce::String(typical, 6) + ", level " + juce::String(rms, 3) + ")");
+        }
+        std::printf(fails ? "RATE TEST FAILED (%d)\n" : "RATE TEST OK\n", fails);
+        return fails ? 1 : 0;
+    }
     if (std::getenv("MD_MIXER_TEST")) {   // G = GRID, M = the mixer; its faders, mutes and solos
         int fails = 0;
         auto check = [&](bool ok, const juce::String& what) { std::printf("  %s %s\n", ok ? "ok  " : "FAIL", what.toRawUTF8()); fails += ok ? 0 : 1; };
@@ -1215,6 +1255,9 @@ int main(int argc, char** argv)
         check(proc.soloed(1) && other == 0 && soloed == 1, "SOLO T2: T1's trig is silenced, T2's plays");
         mx.set(1, MdMixer::Solo, 0);
         check(trigs(36) == 1, "unsoloed: T1 plays again");
+        mx.set(8, MdMixer::MuteGroup, 9);
+        check(std::lround(proc.apvts.getRawParameterValue(muteGroupId(8))->load()) == 10 && mx.strip(8).muteGroup == 9, "T9's mute group set to T10 from the mixer (the ROUTING page's MUTG)");
+        mx.set(8, MdMixer::MuteGroup, -1);
         mx.set(6, MdMixer::Select, 0);
         check(mx.strip(6).selected, "a click on T7's name selects it");
         if (argc > 3) {
