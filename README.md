@@ -36,8 +36,8 @@ you put it: Monomodule reads it each time it starts and never copies it or redis
 
 ### Machinedrum OS (Monomodule MD)
 
-Monomodule MD needs the **Machinedrum UW OS 1.63** (`Elektron_SPS1-1UW_OS1.63.syx`), [Elektron_SFX6-60_OS1.32B.zip](https://www.elektron.se/wp-content/uploads/2024/09/Elektron_SFX6-60_OS1.32B.zip) also a free download from
-Elektron's Machinedrum support page. The first time you open Monomodule MD it asks for it the same way.
+Monomodule MD needs the **Machinedrum UW OS 1.63** (`Elektron_SPS1-1UW_OS1.63.syx`), also a free download from
+Elektron: [Elektron_SPS1-1UW_OS1.63.zip](https://www.elektron.se/wp-content/uploads/2024/09/Elektron_SPS1-1UW_OS1.63.zip). The first time you open Monomodule MD it asks for it the same way.
 
 ## Using Monomodule MD
 
