@@ -175,8 +175,8 @@ private:
     juce::Rectangle<int> panRect(int t) const;
     juce::Rectangle<int> faderRect(int t) const;
     juce::Rectangle<int> buttonRect(int t, bool solo) const;
-    juce::Rectangle<int> groupRect(int t) const;   // MUTE GROUP: above M
-    void stepGroup(int t, int dir);
+    void stepGroup(int t, int dir);   // MUTE GROUP: -- T1..T16 (FUNCTION = Alt + click / wheel on M)
+    void modifierKeysChanged(const juce::ModifierKeys&) override { repaint(); }   // Alt shows / hides the groups
     int levelAt(int t, int y) const;
     int panAt(int t, int x) const;
     Hit m_drag;

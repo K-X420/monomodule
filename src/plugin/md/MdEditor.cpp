@@ -889,7 +889,7 @@ MdEditor::MdEditor(MdProcessor& p)
         bindOutPage(m_outTab);      // (bound before the tips were set)
         bindMasterFx(m_masterTab);
     }
-    m_mixer.setTooltip("Mixer: level, pan, mute (M) and solo (S) of every track");
+    m_mixer.setTooltip("Mixer: level, pan, mute (M) and solo (S) of every track. Alt: the mute groups (Alt+click M: next)");
     m_songEd.setTooltip("Song editor: the song's rows");
     m_midiPanel.setTooltip("MIDI settings");
     addChildComponent(m_mixer);

@@ -78,7 +78,7 @@ patterns along.
 | Keep your edits | Saved with the Ableton set; MENU > SAVE PATTERNS + SONGS TO LIBRARY puts them in the Library project |
 | MIDI channel, note map, program change, MIDI out | MENU > MIDI SETTINGS |
 | Play patterns from MIDI notes | MENU > MIDI SETTINGS > PATTERN NOTES: FROM a white key (16 patterns of a bank up the white keys), START / STOP notes; GATE (plays while held), MOMENTARY (the pattern before comes back), QUEUE (next pattern). FROM PROJECT brings in a project's own map |
-| Mixer (all 16 levels, pans, mutes, solos, mute groups) | **MIX** on the bar or the **M** key; Shift+click M / S = only that track; **MG**: click / wheel through the track's mute group (Shift+click: back) |
+| Mixer (all 16 levels, pans, mutes, solos, mute groups) | **MIX** on the bar or the **M** key; Shift+click M / S = only that track; hold **Alt** to see the mute groups on the M buttons, **Alt+click** M for the next group (Alt+Shift+click: back) |
 | Browse kits / sounds | Click the KIT or sound selector, then **Up / Down** (on One / Six: presets, or kits after the KIT selector) |
 
 ## Installing on macOS
